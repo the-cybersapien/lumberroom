@@ -16,6 +16,12 @@
 //! the full shape of a live key rather than the prefix alone, and the generic entropy rule demands
 //! length, charset, mixed case, per-character entropy above what hex can reach, and absence from a
 //! pasted binary blob, all at once.
+//!
+//! That last demand left one hole, and it was this system's own. Every secret lumberroom mints is
+//! `openssl rand -hex`: the client tokens, the Postgres password, the KEK. Hex has no upper case,
+//! so the entropy rule cannot fire on any of them by construction, and a client token pasted into
+//! `user:me` stored at open. The hex rule below anchors on a credential word beside the run
+//! rather than on the run itself, which is what lets a git SHA and a `sha256` line stay quiet.
 
 use crate::domain::errors::DomainError;
 
@@ -50,9 +56,9 @@ impl Finding {
 /// None when the content carries nothing credential-shaped.
 ///
 /// Rules run in a fixed priority order and the first hit wins: private key header, connection
-/// string, known prefix, JWT, generic entropy. Content carrying two shapes reports one Finding by
-/// design, because the caller's next move is the same either way and a list invites a caller to
-/// fix the first item and retry.
+/// string, known prefix, JWT, hex beside a credential word, generic entropy. Content carrying two
+/// shapes reports one Finding by design, because the caller's next move is the same either way
+/// and a list invites a caller to fix the first item and retry.
 pub fn scan(content: &str) -> Option<Finding> {
     let bytes = content.as_bytes();
     scan_private_key_header(bytes)
@@ -375,11 +381,42 @@ const MAX_REPEAT_RUN: usize = 4;
 /// every identifier tried and keeps 99.7 per cent of 40-character random tokens.
 const MIN_CASE_SHARE: usize = 5;
 
+/// Shortest hex run the hex rule considers. `openssl rand -hex 24` is 48 characters and the
+/// shortest secret any lumberroom script mints; the tokens and the KEK are 64. A git SHA is 40
+/// and sits under this whatever word stands beside it.
+const MIN_HEX_CREDENTIAL_LEN: usize = 48;
+/// How far either side of a hex run a credential word is looked for. Forty bytes holds
+/// `POSTGRES_PASSWORD=` and `the claude-code-mac token is ` with room to spare, and does not
+/// reach a `token` two sentences away.
+const HEX_ANCHOR_WINDOW: usize = 40;
+/// The words that make a long hex run a credential. Compared case-folded as substrings, so
+/// `AUTH_TOKENS`, `tokens` and `POSTGRES_PASSWORD` all match through `token` and `password`.
+/// `key` on its own is absent: it is half the vocabulary of a hashing discussion.
+const HEX_ANCHOR_WORDS: &[&str] = &[
+    "token",
+    "bearer",
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "kek",
+    "api_key",
+    "api-key",
+    "apikey",
+];
+/// Words that say the hex is a digest. One of these in the window keeps the rule quiet even
+/// beside a credential word, so "the token's sha256 is ..." is read as the checksum it is. A
+/// credential written as "password hash: <hex>" is missed by this; a hash of a password is not
+/// the password, and hashing one into hex is not a thing anyone does.
+const HEX_DIGEST_WORDS: &[&str] =
+    &["sha256", "sha-256", "sha1", "sha-1", "sha512", "digest", "checksum", "commit", "hash"];
+
 /// One pass over the maximal runs of token bytes, collecting the first hit for each rule and
 /// resolving priority at the end. Walking the content once matters because this runs on every
 /// write.
 fn scan_tokens(bytes: &[u8]) -> Option<Finding> {
     let mut jwt_hit: Option<Finding> = None;
+    let mut hex_hit: Option<Finding> = None;
     let mut entropy_hit: Option<Finding> = None;
     // Computed only when a token survives every cheaper check, which is almost never.
     let mut blobs: Option<Vec<(usize, usize)>> = None;
@@ -403,12 +440,47 @@ fn scan_tokens(bytes: &[u8]) -> Option<Finding> {
         if jwt_hit.is_none() {
             jwt_hit = match_jwt(bytes, start, end);
         }
+        if hex_hit.is_none() {
+            hex_hit = match_hex_credential(bytes, start, end);
+        }
         if entropy_hit.is_none() {
             entropy_hit = match_high_entropy(bytes, start, end, &mut blobs);
         }
     }
 
-    jwt_hit.or(entropy_hit)
+    jwt_hit.or(hex_hit).or(entropy_hit)
+}
+
+/// A uniform hex run of credential length with a credential word beside it and no digest word.
+///
+/// Uniform means one case throughout: `openssl rand -hex` is lowercase and a tool that upper-cases
+/// it upper-cases all of it, while mixed-case hex is somebody's identifier. The anchor is the
+/// neighbouring word and never the run, because a 64-character hex string with nothing said about
+/// it is a content hash far more often than a key.
+fn match_hex_credential(bytes: &[u8], start: usize, end: usize) -> Option<Finding> {
+    let token = &bytes[start..end];
+    if token.len() < MIN_HEX_CREDENTIAL_LEN || !is_uniform_hex(token) {
+        return None;
+    }
+    let before = &bytes[start.saturating_sub(HEX_ANCHOR_WINDOW)..start];
+    let after = &bytes[end..(end + HEX_ANCHOR_WINDOW).min(bytes.len())];
+    let window: Vec<u8> = before.iter().chain(after.iter()).map(u8::to_ascii_lowercase).collect();
+    if HEX_DIGEST_WORDS.iter().any(|w| find(&window, w.as_bytes()).is_some()) {
+        return None;
+    }
+    let word = HEX_ANCHOR_WORDS.iter().find(|w| find(&window, w.as_bytes()).is_some())?;
+    Some(Finding::new(
+        "hex_credential",
+        format!("a {}-character hex token beside the word {word:?} at byte {start}", token.len()),
+    ))
+}
+
+/// Hex digits and letters of one case only. Digits alone count: a run of 48 digits beside the
+/// word `password` is a credential the owner would want caught, and it is not an identifier.
+fn is_uniform_hex(token: &[u8]) -> bool {
+    let lower = token.iter().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b));
+    let upper = token.iter().all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(b));
+    lower || upper
 }
 
 /// `start` is always the first byte of a token run, so the preceding byte is a boundary already
@@ -723,6 +795,36 @@ mod tests {
             "a content hash",
             "sha256 a94a8fe5ccb19ba61c4c0873d391e987982fbbd3b1b0d1e2c3f4a5b6c7d8e9f0",
         ),
+        (
+            "a bare sixty-four hex string with nothing said about it",
+            "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3b1b0d1e2c3f4a5b6c7d8e9f0",
+        ),
+        (
+            "a sha256 git commit",
+            "commit 6f2a4c1e7b3d4f8a9c2e1d5b6a7c8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d",
+        ),
+        (
+            "a digest of a token, named as a digest",
+            "the token's sha256 is a94a8fe5ccb19ba61c4c0873d391e987982fbbd3b1b0d1e2c3f4a5b6c7d8e9f0",
+        ),
+        (
+            "a checksum on a download line",
+            "checksum for the tarball: 6f2a4c1e7b3d4f8a9c2e1d5b6a7c8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d",
+        ),
+        (
+            "a forty-character sha beside the word token",
+            "the token commit was e3b0c44298fc1c149afbf4c8996fb92427ae41e4",
+        ),
+        (
+            "a credential word two sentences away from a hash",
+            // No digest word anywhere in this string, so only the distance keeps the rule quiet.
+            "Rotated the deploy token today. Unrelated: the image tag moved on to the next build. \
+             Build id a94a8fe5ccb19ba61c4c0873d391e987982fbbd3b1b0d1e2c3f4a5b6c7d8e9f0",
+        ),
+        (
+            "mixed-case hex, which is an identifier and not a minted secret",
+            "token id A94a8FE5ccb19BA61c4c0873D391e987982fbbd3b1b0D1E2c3f4a5b6c7d8e9f0",
+        ),
         ("prose about a password", "the postgres password lives in 1Password, not in here"),
         ("a prefix mentioned in passing", "OpenAI keys start with sk- and Anthropic's with sk-ant-"),
         ("a prefix inside a word", "the mysk-ant-handler function is unrelated"),
@@ -938,6 +1040,41 @@ mod tests {
             "postgres://lumberroom:p%40ssw0rdEncoded@db.internal:5432/lumberroom",
             "connection_string_password",
         );
+    }
+
+    const HEX64: &str = "6f2a4c1e7b3d4f8a9c2e1d5b6a7c8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d";
+    const HEX48: &str = "6f2a4c1e7b3d4f8a9c2e1d5b6a7c8e9f0a1b2c3d4e5f6a7b";
+
+    /// The shapes this system mints itself: the install script's tokens, its Postgres password
+    /// and its KEK, in the sentences they get pasted in.
+    #[test]
+    fn lumberrooms_own_hex_credentials_fire_beside_a_credential_word() {
+        let cases = [
+            format!("the claude-code-mac token is {HEX64}"),
+            format!("AUTH_TOKENS=claude-code-mac:{HEX64}"),
+            format!("POSTGRES_PASSWORD={HEX48}"),
+            format!("KEK: {HEX64}"),
+            format!("./client/wire-mac.sh --url https://memory.example.com --token {HEX64}"),
+            format!("Authorization: Bearer {HEX64}"),
+            format!("{HEX64} is the secret for the bot"),
+            format!("the api_key is {}", HEX64.to_ascii_uppercase()),
+        ];
+        for content in &cases {
+            let f = fires_as(content, "hex_credential");
+            assert!(!f.detail.contains("6f2a4c1e"), "{}", f.detail);
+            assert!(f.detail.contains("byte"), "{}", f.detail);
+        }
+    }
+
+    #[test]
+    fn the_hex_rule_needs_credential_length_and_a_word_beside_the_run() {
+        // Forty characters is a git SHA whatever stands beside it.
+        assert_eq!(scan("token e3b0c44298fc1c149afbf4c8996fb92427ae41e4"), None);
+        // Sixty-four characters with no word beside it is a hash.
+        assert_eq!(scan(HEX64), None);
+        // The word has to be inside the window.
+        let far = format!("the token rotates monthly and is stored in the vault under infra/prod. {HEX64}");
+        assert_eq!(scan(&far), None, "a word outside the window is not an anchor");
     }
 
     #[test]
