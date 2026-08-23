@@ -1,10 +1,10 @@
-# System PRD — Agent Memory Control Plane
+# System PRD: Agent Memory Control Plane
 
 **Owner:** maintainer · **Date:** 2026-08-18 · **Status:** ready to build · **Scope:** the whole system, all phases
 
 Companion docs: `north-star.md` (thesis), `agentic-memory-design.md` (architecture), `build-decision.md` (hosting and scope), `claude/phase-1-prd.md` (the first build slice). This document describes what the system does and what it is for. It stays out of implementation detail on purpose.
 
-Status: Phases 2 through 4 were implemented 19 August 2026; verification is pending, see `ROADMAP.md` and `docs/decisions/0002-built-in-oauth-server.md` through `0005-private-drops-lexical-search.md` for what the build settled that this document left open.
+Status: see `docs/decisions/0002-built-in-oauth-server.md` through `0005-private-drops-lexical-search.md` for what the build settled that this document left open.
 
 ---
 

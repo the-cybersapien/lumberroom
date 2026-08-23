@@ -1,6 +1,6 @@
 # Documentation index
 
-One line per file. Start with the top-level entry points before anything under here: `ROADMAP.md`
+One line per file. Start with the top-level entry points before anything under here: `README.md`
 and `CONTRIBUTING.md` at the repository root, then `docs/decisions/README.md`.
 
 ## Start here

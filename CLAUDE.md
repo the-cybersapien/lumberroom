@@ -13,7 +13,7 @@ second and third.
 The directory is named `memoryEngine` and the product is called lumberroom. Repo:
 `github.com/the-cybersapien/lumberroom`, `main`.
 
-Read in this order before starting work: `ROADMAP.md`, then `docs/decisions/README.md`.
+Read in this order before starting work: `docs/architecture.md`, then `docs/decisions/README.md`.
 
 ## Commands
 

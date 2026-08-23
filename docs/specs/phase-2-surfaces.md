@@ -314,8 +314,7 @@ Decide the thresholds before reading the data. Choosing them afterwards is how a
 number becomes an acceptable one.
 
 **The measure with no number behind it.** "You stop repeating yourself" is the PRD's primary
-measure and nothing records it. The three candidate approaches are in
-[`ROADMAP.md`](../../ROADMAP.md#measurement); pick one during this phase, because after six
+measure and nothing records it. Pick an approach during this phase, because after six
 surfaces are live it only gets harder to instrument.
 
 ---

@@ -1,7 +1,7 @@
 # lumberroom memory bank — visual and interaction direction
 
 Register: **product**. Design serves the task. No marketing surface exists or should.
-Grounded in the repo: README, ROADMAP.md, DECISIONS.md, docs/specs/phase-2-surfaces.md,
+Grounded in the repo: README, DECISIONS.md, docs/specs/phase-2-surfaces.md,
 docs/specs/phase-3-policy-encryption.md, db/migrations/001_init.sql.
 
 ## 1. Aesthetic position: The Apparatus
@@ -41,7 +41,7 @@ difference here is that every device is load-bearing and would break the product
   live somewhere that never causes layout shift under `j`/`k`
 - the serif/mono split is a provenance signal (see §2), not texture
 - the variant stack is indented and collapsed because superseded facts must never be siblings of
-  live ones — that is the four-nicknames bug in ROADMAP.md rendered as layout
+  live ones. That is the four-nicknames bug rendered as layout
 - rules are hairlines because at 24px rows anything heavier out-weighs the type
 
 ### Signature element: the client lens
@@ -365,7 +365,7 @@ which would collide with the sensitivity grounds). Purely semantic hits print `s
    11 Jul  Release cadence is weekly           semantic only         claude-code   project:lumberroom
 ```
 
-**conflict pair (or quartet)** — the four-nicknames failure documented in ROADMAP.md, made visible.
+**conflict pair (or quartet)**: the four-nicknames failure, made visible.
 Conflict is a *group wrapper*, not a gutter state, because the gutter is reserved for sensitivity.
 ```
  ┌ conflict · 4 live facts make different claims about the same thing        [r] resolve

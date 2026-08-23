@@ -45,10 +45,9 @@ flag, no access count, no `supersedes` or `superseded_by`, no registry entry, no
 tombstone. Every file is named after a uuid, so a vault listing is a wall of hex. A fact deleted
 from the store keeps its note forever with nothing marking it.
 
-[`ROADMAP.md`](../../ROADMAP.md) line 44 credits that command with *"writing tombstones and never
-unlinking."* Half of that holds. `writeObsidianNote` unlinks nothing, because it deletes nothing at
-all, and it writes no tombstone either. Implemented and reachable are two claims, and the ledger in
-§6 keeps them apart everywhere.
+The export has been credited with *"writing tombstones and never unlinking."* Half of that holds.
+`writeObsidianNote` unlinks nothing, because it deletes nothing at all, and it writes no tombstone
+either. Implemented and reachable are two claims, and the ledger in §6 keeps them apart everywhere.
 
 The premise holds on paper and goes unmet in the tree. A reviewer defending the old rule has to
 defend a mirror the owner cannot get.

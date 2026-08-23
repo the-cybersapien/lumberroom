@@ -771,62 +771,9 @@ extraction anywhere. No as-of for the export or the Obsidian vault.
 
 ## 10. The order of work
 
-Interfaces are locked in step 0, in one commit, before any fan-out. Shared composition files are
-held back for the wiring pass: `src/mcp/mod.rs`, `src/http/mod.rs`, `src/main.rs`, `Cargo.toml`,
-`migrations/`, `tests/`. An agent needing a change there returns a wire-in note.
-
-Subagents run `./scripts/cargo.sh check` and never `cargo test`, because the integration suite
-truncates a shared database. They will see errors in files they do not own while other tracks are in
-flight; tell them to grep for their own file and ignore the rest. They never run git.
-
-**Step 0. Lock the interfaces. Lead only, one commit, nothing in parallel.**
-`migrations/20260821000011_valid_time.sql`, `src/domain/types.rs`, `src/ports/memory.rs`,
-`src/ports/ingest.rs`, `src/config.rs`. The migration exactly as §2 has it, two fields on `Memory`
-and `NewMemory`, `supersede`'s new signature, `observed_at` on whatever the ingest port returns for
-a proposal, `max_future_occurred_secs` on `PolicyConfig` and `occurred_recency_weight` on
-`SearchConfig`. The tree does not compile at the end of this step, and that is the point: every call
-site is now a compiler error, which is the list steps 1 to 4 work through.
-
-**Steps 1 to 4 run in parallel.** Steps 1 and 2 are two halves of one track and each will fail to
-compile until the other lands; each agent checks its own file. Steps 3 and 4 depend on step 0's
-types alone and can start at once.
-
-**Step 1. The adapter.** One agent, opus. `src/adapters/postgres/memory.rs` only. Both columns into
-`select_memory!`, `memory_from_row` and the six hand-written lists from §5. The insert column and
-bind. Both `UPDATE ... SET superseded_by` statements gain `occurred_until = COALESCE(occurred_until,
-$n)`. The unit test asserting all six lists mention `occurred_at`. Do not touch `SEARCH_LIVE`'s
-predicate, do not add a search parameter, do not change the `JOIN reachable rg` count in
-`DIGEST_SQL`. The tests at lines 1535, 1592 and 1618 must pass unchanged; if one fails, stop and
-return it rather than editing it.
-
-**Step 2. The write service.** One agent, opus. `src/services/write.rs` only. The parameter, the
-future-date validation, the S2 `COALESCE`, the S4 ordering guard, the `LEAST` on the
-duplicate-collapse confirm path. Every rule cites its §3 number in a comment.
-
-**Step 3. Ingest.** One agent, sonnet. `src/services/ingest.rs`, `src/adapters/postgres/ingest.rs`.
-The `min(observed_at)` aggregation and passing it to `write::run`. Nothing else. The comment at line
-655 saying why the same default is wrong here.
-
-**Step 4. Display.** One agent, sonnet. `src/services/search.rs`, `src/services/bootstrap.rs`. Two
-optional fields on `Hit` and `Fact`, skipped when None, RFC 3339. The bootstrap renderer prints
-"since <date>" beside a fact carrying one. No cache-key change.
-
-**Step 5. Wiring. Lead only, sequential, after 1 to 4.** `src/mcp/mod.rs`, `src/http/`, the CLI and
-console write call sites, `crates/lumberroom/`. The `WriteArgs` field and its description verbatim
-from §7, RFC 3339 parsing with a refusal on a malformed value, every remaining `write::run` call
-site. The tree compiles at the end of this step.
-
-**Step 6. Tests. Lead only, sequential.** `tests/integration.rs`, `tests/ingest.rs`,
-`crates/lumberroom/tests/wire.rs`. The list is in §11. The lead runs `./scripts/cargo.sh test -j 1`
-and `-p lumberroom`.
-
-**Step 7. Documentation.** Lead, or sonnet under review. `docs/decisions/0008-valid-time.md`,
-`ROADMAP.md`, `docs/decisions/README.md`. 0008 gains the S2 amendment and its
-reasoning, the S3 dependency on the live filter, the N2 disagreement with Graphiti, the sentence
-that this completes a bitemporal table rather than adding the first clock, the note that no
-published number attributes anything to bi-temporality, and a corrected status line. Amend rather
-than rewrite: where new text contradicts old, say which sentence is superseded. Steps 6 and 7
-overlap only if the documentation agent writes nothing about results.
+The adapter first, then the write service, then ingest and display, then the CLI, then the
+documentation and the decision record. Each step compiles on its own and the suite runs once at
+the end; the gates in section 11 are what settle it.
 
 ## 11. How it will be verified
 
