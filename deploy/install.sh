@@ -302,7 +302,11 @@ fi
 CHOWNED_KEK=1
 if [ "$DRY_RUN" != 1 ] && [ -f secrets/lumberroom-kek ]; then
   chown 10001:10001 secrets/lumberroom-kek 2>/dev/null || CHOWNED_KEK=0
-  chmod 600 secrets/lumberroom-kek
+  # The chmod fails the same way on every later run by an unprivileged operator, once the chown
+  # above has landed: a file owned by 10001 takes a chmod from nobody but its owner or root. The
+  # mode is already 600 in exactly that case, so treat the failure as nothing to do rather than
+  # letting `set -e` end the install two steps in.
+  chmod 600 secrets/lumberroom-kek 2>/dev/null || true
 fi
 
 # An explicit --kek-provider is written to .env. Without the flag, whatever .env already says stands,
