@@ -19,50 +19,86 @@ Three layers, doing three different jobs:
 
 The value is in the second and third. Full thesis: [`docs/prd/system-prd.md`](docs/prd/system-prd.md).
 
-## Status
+## What is here
 
-**Phases 1 to 4 are verified. Nothing is deployed.**
+One Rust binary, a Postgres database with pgvector, and two clients that talk to them. Each part
+below names the gate that exercises it. Most gate scripts stand up a throwaway server against a
+throwaway database rather than touching a live store, which
+[`scripts/lib/scratch-server.sh`](scripts/lib/scratch-server.sh) does for them. The test suite last
+came back at 863 in the server crate and 333 in the client, 0 failures, observed 23 August 2026.
 
-Phase 1 was exercised end to end in Rust and the release image was booted and driven through its
-tools. Phases 2, 3 and 4 brought the built-in OAuth 2.1 authorization server, the sensitivity axis
-with envelope encryption, supersession, the delete path, the review queue and the Obsidian export,
-and three scripts drove all of it against a live server. [VERIFY.md](VERIFY.md) carries what they
-printed:
+**The MCP server.** Ten tools behind four capabilities, mounted at `/mcp` over streamable HTTP.
+`src/mcp/capability.rs` holds the one table deciding which grant opens which tool, `tools/list`
+filters on it, and the service checks the grant again on the call.
+[`scripts/done-when-test.sh`](scripts/done-when-test.sh) drives the loop through the real Claude Code
+client: one session states a fact, a fresh session recovers it without being told.
 
-| Script | What it drives | Result |
-|---|---|---|
-| [`scripts/oauth-flow-test.sh`](scripts/oauth-flow-test.sh) | 13 steps: metadata, the 401 challenge, registration, consent, code exchange, PKCE and replay refusals, a real tool call, refresh rotation | 43 PASS, 0 FAIL |
-| [`scripts/policy-test.sh`](scripts/policy-test.sh) | one credential provably cannot see a fact another can | 20 PASS, 0 FAIL |
-| [`scripts/correction-test.sh`](scripts/correction-test.sh) | a correction made once does not resurface as a contradiction | 13 PASS, 0 FAIL |
+**The registry.** Exact operational values under a canonical dotted key: hosts, service endpoints,
+credential locations, model routes, datasets. `registry_get` answers a key, `registry_set` records
+one and keeps a rejected key as a redirect so the next caller reaching for the wrong name lands on
+the right row, and `registry_history` says what the key used to hold. The integration suite covers
+the versioned upsert and the history walk.
 
-Every one of those runs was a local Docker stack on one machine. No VM runs any of this, and nothing
-has left that machine.
+**Two-axis policy.** A grant pairs a namespace glob with a sensitivity ceiling, on each of the read
+and write axes. The sensitivity filter runs inside the SQL query, so a row a client may not read
+never enters that client's process. [`scripts/policy-test.sh`](scripts/policy-test.sh) runs eight
+steps and 20 assertions and ends where the system PRD asks it to: one credential provably cannot see
+a fact another can.
 
-The phases past the gates:
+**The built-in OAuth 2.1 authorization server.** Discovery at both metadata paths, dynamic client
+registration, an owner login and a consent screen, S256 with `plain` never advertised, and refresh
+rotation that revokes a whole token family on reuse.
+[`scripts/oauth-flow-test.sh`](scripts/oauth-flow-test.sh) runs 13 steps and 43 assertions with no
+browser in the loop. Static bearer tokens keep working beside it, because `AUTH_MODE` selects what
+is accepted on top of `AUTH_TOKENS` rather than instead of it ([decision
+0002](docs/decisions/0002-built-in-oauth-server.md)).
 
-- **Phase 5, multi-user hardening.** Not scheduled. `tenant_id` sits on every table so it stays
-  possible without a rewrite.
-- **Phase 6, ingestion.** Ran end to end: a week of Claude Code and Codex transcripts through
-  `plan`, `extract` and `submit`, queueing 222 proposals from 9,211 entries.
-- **Phase 7, valid time.** Shipped. A memory carries `occurred_at` and `occurred_until` beside
-  `created_at`, aliases collapse a renamed subject across namespaces, and the registry keeps what it
-  replaces.
-- **Phase 8, cleanup.** Both halves have run: the deterministic pass through
-  `scripts/cleanup-test.sh`, the model pass against z.ai over the real store. The schedule now lives
-  in the product, the deterministic pass on a timer in the server and the model pass as a compose
-  service. The console at `/console` is where you decide what the queue proposes.
+**Envelope encryption.** A `private` row is stored under a per-row key wrapped by a key-encryption
+key that a KEK provider supplies, and it drops out of the lexical index. A `sealed` row arrives
+encrypted by the client and the server holds no key for it at all. `KEK_PROVIDER=none` refuses a
+private write rather than quietly writing it in the clear ([decision
+0004](docs/decisions/0004-kek-provider.md)). Policy-test step 5 asserts ciphertext on the wire for a
+client without `sealedCapable`, and [VERIFY.md](VERIFY.md) carries the key round trip across a
+restart and the boot refusal on a mismatched key.
 
-Read [ROADMAP.md](ROADMAP.md) for where each phase stands and [VERIFY.md](VERIFY.md) for what has
-actually been run and what it printed.
+**Corrections.** A write returns `possible_conflicts`, the neighbours it declined to merge, and the
+model that made the correction calls `memory_write` again with `supersedes`. The retired row survives
+with `superseded_by` set. [`scripts/correction-test.sh`](scripts/correction-test.sh) runs six steps
+and 13 assertions, including the numeric guard: two texts differing by one digit run stay two rows.
 
-One correction that reaches back into Phase 1. The recall monitor's "exact" ground-truth scan ran
-`SET LOCAL enable_indexscan = off` outside a transaction, which Postgres answers with a warning and
-no effect, so every comparison was the HNSW index against itself. The statement now runs inside a
-transaction, and the monitor was re-run on 21 August 2026: mean recall@10 between 0.981 and 0.988
-across five runs on 40,001 rows, with no true nearest neighbour missed in 1,900 probes.
-[`docs/benchmarks.md`](docs/benchmarks.md) is the one page carrying every retrieval figure with the
-run that produced it. The HNSW truncation finding is unaffected: that one was reproduced directly,
-with a filtered query returning zero rows against a 40k-row corpus.
+**The console** at `/console`. Registered OAuth clients and their consent state, aliases, and the
+cleanup queue, which is where a person accepts or rejects what the passes propose ([decision
+0006](docs/decisions/0006-console-decides-the-queue.md)). `tests/console.rs` and
+`tests/console_cleanup.rs` cover the routes.
+
+**Transcript ingestion with a review queue.** The Rust client in `crates/lumberroom` walks Claude Code
+and Codex transcripts, cuts them into spans, asks a model for candidate facts, and queues proposals
+instead of writing them. Watermarks make a second pass over unchanged transcripts cheap.
+[`scripts/ingest-test.sh`](scripts/ingest-test.sh) runs seven steps over fixture transcripts it
+writes itself, including a sensitive path refused before the file is opened.
+
+**The cleanup pass.** A periodic pass proposes duplicates, contradictions and stale rows into the
+same queue, and it never retires a row on its own ([decision
+0011](docs/decisions/0011-cleanup-proposes.md)). A deterministic half runs on a timer inside the
+server; a model half runs as a compose service.
+[`scripts/cleanup-test.sh`](scripts/cleanup-test.sh) drives six steps through the CLI, from propose
+to apply, and asserts that a client without `mayIngest` is refused.
+
+**Two clients.** `bin/lumberroom.mjs` is dependency-free Node that runs anywhere node does;
+`client/wire-mac.sh` installs it as `lumberroom` and wires Claude Code to the server. The Rust client
+carries ingestion and the cleanup daemon and runs inside a container. Obsidian export goes through
+the Node client: `lumberroom export --obsidian <vault>` writes one markdown note per memory, carrying
+its id, namespace, sensitivity, source client, date and tags.
+
+**Retrieval quality.** [`docs/benchmarks.md`](docs/benchmarks.md) is the one page carrying every
+retrieval figure with the run that produced it, and
+[`scripts/eval-longmemeval.sh`](scripts/eval-longmemeval.sh) is the standing gate: LongMemEval-S
+recall through the real tools against a scratch server ([decision
+0007](docs/decisions/0007-longmemeval-as-the-retrieval-gate.md)).
+
+Where the pieces sit in the tree: [docs/architecture.md](docs/architecture.md). Why each one is
+shaped the way it is: [docs/decisions/README.md](docs/decisions/README.md). What has been run
+against a server, and what it printed: [VERIFY.md](VERIFY.md).
 
 ```
 Claude Code, Hermes, OpenWebUI, lumberroom CLI ──── static bearer token ────┐
@@ -156,7 +192,7 @@ Full runbook, including the Oracle Always Free specifics and the key-encryption 
 
 ## The ten tools
 
-Signatures are additive. Later phases extended them; nothing was renamed.
+Signatures are additive. They have gained arguments and never lost one, and nothing was renamed.
 
 Every tool sits behind one grant, and `src/mcp/capability.rs` holds the single table that decides
 which. `tools/list` filters on it, so a model never sees a tool its credential cannot call, and the
@@ -208,7 +244,7 @@ restatement; the model in the conversation is the only party that can.
 A grant is now a namespace glob paired with a sensitivity ceiling, on each of the read and write
 axes. `{"namespace": "project:*", "max": "private"}` grants every project namespace up to
 `private`. A bare string is still a valid grant and deserialises to a ceiling of `open`, which is
-what kept every Phase 1 grant valid when the axis landed: a grant written before sensitivity
+what kept every older grant valid when the axis landed: a grant written before sensitivity
 existed gains no reach over content that did not exist when it was written. Two
 patterns matching one namespace resolve to the more generous ceiling, because being granted both is
 being granted both.
@@ -301,7 +337,7 @@ totals: 34 calls, 0 failed, unprompted 9 (0.265)
   memory_write          7 calls     4 unprompted  p50 184ms p95 197ms  [claude-code-mac]
 ```
 
-Those latencies are Phase 1 observations on an all-open store. A store holding private rows pays a
+Those latencies were observed on an early all-open store holding tens of rows. A store holding private rows pays a
 ciphertext round trip on any read that returns one and a sealed-count query for a client whose
 ceiling reaches `sealed`, and neither has been measured.
 
@@ -343,16 +379,16 @@ integration suite can reach the database. It uses its own `lumberroom_rust_test`
 embedder, so it downloads nothing. It skips rather than fails when no database is
 reachable, and the tests serialise themselves on a Postgres advisory lock because each one
 truncates that database. The lock crosses processes, which an in-process mutex does not, and six
-test binaries are six processes. The last observed count was 774 in the server crate and 305 in the
-client, 0 failures, on 22 August 2026. It moves with every phase, so run the suite and read the last
-line rather than trusting that figure.
+test binaries are six processes. The last observed count was 863 in the server crate and 333 in the
+client, 0 failures, on 23 August 2026. It moves with every change, so run the suite and read the
+last line rather than trusting that figure.
 
 ---
 
 ## What is not built yet
 
-Six of the seven surfaces are unconnected, which is the largest gap and the one everything else
-waits on. Beyond that:
+The OAuth wire protocol has a gate and the browser and mobile clients that depend on it have none,
+which is the largest gap. Beyond that:
 
 - **0.97 is still a guess.** Only the lower similarity band has a measurement behind it, the one
   that moved it from 0.85 to 0.65 ([decision 0011](docs/decisions/0011-cleanup-proposes.md)).
@@ -373,10 +409,10 @@ waits on. Beyond that:
 - **A grant change leaves no audit row.** Consent overwrites the profile in place, so there is no
   record that a client used to be `narrow` and is now `full`.
 - **KEK rotation and escrow.** `KEK_ID` is written on every row so a rotation is distinguishable
-  from data loss, and nothing rewraps. Escrow is an open question the owner has not answered, and
-  losing the key makes every private row unreadable, backups included.
+  from data loss, and nothing rewraps. Escrow is an open question, and losing the key makes every
+  private row unreadable, backups included.
 
-Phases, exit criteria and the current gap analysis: [ROADMAP.md](ROADMAP.md).
+Which gates cover what, and which are still open: [VERIFY.md](VERIFY.md).
 
 ---
 
@@ -418,14 +454,14 @@ storage implementation possible. See [docs/architecture.md](docs/architecture.md
 
 | | |
 |---|---|
-| [ROADMAP.md](ROADMAP.md) | Start here: the phases, what stands where, current gaps against the system PRD |
+| [docs/architecture.md](docs/architecture.md) | Start here: the ports-and-adapters shape and where each part lives |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Building, testing, the acceptance gates, and what a pull request needs |
 | [docs/traps.md](docs/traps.md) | Findings that cost real time, and what to do instead |
 | [SECURITY.md](SECURITY.md) | Supported versions and how to report a vulnerability |
 | [DEPLOY.md](DEPLOY.md) | Runbook: the two deploy paths, the KEK, backups, troubleshooting |
 | [deploy/oauth.md](deploy/oauth.md) | The OAuth production path, per surface, with the consent screen |
 | [DECISIONS.md](DECISIONS.md) | Phase 1 decisions, the measurements behind them, departures from the PRD |
-| [VERIFY.md](VERIFY.md) | What was actually run, and what it printed |
+| [VERIFY.md](VERIFY.md) | The gates: what each checks, how to run it, and what a pass looks like |
 | [docs/prd/](docs/prd/) | The system PRD and the Phase 1 PRD |
 | [docs/specs/](docs/specs/) | Phase specifications: surfaces, policy, quality, ingestion, valid time |
 | [docs/decisions/](docs/decisions/) | Numbered records of choices that shape the build |
