@@ -378,6 +378,8 @@ async fn queued(
                 rationale: rationale.into(),
                 produced_by: "qwen/qwen3.7-flash".into(),
                 similarity: Some(0.942),
+                // The in-process pass wrote this one, which is what `None` means here.
+                posted_by: None,
                 members,
             },
         )

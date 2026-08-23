@@ -67,7 +67,7 @@ use axum::Router;
 use serde::Deserialize;
 use zeroize::Zeroize;
 
-use crate::authserver::limiter::LoginLimiter;
+use crate::authserver::limiter::{self, LoginLimiter};
 use crate::authserver::session::{OwnerSession, Sessions, COOKIE_NAME};
 use crate::config::{AuthMode, Config};
 use crate::domain::errors::DomainError;
@@ -254,6 +254,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/console/cleanup/{id}/apply", post(cleanup::apply))
         .route("/console/cleanup/{id}/reject", post(cleanup::reject))
         .route("/console/cleanup/{id}/resolve", post(cleanup::resolve))
+        .route("/console/cleanup/{id}/unreject", post(cleanup::unreject))
         .route("/console/clients", get(clients::index))
         .route("/console/clients/new", post(clients::create))
         .route("/console/clients/{id}/revoke", post(clients::revoke))
@@ -330,16 +331,22 @@ async fn login(
     };
     let next = safe_next(form.next.as_deref());
 
-    let key = throttle_key(&headers, peer.map(|Extension(ConnectInfo(addr))| addr));
-    if !app.limiter.allow(&key, Instant::now()) {
+    let addr = peer.map(|Extension(ConnectInfo(addr))| addr);
+    let key = throttle_key(&headers, addr);
+    let from = peer_key(addr);
+    // Taken before the password check, not after it. The budget used to be read here and written
+    // once Argon2id and the failure delay had finished, so a burst arriving inside that window all
+    // saw it empty and all ran a hash.
+    let Some(slot) = app.limiter.reserve(&key, &from, Instant::now()) else {
         tracing::warn!(key = %key, "console login throttled");
         return page(
             StatusCode::TOO_MANY_REQUESTS,
             pages::login(&next, Some("Too many attempts. Wait a minute and try again.")),
         );
-    }
+    };
 
     let Some(hash) = app.cfg().oauth.owner_password_hash.clone() else {
+        slot.release();
         return page(
             StatusCode::INTERNAL_SERVER_ERROR,
             pages::notice(
@@ -352,11 +359,25 @@ async fn login(
         );
     };
 
-    match verify_owner_password(hash, form.password.clone().unwrap_or_default()).await {
-        Ok(true) => {}
+    // The limiter counts attempts per key, and a key is whatever the caller says it is. This counts
+    // hashes, which is the resource, and it answers rather than queueing behind the ones running.
+    let Some(work) = limiter::password_slot() else {
+        slot.release();
+        tracing::warn!(key = %key, "console login refused: every password-check slot is busy");
+        return page(
+            StatusCode::SERVICE_UNAVAILABLE,
+            pages::login(
+                &next,
+                Some("The server is busy checking another sign-in. Try again in a moment."),
+            ),
+        );
+    };
+
+    match verify_owner_password(hash, form.password.clone().unwrap_or_default(), work).await {
+        Ok(true) => slot.release(),
         Ok(false) => {
+            // The reservation is dropped rather than released, which leaves the attempt charged.
             tokio::time::sleep(LOGIN_FAILURE_DELAY).await;
-            app.limiter.record_failure(&key, Instant::now());
             tracing::warn!(key = %key, "failed console login");
             return page(
                 StatusCode::UNAUTHORIZED,
@@ -1201,11 +1222,16 @@ fn is_loopback(public_url: &str) -> bool {
 }
 
 /// Argon2 over the configured hash, off the async runtime, with the password zeroized after.
+///
+/// `work` rides into the blocking closure so the permit is held for as long as the hash memory is,
+/// rather than for as long as the caller waits for it.
 async fn verify_owner_password(
     hash: String,
     password: String,
+    work: tokio::sync::SemaphorePermit<'static>,
 ) -> crate::domain::errors::Result<bool> {
     tokio::task::spawn_blocking(move || {
+        let _work = work;
         let mut password = password;
         let parsed = PasswordHash::new(&hash).map_err(|e| {
             DomainError::internal(format!("OWNER_PASSWORD_HASH is not a valid PHC string: {e}"))
@@ -1221,7 +1247,7 @@ async fn verify_owner_password(
 }
 
 /// The throttling key. The forwarded address when there is one, because behind a proxy the peer is
-/// the proxy; the limiter's global window is what makes inventing a forwarded address pointless.
+/// the proxy; the limiter's peer window is what makes inventing a forwarded address pointless.
 fn throttle_key(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
     if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
         let first = forwarded.split(',').next().unwrap_or("").trim();
@@ -1231,6 +1257,15 @@ fn throttle_key(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
     }
     match peer {
         Some(addr) => format!("peer:{}", addr.ip()),
+        None => "unknown".to_string(),
+    }
+}
+
+/// The socket the request arrived on, which no header can change. The limiter's second window hangs
+/// off this, so a caller inventing a forwarded address per request still spends one budget.
+fn peer_key(peer: Option<SocketAddr>) -> String {
+    match peer {
+        Some(addr) => addr.ip().to_string(),
         None => "unknown".to_string(),
     }
 }

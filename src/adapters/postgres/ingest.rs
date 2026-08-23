@@ -18,17 +18,129 @@
 //! `emissions_matching` joins the probes in as arrays and applies the window in SQL. One probe
 //! against a popular fact matches many rows, and filtering after the fetch turns a bounded read
 //! into an unbounded one.
+//!
+//! The queue reads and the emission lookup carry the caller's grant as a term of the query. A
+//! proposal has no stored level, so the classification table travels in as a second set of arrays
+//! and the level its namespace classifies to is computed in SQL; an emission is checked against
+//! the stored level of the memory row it names. The grant arrays come from the cleanup adapter's
+//! `grant_arrays`, so the two adapters spell `policy::admits` the same way.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use crate::domain::errors::Result;
+use super::cleanup::grant_arrays;
+use crate::domain::errors::{DomainError, Result};
+use crate::domain::policy::NamespaceGrant;
+use crate::domain::types::Sensitivity;
 use crate::ports::ingest::{
     EmissionHit, EmissionProbe, IngestRepository, NewProposal, NewRun, Proposal, ProposalFilter,
-    ProposalSource, ProposalUpsert, RunRecord, RunTotals, Watermark, WatermarkAdvance,
+    ProposalSource, ProposalUpsert, ReadGrant, RunRecord, RunTotals, Watermark, WatermarkAdvance,
 };
+
+/// The classification table as the same three arrays a grant becomes: pattern prefix, exactness,
+/// and the level. The rules arrive longest pattern first from `SensitivityDefaults::rules`, and
+/// `WITH ORDINALITY` in the query keeps that order so the first match wins, as `for_namespace`
+/// does.
+fn level_arrays(levels: &[(String, Sensitivity)]) -> (Vec<String>, Vec<bool>, Vec<String>) {
+    let as_grants: Vec<NamespaceGrant> =
+        levels.iter().map(|(pattern, level)| NamespaceGrant::new(pattern.clone(), *level)).collect();
+    grant_arrays(&as_grants)
+}
+
+/// A proposal this caller may read. `$G` names the first of the three grant arrays and `$L` the
+/// first of the three level arrays; the two queries below substitute real numbers.
+///
+/// The level a proposal is read at is the level its namespace would be written at: the first
+/// classification rule that matches, or `open` when none does. The grant has to admit the
+/// namespace at that level. A client holding `personal:finance` at `open` therefore does not see
+/// proposals bound for it, because the row they would become is private.
+#[cfg_attr(not(test), allow(dead_code))]
+const PROPOSAL_VISIBLE_SHAPE: &str = r#"
+                AND EXISTS (
+                      SELECT 1
+                        FROM unnest($G::text[], $G1::bool[], $G2::text[]) AS g(prefix, exact, max)
+                       WHERE CASE WHEN g.exact THEN p.namespace = g.prefix
+                                  ELSE left(p.namespace, length(g.prefix)) = g.prefix END
+                         AND sensitivity_rank(g.max) >= sensitivity_rank(COALESCE((
+                               SELECT r.level
+                                 FROM unnest($L::text[], $L1::bool[], $L2::text[])
+                                      WITH ORDINALITY AS r(prefix, exact, level, ord)
+                                WHERE CASE WHEN r.exact THEN p.namespace = r.prefix
+                                           ELSE left(p.namespace, length(r.prefix)) = r.prefix END
+                                ORDER BY r.ord
+                                LIMIT 1), 'open'))
+                    )"#;
+
+const LIST_PROPOSALS_SQL: &str = r#"
+            SELECT p.id, p.fingerprint, p.content, p.namespace, p.tags, p.supersedes, p.speaker,
+                   p.quote, p.auto, p.extractor, p.posted_by, p.state, p.memory_id, p.last_error,
+                   p.last_error_at, p.decided_at, p.created_at
+              FROM ingest_proposal p
+             WHERE p.tenant_id = $1
+               AND ($2::text IS NULL OR p.state = $2)
+               AND ($3::bool IS NULL OR p.auto = $3)
+               AND ($4::text IS NULL OR p.speaker = $4)
+               AND ($5::uuid IS NULL OR EXISTS (
+                     SELECT 1 FROM ingest_proposal_source s
+                      WHERE s.proposal_id = p.id AND s.run_id = $5))
+                AND EXISTS (
+                      SELECT 1
+                        FROM unnest($7::text[], $8::bool[], $9::text[]) AS g(prefix, exact, max)
+                       WHERE CASE WHEN g.exact THEN p.namespace = g.prefix
+                                  ELSE left(p.namespace, length(g.prefix)) = g.prefix END
+                         AND sensitivity_rank(g.max) >= sensitivity_rank(COALESCE((
+                               SELECT r.level
+                                 FROM unnest($10::text[], $11::bool[], $12::text[])
+                                      WITH ORDINALITY AS r(prefix, exact, level, ord)
+                                WHERE CASE WHEN r.exact THEN p.namespace = r.prefix
+                                           ELSE left(p.namespace, length(r.prefix)) = r.prefix END
+                                ORDER BY r.ord
+                                LIMIT 1), 'open'))
+                    )
+             ORDER BY p.created_at DESC, p.id
+             LIMIT $6"#;
+
+const GET_PROPOSAL_SQL: &str = r#"
+            SELECT p.id, p.fingerprint, p.content, p.namespace, p.tags, p.supersedes, p.speaker,
+                   p.quote, p.auto, p.extractor, p.posted_by, p.state, p.memory_id, p.last_error,
+                   p.last_error_at, p.decided_at, p.created_at
+              FROM ingest_proposal p
+             WHERE p.tenant_id = $1 AND p.id = $2
+                AND EXISTS (
+                      SELECT 1
+                        FROM unnest($3::text[], $4::bool[], $5::text[]) AS g(prefix, exact, max)
+                       WHERE CASE WHEN g.exact THEN p.namespace = g.prefix
+                                  ELSE left(p.namespace, length(g.prefix)) = g.prefix END
+                         AND sensitivity_rank(g.max) >= sensitivity_rank(COALESCE((
+                               SELECT r.level
+                                 FROM unnest($6::text[], $7::bool[], $8::text[])
+                                      WITH ORDINALITY AS r(prefix, exact, level, ord)
+                                WHERE CASE WHEN r.exact THEN p.namespace = r.prefix
+                                           ELSE left(p.namespace, length(r.prefix)) = r.prefix END
+                                ORDER BY r.ord
+                                LIMIT 1), 'open'))
+                    )"#;
+
+/// The echo lookup, grant applied to the memory row each emission names.
+const EMISSIONS_MATCHING_SQL: &str = r#"
+            SELECT DISTINCT e.content_sha256, e.memory_id, e.tool, e.first_emitted_at,
+                   m.namespace, m.sensitivity
+              FROM recall_emission e
+              JOIN unnest($2::text[], $3::timestamptz[]) AS p(hash, observed_at)
+                ON e.content_sha256 = p.hash
+              JOIN memory m ON m.id = e.memory_id AND m.tenant_id = e.tenant_id
+             WHERE e.tenant_id = $1
+               AND e.first_emitted_at <= p.observed_at + make_interval(secs => $4::float8)
+               AND e.first_emitted_at >= p.observed_at - make_interval(secs => $5::float8)
+               AND EXISTS (
+                     SELECT 1
+                       FROM unnest($6::text[], $7::bool[], $8::text[]) AS g(prefix, exact, max)
+                      WHERE CASE WHEN g.exact THEN m.namespace = g.prefix
+                                 ELSE left(m.namespace, length(g.prefix)) = g.prefix END
+                        AND sensitivity_rank(m.sensitivity) <= sensitivity_rank(g.max)
+                   )"#;
 
 pub struct PgIngestRepository {
     pool: PgPool,
@@ -52,6 +164,7 @@ fn proposal_from_row(r: &sqlx::postgres::PgRow) -> Proposal {
         quote: r.get("quote"),
         auto: r.get("auto"),
         extractor: r.get("extractor"),
+        posted_by: r.get("posted_by"),
         state: r.get("state"),
         memory_id: r.get("memory_id"),
         last_error: r.get("last_error"),
@@ -214,12 +327,12 @@ impl IngestRepository for PgIngestRepository {
         let inserted = sqlx::query(
             "INSERT INTO ingest_proposal
                  (id, tenant_id, fingerprint, content, namespace, tags, supersedes, speaker,
-                  quote, auto, extractor, state)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'proposed')
+                  quote, auto, extractor, posted_by, state)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'proposed')
              ON CONFLICT (tenant_id, fingerprint) DO NOTHING
              RETURNING id, fingerprint, content, namespace, tags, supersedes, speaker, quote,
-                       auto, extractor, state, memory_id, last_error, last_error_at, decided_at,
-                       created_at",
+                       auto, extractor, posted_by, state, memory_id, last_error, last_error_at,
+                       decided_at, created_at",
         )
         .bind(Uuid::new_v4())
         .bind(tenant)
@@ -232,6 +345,7 @@ impl IngestRepository for PgIngestRepository {
         .bind(proposal.quote.as_deref())
         .bind(proposal.auto)
         .bind(&proposal.extractor)
+        .bind(&proposal.posted_by)
         .fetch_optional(&mut *tx)
         .await?;
 
@@ -240,8 +354,8 @@ impl IngestRepository for PgIngestRepository {
             None => {
                 let existing = sqlx::query(
                     "SELECT id, fingerprint, content, namespace, tags, supersedes, speaker, quote,
-                            auto, extractor, state, memory_id, last_error, last_error_at,
-                            decided_at, created_at
+                            auto, extractor, posted_by, state, memory_id, last_error,
+                            last_error_at, decided_at, created_at
                        FROM ingest_proposal
                       WHERE tenant_id = $1 AND fingerprint = $2",
                 )
@@ -285,44 +399,46 @@ impl IngestRepository for PgIngestRepository {
     /// Every filter is a null-guarded bind rather than a clause appended to a string. A `format!`
     /// here would be the one place in this codebase where a query is assembled from values.
     async fn list_proposals(&self, tenant: &str, filter: ProposalFilter) -> Result<Vec<Proposal>> {
-        let rows = sqlx::query(
-            "SELECT p.id, p.fingerprint, p.content, p.namespace, p.tags, p.supersedes, p.speaker,
-                    p.quote, p.auto, p.extractor, p.state, p.memory_id, p.last_error,
-                    p.last_error_at, p.decided_at, p.created_at
-               FROM ingest_proposal p
-              WHERE p.tenant_id = $1
-                AND ($2::text IS NULL OR p.state = $2)
-                AND ($3::bool IS NULL OR p.auto = $3)
-                AND ($4::text IS NULL OR p.speaker = $4)
-                AND ($5::uuid IS NULL OR EXISTS (
-                      SELECT 1 FROM ingest_proposal_source s
-                       WHERE s.proposal_id = p.id AND s.run_id = $5))
-              ORDER BY p.created_at DESC, p.id
-              LIMIT $6",
-        )
-        .bind(tenant)
-        .bind(filter.state.as_deref())
-        .bind(filter.auto)
-        .bind(filter.speaker.as_deref())
-        .bind(filter.run_id)
-        .bind(filter.limit.clamp(1, 1000))
-        .fetch_all(&self.pool)
-        .await?;
+        let (g_prefix, g_exact, g_max) = grant_arrays(&filter.reader.grant);
+        let (l_prefix, l_exact, l_level) = level_arrays(&filter.reader.levels);
+        let rows = sqlx::query(LIST_PROPOSALS_SQL)
+            .bind(tenant)
+            .bind(filter.state.as_deref())
+            .bind(filter.auto)
+            .bind(filter.speaker.as_deref())
+            .bind(filter.run_id)
+            .bind(filter.limit.clamp(1, 1000))
+            .bind(&g_prefix)
+            .bind(&g_exact)
+            .bind(&g_max)
+            .bind(&l_prefix)
+            .bind(&l_exact)
+            .bind(&l_level)
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows.iter().map(proposal_from_row).collect())
     }
 
-    async fn proposal(&self, tenant: &str, id: Uuid) -> Result<Option<Proposal>> {
-        let row = sqlx::query(
-            "SELECT id, fingerprint, content, namespace, tags, supersedes, speaker, quote, auto,
-                    extractor, state, memory_id, last_error, last_error_at, decided_at, created_at
-               FROM ingest_proposal
-              WHERE tenant_id = $1 AND id = $2",
-        )
-        .bind(tenant)
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
+    async fn proposal(
+        &self,
+        tenant: &str,
+        id: Uuid,
+        reader: &ReadGrant,
+    ) -> Result<Option<Proposal>> {
+        let (g_prefix, g_exact, g_max) = grant_arrays(&reader.grant);
+        let (l_prefix, l_exact, l_level) = level_arrays(&reader.levels);
+        let row = sqlx::query(GET_PROPOSAL_SQL)
+            .bind(tenant)
+            .bind(id)
+            .bind(&g_prefix)
+            .bind(&g_exact)
+            .bind(&g_max)
+            .bind(&l_prefix)
+            .bind(&l_exact)
+            .bind(&l_level)
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(row.as_ref().map(proposal_from_row))
     }
 
@@ -387,6 +503,19 @@ impl IngestRepository for PgIngestRepository {
         .execute(&self.pool)
         .await?;
         Ok(done.rows_affected() > 0)
+    }
+
+    async fn clear_text(&self, tenant: &str, id: Uuid) -> Result<()> {
+        sqlx::query(
+            "UPDATE ingest_proposal
+                SET content = '', quote = NULL
+              WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// `decided_at` stays where the rejection put it, so the queue can show what was undone.
@@ -555,45 +684,51 @@ impl IngestRepository for PgIngestRepository {
     /// store handed the content out before the transcript recorded it. The lower bound keeps a fact
     /// emitted last year out of a span written today, which would be a coincidence rather than a
     /// loop. `DISTINCT` because two probes in one batch can carry the same hash.
+    ///
+    /// The join to `memory` is what applies the grant: an emission is only a hit for a caller who
+    /// may read the row it names, at that row's stored level.
     async fn emissions_matching(
         &self,
         tenant: &str,
         probes: &[EmissionProbe],
         slack_secs: f64,
         window_secs: f64,
+        grant: &[NamespaceGrant],
     ) -> Result<Vec<EmissionHit>> {
         if probes.is_empty() {
             return Ok(vec![]);
         }
         let hashes: Vec<String> = probes.iter().map(|p| p.content_sha256.clone()).collect();
         let observed: Vec<DateTime<Utc>> = probes.iter().map(|p| p.observed_at).collect();
+        let (g_prefix, g_exact, g_max) = grant_arrays(grant);
 
-        let rows = sqlx::query(
-            "SELECT DISTINCT e.content_sha256, e.memory_id, e.tool, e.first_emitted_at
-               FROM recall_emission e
-               JOIN unnest($2::text[], $3::timestamptz[]) AS p(hash, observed_at)
-                 ON e.content_sha256 = p.hash
-              WHERE e.tenant_id = $1
-                AND e.first_emitted_at <= p.observed_at + make_interval(secs => $4::float8)
-                AND e.first_emitted_at >= p.observed_at - make_interval(secs => $5::float8)",
-        )
-        .bind(tenant)
-        .bind(&hashes)
-        .bind(&observed)
-        .bind(slack_secs)
-        .bind(window_secs)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query(EMISSIONS_MATCHING_SQL)
+            .bind(tenant)
+            .bind(&hashes)
+            .bind(&observed)
+            .bind(slack_secs)
+            .bind(window_secs)
+            .bind(&g_prefix)
+            .bind(&g_exact)
+            .bind(&g_max)
+            .fetch_all(&self.pool)
+            .await?;
 
-        Ok(rows
-            .iter()
-            .map(|r| EmissionHit {
-                content_sha256: r.get("content_sha256"),
-                memory_id: r.get("memory_id"),
-                tool: r.get("tool"),
-                first_emitted_at: r.get("first_emitted_at"),
+        rows.iter()
+            .map(|r| {
+                let level: String = r.get("sensitivity");
+                Ok(EmissionHit {
+                    content_sha256: r.get("content_sha256"),
+                    memory_id: r.get("memory_id"),
+                    namespace: r.get("namespace"),
+                    sensitivity: Sensitivity::parse(&level).ok_or_else(|| {
+                        DomainError::internal(format!("unknown sensitivity {level:?} in the store"))
+                    })?,
+                    tool: r.get("tool"),
+                    first_emitted_at: r.get("first_emitted_at"),
+                })
             })
-            .collect())
+            .collect()
     }
 }
 
@@ -604,5 +739,63 @@ fn json_or(value: serde_json::Value, fallback: serde_json::Value) -> serde_json:
     match value.is_null() {
         true => fallback,
         false => value,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shape with its placeholders filled the way each query numbers them.
+    fn shape(g: usize, l: usize) -> String {
+        PROPOSAL_VISIBLE_SHAPE
+            .replace("$G1", &format!("${}", g + 1))
+            .replace("$G2", &format!("${}", g + 2))
+            .replace("$G", &format!("${g}"))
+            .replace("$L1", &format!("${}", l + 1))
+            .replace("$L2", &format!("${}", l + 2))
+            .replace("$L", &format!("${l}"))
+    }
+
+    #[test]
+    fn both_queue_reads_carry_the_same_visibility_rule() {
+        // Two copies of the predicate that decides which proposals a caller sees. One edited and
+        // one not is silent: the list keeps working and the single read starts answering ids the
+        // list would never have shown.
+        assert!(LIST_PROPOSALS_SQL.contains(shape(7, 10).trim()), "list lost the visibility rule");
+        assert!(GET_PROPOSAL_SQL.contains(shape(3, 6).trim()), "get lost the visibility rule");
+    }
+
+    #[test]
+    fn a_proposal_is_read_at_the_level_its_namespace_classifies_to() {
+        // The rule the predicate has to spell: the grant's ceiling is compared against the first
+        // matching classification rule, and `open` when none matches. A predicate that compared
+        // the grant against `open` alone would show a private-bound proposal to an open grant.
+        assert!(PROPOSAL_VISIBLE_SHAPE.contains("WITH ORDINALITY"));
+        assert!(PROPOSAL_VISIBLE_SHAPE.contains("ORDER BY r.ord"));
+        assert!(PROPOSAL_VISIBLE_SHAPE.contains("LIMIT 1), 'open')"));
+        assert!(PROPOSAL_VISIBLE_SHAPE.contains("sensitivity_rank(g.max) >= sensitivity_rank("));
+    }
+
+    #[test]
+    fn the_echo_lookup_joins_the_memory_row_and_applies_the_grant_at_its_stored_level() {
+        assert!(EMISSIONS_MATCHING_SQL.contains("JOIN memory m ON m.id = e.memory_id"));
+        assert!(EMISSIONS_MATCHING_SQL
+            .contains("sensitivity_rank(m.sensitivity) <= sensitivity_rank(g.max)"));
+    }
+
+    #[test]
+    fn the_classification_rules_keep_their_order_as_arrays() {
+        // Longest pattern first is what makes `credentials:*` beat `*`, and the arrays have to
+        // preserve that order for `WITH ORDINALITY` to mean anything.
+        let rules = vec![
+            ("credentials:*".to_string(), Sensitivity::Sealed),
+            ("personal:finance".to_string(), Sensitivity::Private),
+            ("*".to_string(), Sensitivity::Open),
+        ];
+        let (prefix, exact, level) = level_arrays(&rules);
+        assert_eq!(prefix, vec!["credentials:", "personal:finance", ""]);
+        assert_eq!(exact, vec![false, true, false]);
+        assert_eq!(level, vec!["sealed", "private", "open"]);
     }
 }

@@ -15,40 +15,74 @@
 //! The repository arrives as an argument rather than on `Ctx`. Ingestion has no MCP tool behind it
 //! and every caller is an admin route that already holds the port, so the tool path carries no
 //! field it never reads.
+//!
+//! # `mayIngest` opens the routes and widens nothing
+//!
+//! Every read of the queue goes through the caller's grant, pushed into the query as a term, and a
+//! fact is only accepted for a namespace the caller may read at the level the fact would be
+//! written at. A client granted ingestion and `project:*` at `open` fills the queue for its
+//! projects and sees that much of it; it cannot propose into `global`, cannot list the owner's
+//! refusals elsewhere, and cannot block a fingerprint in a namespace it was never given.
 
 use chrono::{DateTime, Utc};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::Ctx;
+use crate::adapters::auth::{can_read, can_write};
+use crate::crypto::Digester;
 use crate::domain::errors::{DomainError, Result};
+use crate::domain::namespaces;
 use crate::domain::tripwire;
+use crate::domain::types::Sensitivity;
 use crate::ports::ingest::{
     EmissionHit, EmissionProbe, IngestRepository, NewProposal, NewRun, Proposal, ProposalFilter,
-    ProposalSource, ProposalState, ProposalUpsert, RunRecord, RunTotals, Watermark,
+    ProposalSource, ProposalState, ProposalUpsert, ReadGrant, RunRecord, RunTotals, Watermark,
     WatermarkAdvance,
 };
 
 /// The speaker that can auto-approve, and the only one that may carry a quote.
 pub const SPEAKER_OWNER_TYPED: &str = "owner_typed";
 
-/// Lowercase, collapse whitespace, strip terminal punctuation.
+/// The most probes one emission check answers.
 ///
-/// One normaliser, or the hashes never meet. `recall_emission.content_sha256` and
-/// `ingest_proposal.fingerprint` are this function of the same input, and a second implementation
-/// anywhere would give the echo check a hash that can never match a proposal, which is the quiet
-/// way to build an unreachable safety layer twice.
-pub fn normalise(text: &str) -> String {
-    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
-    collapsed.trim_end_matches(|c: char| matches!(c, '.' | '!' | '?' | ',' | ';' | ':')).to_string()
+/// The lookup answers one bit per probe and nothing rate-limits the admin routes, so the bound on
+/// how fast a caller can test guesses against the store is this number times the request rate.
+/// The CLI posts facts a hundred at a time; the check is sized to match rather than to the body
+/// cap, which fits thousands.
+pub const MAX_EMISSION_PROBES: usize = 200;
+
+/// The rule name a fact is refused under when its namespace sits outside the poster's grant. Rides
+/// the tripwire's refusal shape so a client that counts refusals by rule keeps working.
+pub const REFUSAL_OUTSIDE_GRANT: &str = "namespace_outside_grant";
+
+/// The rule name for a namespace the store would never accept, refused before it reaches the
+/// queue rather than at approval.
+pub const REFUSAL_INVALID_NAMESPACE: &str = "invalid_namespace";
+
+/// The rule name a fact is refused under when its supersession target does not exist or sits
+/// outside the poster's grant. One name for both, on purpose: a proposal row that names a memory
+/// holds a foreign key to it, so an insert that failed only on an unknown id would tell a
+/// mayIngest-only client which uuids are real, one probe at a time.
+pub const REFUSAL_SUPERSEDES_TARGET: &str = "supersedes_not_writable";
+
+/// The caller's grant and the classification table, for the query to apply.
+pub fn reader(ctx: &Ctx) -> ReadGrant {
+    ReadGrant {
+        grant: ctx.principal.read.clone(),
+        levels: ctx.cfg.policy.defaults.rules().to_vec(),
+    }
 }
 
-/// sha256 of the normalised text, hex. The identity of a fact, and the join between a proposal and
-/// what the store already handed out.
-pub fn fingerprint(text: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(normalise(text).as_bytes());
-    hex::encode(hasher.finalize())
+/// One normaliser, or the hashes never meet. `recall_emission.content_sha256` and
+/// `ingest_proposal.fingerprint` are `Digester::digest` of the same input, and the substring check
+/// below runs under the same normalisation so a quote that passes it is the one its fingerprint
+/// was computed under.
+pub use crate::crypto::digest::normalise;
+
+/// The identity of a fact, and the join between a proposal and what the store already handed out.
+/// `crypto::Digester::digest`, keyed under the KEK; see that module for why it is not a plain hash.
+pub async fn fingerprint(ctx: &Ctx, text: &str) -> Result<String> {
+    Ok(Digester::from_provider(ctx.keys.as_ref()).await?.digest(text))
 }
 
 /// Whether a fact may write itself.
@@ -103,7 +137,7 @@ pub enum FactOutcome {
     /// The store handed this content out before the transcript recorded it, so it is an echo. The
     /// memory is confirmed and no proposal exists.
     Confirmed { memory_id: Uuid },
-    /// The tripwire refused it before a row could exist. Rule name only.
+    /// The tripwire, or the poster's grant, refused it before a row could exist. Rule name only.
     Refused { rule: &'static str },
 }
 
@@ -138,10 +172,36 @@ pub async fn post(
         return Ok(report);
     }
 
-    // The tripwire first, and on every fact whatever its namespace. A proposal that never exists
-    // cannot be approved by mistake later.
+    // One key read for the batch. The digest is what the emission lookup below joins on, so it
+    // has to be the same keyed function search and bootstrap recorded with.
+    let digester = Digester::from_provider(ctx.keys.as_ref()).await?;
+
+    // The grant and the tripwire first, on every fact, before anything is looked up on the fact's
+    // behalf. A proposal that never exists cannot be approved by mistake later.
     let mut screened: Vec<(FactInput, String)> = Vec::with_capacity(facts.len());
-    for fact in facts {
+    for mut fact in facts {
+        // The grant's bar is read at the level the fact would be written at: a poster that could
+        // not see the row it is asking for cannot see the proposal either, and a queue entry its
+        // own poster cannot read is one nobody accountable for it can read.
+        let Ok(namespace) = namespaces::normalize(&fact.namespace) else {
+            // One bad namespace refuses one fact, not the batch. The write path would refuse it
+            // at approval anyway; refusing here keeps it out of the queue.
+            report.outcomes.push(FactOutcome::Refused { rule: REFUSAL_INVALID_NAMESPACE });
+            report.refused += 1;
+            continue;
+        };
+        fact.namespace = namespace;
+        let level = ctx.cfg.policy.defaults.for_namespace(&fact.namespace);
+        if !can_read(&ctx.principal, &fact.namespace, level) {
+            tracing::info!(
+                namespace = %fact.namespace,
+                client = %ctx.principal.client,
+                "an ingested fact named a namespace outside the poster's grant"
+            );
+            report.outcomes.push(FactOutcome::Refused { rule: REFUSAL_OUTSIDE_GRANT });
+            report.refused += 1;
+            continue;
+        }
         if ctx.cfg.policy.tripwire {
             // The quote is scanned beside the content because the quote is stored. An extractor
             // handed a clean sentence and a span holding a credential can put the sentence in
@@ -165,14 +225,36 @@ pub async fn post(
                 continue;
             }
         }
-        let hash = fingerprint(&fact.content);
+        if let Some(target) = fact.supersedes {
+            // Checked here and again at approval. Approval runs the full rule (head of chain,
+            // valid time); this pass exists because the proposal row references the target from
+            // the moment it is queued, and a row that pins a memory the poster cannot write is a
+            // row that should never have existed.
+            if !supersedes_target_writable(ctx, target).await? {
+                tracing::info!(
+                    client = %ctx.principal.client,
+                    "an ingested fact named a supersession target outside the poster's grant"
+                );
+                report.outcomes.push(FactOutcome::Refused { rule: REFUSAL_SUPERSEDES_TARGET });
+                report.refused += 1;
+                continue;
+            }
+        }
+        let hash = digester.digest(&fact.content);
         screened.push((fact, hash));
     }
 
     let hits = emission_hits(ctx, repo, &screened).await?;
 
     for (fact, hash) in screened {
-        if let Some(hit) = hits.iter().find(|h| h.content_sha256 == hash) {
+        // The lookup already applied the grant to the row each emission names. Checked again here
+        // because this is where a row gets touched on the caller's say-so, and a stamp on a row
+        // the caller cannot read is the one effect of this path that outlives the request.
+        let hit = hits
+            .iter()
+            .find(|h| h.content_sha256 == hash)
+            .filter(|h| can_read(&ctx.principal, &h.namespace, h.sensitivity));
+        if let Some(hit) = hit {
             // The store emitted this content before the transcript recorded it, so the transcript
             // is quoting the store back at itself. Repetition is confirmation, and confirm can
             // neither create a row nor change one's content: it is the same metadata touch the
@@ -183,7 +265,14 @@ pub async fn post(
             continue;
         }
 
-        let auto = qualifies_for_auto(&fact.speaker, &fact.content, fact.span_text.as_deref());
+        // Two conditions on the claim and one on the claimant. The span arrived in the same
+        // request as the content, so the substring check binds an honest extractor and nobody
+        // else; what binds a poster is whether it could have written the row itself. A client
+        // without write on the namespace gets a proposal the owner reads, never a badge that says
+        // the server vouched for it.
+        let level = ctx.cfg.policy.defaults.for_namespace(&fact.namespace);
+        let auto = qualifies_for_auto(&fact.speaker, &fact.content, fact.span_text.as_deref())
+            && can_write(&ctx.principal, &fact.namespace, level);
         let quote = match fact.speaker == SPEAKER_OWNER_TYPED {
             true => fact.quote.clone(),
             false => None,
@@ -202,6 +291,7 @@ pub async fn post(
                     quote,
                     auto,
                     extractor: extractor.to_string(),
+                    posted_by: ctx.principal.client.clone(),
                     source: fact.source.clone(),
                 },
             )
@@ -250,7 +340,31 @@ pub fn scan(texts: &[String]) -> Vec<Option<&'static str>> {
 /// The emission check as a read-only service, for `--dry-run` and the report.
 ///
 /// The same query the post path runs, so a dry run cannot disagree with what a post will do.
+/// Capped at `MAX_EMISSION_PROBES` per call: this is the one route that answers a yes or no about
+/// content the caller chose, and the cap is what bounds how fast guesses can be tested. The post
+/// path batches internally instead, because its probes are facts it is about to queue anyway.
 pub async fn check_emissions(
+    ctx: &Ctx,
+    repo: &dyn IngestRepository,
+    probes: &[EmissionProbe],
+) -> Result<Vec<EmissionHit>> {
+    if probes.len() > MAX_EMISSION_PROBES {
+        return Err(DomainError::validation(format!(
+            "at most {MAX_EMISSION_PROBES} probes per check, got {}",
+            probes.len()
+        )));
+    }
+    lookup_emissions(ctx, repo, probes).await
+}
+
+/// Whether each probe is an echo, in probe order. What the HTTP route answers, and all it answers:
+/// a hit carries the id and namespace of a row, and those belong to the row's readers rather than
+/// to whoever guessed its text.
+pub fn echoes(probes: &[EmissionProbe], hits: &[EmissionHit]) -> Vec<bool> {
+    probes.iter().map(|p| hits.iter().any(|h| h.content_sha256 == p.content_sha256)).collect()
+}
+
+async fn lookup_emissions(
     ctx: &Ctx,
     repo: &dyn IngestRepository,
     probes: &[EmissionProbe],
@@ -260,6 +374,7 @@ pub async fn check_emissions(
         probes,
         ctx.cfg.ingest.emission_slack_secs,
         ctx.cfg.ingest.emission_window_secs(),
+        &ctx.principal.read,
     )
     .await
 }
@@ -280,7 +395,7 @@ pub async fn record_emission(
 ) -> Result<()> {
     repo.record_emission(
         ctx.tenant(),
-        &fingerprint(content),
+        &fingerprint(ctx, content).await?,
         memory_id,
         tool,
         ctx.session_id.as_deref(),
@@ -343,7 +458,7 @@ pub async fn approve(
     id: Uuid,
 ) -> Result<ApproveOutcome> {
     let proposal = repo
-        .proposal(ctx.tenant(), id)
+        .proposal(ctx.tenant(), id, &reader(ctx))
         .await?
         .ok_or_else(|| DomainError::not_found(format!("proposal {id} does not exist")))?;
 
@@ -491,6 +606,7 @@ pub async fn approve_auto(
                 run_id: Some(run_id),
                 auto: Some(true),
                 limit: 1000,
+                reader: reader(ctx),
                 ..Default::default()
             },
         )
@@ -499,27 +615,37 @@ pub async fn approve_auto(
     approve_all(ctx, repo, &ids).await
 }
 
+/// The queue as this caller may read it. The grant replaces whatever the filter carried: a caller
+/// does not get to name its own reader.
 pub async fn list(
     ctx: &Ctx,
     repo: &dyn IngestRepository,
     filter: ProposalFilter,
 ) -> Result<Vec<Proposal>> {
+    let filter = ProposalFilter { reader: reader(ctx), ..filter };
     repo.list_proposals(ctx.tenant(), filter).await
 }
 
 /// One proposal with every source that stated it, which is what makes "have I already counted this"
 /// an exact answer rather than a similarity guess.
+///
+/// An id outside the grant answers the same `not_found` as one that does not exist. The sources
+/// name transcript files on disk, and they are read only once the proposal itself has passed.
 pub async fn show(
     ctx: &Ctx,
     repo: &dyn IngestRepository,
     id: Uuid,
 ) -> Result<(Proposal, Vec<ProposalSource>)> {
-    let proposal = repo
-        .proposal(ctx.tenant(), id)
-        .await?
-        .ok_or_else(|| DomainError::not_found(format!("proposal {id} does not exist")))?;
+    let proposal = visible(ctx, repo, id).await?;
     let sources = repo.proposal_sources(ctx.tenant(), id).await?;
     Ok((proposal, sources))
+}
+
+/// The proposal, if this caller may read it. One error for "missing" and for "not yours".
+async fn visible(ctx: &Ctx, repo: &dyn IngestRepository, id: Uuid) -> Result<Proposal> {
+    repo.proposal(ctx.tenant(), id, &reader(ctx))
+        .await?
+        .ok_or_else(|| DomainError::not_found(format!("proposal {id} does not exist")))
 }
 
 /// The strongest speaker across a proposal's sources, with the quote that came with it.
@@ -544,20 +670,34 @@ fn speaker_rank(speaker: &str) -> u8 {
 
 /// Reject a proposal. The reason is logged rather than stored: the schema has no column for it, and
 /// inventing one here would put the queue's shape out of step with the spec.
+///
+/// Inside the grant only. A rejection blocks its fingerprint for good, so a client that could
+/// reject in a namespace it cannot read could keep a fact out of that namespace forever.
 pub async fn reject(
     ctx: &Ctx,
     repo: &dyn IngestRepository,
     id: Uuid,
     reason: Option<&str>,
 ) -> Result<bool> {
+    let proposal = visible(ctx, repo, id).await?;
     let done = repo.reject(ctx.tenant(), id).await?;
     if done {
         tracing::info!(proposal = %id, reason = reason.unwrap_or(""), "proposal rejected");
+        // A rejection keeps the fingerprint and needs nothing else: the Blocked branch of `post`
+        // reads state alone, and `unreject` returns a row the owner then re-reads from its
+        // sources. For a namespace that would have sealed the fact, leaving the sentence in the
+        // queue table stores in the clear the one thing the owner just refused to store at all.
+        // Migration 000018's trigger covers the written and forgotten cases; it cannot see this
+        // one, because the level of a namespace is resolved here and not in SQL.
+        if ctx.cfg.policy.defaults.for_namespace(&proposal.namespace) > Sensitivity::Open {
+            repo.clear_text(ctx.tenant(), id).await?;
+        }
     }
     Ok(done)
 }
 
 pub async fn unreject(ctx: &Ctx, repo: &dyn IngestRepository, id: Uuid) -> Result<bool> {
+    visible(ctx, repo, id).await?;
     repo.unreject(ctx.tenant(), id).await
 }
 
@@ -705,8 +845,8 @@ pub async fn run_report(
     repo.run(ctx.tenant(), id).await
 }
 
-/// Build the probes and ask once. A per-fact query would turn a batch of three hundred into three
-/// hundred round trips for a check that hits almost never.
+/// Build the probes and ask in batches of the cap. A per-fact query would turn a batch of three
+/// hundred into three hundred round trips for a check that hits almost never.
 async fn emission_hits(
     ctx: &Ctx,
     repo: &dyn IngestRepository,
@@ -723,7 +863,23 @@ async fn emission_hits(
             observed_at: fact.source.observed_at.unwrap_or_else(Utc::now),
         })
         .collect();
-    check_emissions(ctx, repo, &probes).await
+    let mut hits = Vec::new();
+    for batch in probes.chunks(MAX_EMISSION_PROBES) {
+        hits.extend(lookup_emissions(ctx, repo, batch).await?);
+    }
+    Ok(hits)
+}
+
+/// Whether the poster could retire this row itself: read and write on it at its stored level.
+///
+/// A missing row and a row outside the grant answer the same `false`. The refusal never names the
+/// target's namespace, for the reason `write::validate_supersedes` gives: saying so would tell a
+/// client that a namespace it cannot read exists.
+async fn supersedes_target_writable(ctx: &Ctx, target: Uuid) -> Result<bool> {
+    Ok(ctx.repos.memories.find_by_id(ctx.tenant(), target).await?.is_some_and(|t| {
+        can_read(&ctx.principal, &t.namespace, t.sensitivity)
+            && can_write(&ctx.principal, &t.namespace, t.sensitivity)
+    }))
 }
 
 /// Repetition is confirmation, and it is never worth failing an ingest over.
@@ -749,19 +905,6 @@ mod tests {
     #[test]
     fn interior_punctuation_survives_because_it_carries_identity() {
         assert_eq!(normalise("db.internal:5432 is the host"), "db.internal:5432 is the host");
-    }
-
-    #[test]
-    fn one_fingerprint_for_content_that_differs_only_in_shape() {
-        assert_eq!(fingerprint("Dana prefers tabs."), fingerprint("dana prefers tabs"));
-        assert_ne!(fingerprint("the port is 8787"), fingerprint("the port is 8080"));
-    }
-
-    #[test]
-    fn the_fingerprint_is_hex_sha256() {
-        let f = fingerprint("anything");
-        assert_eq!(f.len(), 64);
-        assert!(f.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -794,6 +937,34 @@ mod tests {
     #[test]
     fn a_missing_span_queues_rather_than_trusting_the_claim() {
         assert!(!qualifies_for_auto(SPEAKER_OWNER_TYPED, "the dev box runs Postgres", None));
+    }
+
+    #[test]
+    fn echoes_answer_one_bit_per_probe_in_probe_order() {
+        let probe = |hash: &str| EmissionProbe {
+            content_sha256: hash.into(),
+            observed_at: Utc::now(),
+        };
+        let hit = |hash: &str| EmissionHit {
+            content_sha256: hash.into(),
+            memory_id: Uuid::nil(),
+            namespace: "user:me".into(),
+            sensitivity: crate::domain::types::Sensitivity::Open,
+            tool: "memory_search".into(),
+            first_emitted_at: Utc::now(),
+        };
+        let probes = vec![probe("a"), probe("b"), probe("a"), probe("c")];
+        let hits = vec![hit("a"), hit("c")];
+        assert_eq!(echoes(&probes, &hits), vec![true, false, true, true]);
+        assert_eq!(echoes(&[], &hits), Vec::<bool>::new());
+    }
+
+    #[test]
+    fn the_probe_cap_is_a_small_multiple_of_the_post_batch() {
+        // The CLI posts a hundred facts per request. A cap below that would make the authoritative
+        // path batch every post; a cap in the thousands would hand a guesser the body limit.
+        assert!(MAX_EMISSION_PROBES >= 100);
+        assert!(MAX_EMISSION_PROBES <= 500);
     }
 
     #[test]

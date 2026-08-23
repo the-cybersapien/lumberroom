@@ -1,12 +1,19 @@
-//! The cleanup queue in the console: what a pass thinks the store has accumulated, and the two
-//! answers the owner gives it.
+//! The cleanup queue in the console: what a pass thinks the store has accumulated, and the answers
+//! the owner gives it.
 //!
 //! A pass reads the store as a whole, finds duplicates, paraphrases, contradictions and rows
 //! nothing has ever read, and writes a proposal. It retires nothing. This page is where the owner
-//! reads one and decides it, and both controls call the `services::cleanup` functions
-//! `lumberroom cleanup apply` and `lumberroom cleanup reject` call. Decision 0006 makes that argument
-//! for the ingest queue and it carries here unchanged: the handler holds no rule of its own, so a
-//! rule added on this surface rather than in the service cannot exist.
+//! reads one and decides it, and every control calls the `services::cleanup` function
+//! `lumberroom cleanup` calls for the same word. Decision 0006 makes that argument for the ingest
+//! queue and it carries here unchanged: the handler holds no rule of its own, so a rule added on
+//! this surface rather than in the service cannot exist.
+//!
+//! # A rejection is answerable
+//!
+//! `queue` counts a cluster it already holds as known in every state, rejected included, which is
+//! what stops an hourly pass raising the same finding every hour. It also blocks the replacement
+//! when the pass that wrote the finding was what was wrong, so the Rejected section carries one
+//! control that puts a row back at `proposed`.
 //!
 //! # A contradiction carries no Apply
 //!
@@ -46,11 +53,12 @@ use crate::domain::types::{Principal, Sensitivity};
 use crate::ports::cleanup::{Member, Proposal};
 use crate::services::cleanup as service;
 
-/// The two actions a token on this page is minted for. A token that rejects a finding must not be
+/// The acts a token on this page is minted for. A token that rejects a finding must not be
 /// spendable on the form that applies one, and the action is signed into it.
 const APPLY_ACTION: &str = "cleanup-apply";
 const REJECT_ACTION: &str = "cleanup-reject";
 const RESOLVE_ACTION: &str = "cleanup-resolve";
+const UNREJECT_ACTION: &str = "cleanup-unreject";
 
 /// How many proposals the page asks for. The service clamps at 200, and a queue longer than this
 /// is one for `lumberroom cleanup list`, which the page says.
@@ -167,7 +175,7 @@ pub async fn apply(
 
     let ctx = app.ctx_with(operator(app.owner_reader(), proposal.kind));
     match service::apply(&ctx, app.state.cleanup.as_ref(), &id).await {
-        Ok(_) => done("applied"),
+        Ok(_) => done(Outcome::Applied),
         Err(e) => refusal(&app, "that proposal was not applied", &e),
     }
 }
@@ -193,7 +201,7 @@ pub async fn resolve(
 
     let ctx = app.ctx_with(operator(app.owner_reader(), proposal.kind));
     match service::resolve(&ctx, app.state.cleanup.as_ref(), &id, &form.keep_id).await {
-        Ok(_) => done("resolved"),
+        Ok(_) => done(Outcome::Resolved),
         Err(e) => refusal(&app, "that contradiction was not resolved", &e),
     }
 }
@@ -217,8 +225,29 @@ pub async fn reject(
     )
     .await
     {
-        Ok(()) => done("rejected"),
+        Ok(()) => done(Outcome::Rejected),
         Err(e) => refusal(&app, "that proposal was not rejected", &e),
+    }
+}
+
+/// Put a refused finding back in the queue.
+///
+/// A rejection blocks the cluster in `queue` whatever state the row is in, which is what stops an
+/// hourly pass raising the same finding every hour. It also blocks the replacement when the pass
+/// that wrote the finding was itself the thing that was wrong, and the fix for that used to be a
+/// DELETE typed into psql. `services::cleanup::unreject` holds the state check.
+pub async fn unreject(
+    State(app): State<Console>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Form(form): Form<DecisionForm>,
+) -> Response {
+    if let Err(response) = decided(&app, &headers, UNREJECT_ACTION, &id, &form.csrf) {
+        return response;
+    }
+    match service::unreject(&app.ctx(), app.state.cleanup.as_ref(), &id).await {
+        Ok(()) => done(Outcome::Returned),
+        Err(e) => refusal(&app, "that finding did not return to the queue", &e),
     }
 }
 
@@ -266,9 +295,39 @@ fn missing() -> Response {
     )
 }
 
+/// What a handler asks the queue to say when the browser comes back.
+///
+/// A type rather than a string literal at each call site. `done_note` prints a closed list, and
+/// `resolve` had been redirecting with a word that list did not carry since it shipped: the
+/// contradiction settled and the page that came back said nothing about it. A variant here is a
+/// word the test iterates, so the next handler cannot repeat that.
+#[derive(Clone, Copy)]
+enum Outcome {
+    Applied,
+    Resolved,
+    Rejected,
+    Returned,
+}
+
+impl Outcome {
+    /// Read only by the test that checks `done_note` has a line for every one of them.
+    #[cfg(test)]
+    const ALL: [Outcome; 4] =
+        [Outcome::Applied, Outcome::Resolved, Outcome::Rejected, Outcome::Returned];
+
+    fn word(self) -> &'static str {
+        match self {
+            Outcome::Applied => "applied",
+            Outcome::Resolved => "resolved",
+            Outcome::Rejected => "rejected",
+            Outcome::Returned => "returned",
+        }
+    }
+}
+
 /// Back to the queue with one word saying what happened. 303, so a refresh does not decide twice.
-fn done(outcome: &str) -> Response {
-    redirect(&format!("/console/cleanup?done={outcome}"))
+fn done(outcome: Outcome) -> Response {
+    redirect(&format!("/console/cleanup?done={}", outcome.word()))
 }
 
 // ---- the page ----
@@ -301,15 +360,16 @@ it finds lands here.</p><code>lumberroom cleanup run</code></div>"
             "undecided. Apply carries the finding out through the same path the command line uses; \
              reject keeps this cluster out of the queue for good.",
             &waiting,
-            true,
+            Acts::Decide,
             csrf,
         ));
-        out.push_str(&section("Applied", "already carried out.", &applied, false, csrf));
+        out.push_str(&section("Applied", "already carried out.", &applied, Acts::None, csrf));
         out.push_str(&section(
             "Rejected",
-            "the owner refused these, and the pass will not raise them again.",
+            "the owner refused these and the pass leaves them alone. Return one to the queue when \
+             the pass that wrote it was what was wrong.",
             &rejected,
-            false,
+            Acts::Undo,
             csrf,
         ));
         out.push_str(&section(
@@ -317,7 +377,7 @@ it finds lands here.</p><code>lumberroom cleanup run</code></div>"
             "the store answered these before anybody pressed a button, so there is nothing left to \
              decide.",
             &closed,
-            false,
+            Acts::None,
             csrf,
         ));
         out
@@ -362,11 +422,25 @@ fn counted(waiting: usize, total: usize) -> String {
     )
 }
 
+/// What a section puts under each of its findings.
+///
+/// Three states rather than a flag. A rejected finding is decided and still carries one control,
+/// and a boolean had no way to say that without offering Apply beside it.
+#[derive(Clone, Copy)]
+enum Acts {
+    /// Waiting: apply or keep a row, then reject.
+    Decide,
+    /// Rejected: what it says, and the one button that takes it back.
+    Undo,
+    /// Applied or closed: what happened, and nothing to press.
+    None,
+}
+
 fn section(
     title: &str,
     lede: &str,
     rows: &[&Proposal],
-    controls: bool,
+    acts: Acts,
     csrf: &dyn Fn(&str, &str) -> String,
 ) -> String {
     if rows.is_empty() {
@@ -377,23 +451,36 @@ fn section(
         title = escape(title),
         n = rows.len(),
         lede = escape(lede),
-        rows = rows.iter().map(|p| proposal_html(p, controls, csrf)).collect::<String>(),
+        rows = rows.iter().map(|p| proposal_html(p, acts, csrf)).collect::<String>(),
     )
 }
 
 /// One finding: what it claims, what produced it, every row it is about, and the controls.
-fn proposal_html(p: &Proposal, controls: bool, csrf: &dyn Fn(&str, &str) -> String) -> String {
+fn proposal_html(p: &Proposal, acts: Acts, csrf: &dyn Fn(&str, &str) -> String) -> String {
     let members: String = p.members.iter().map(member_html).collect();
-    let acts = if controls { controls_html(p, csrf) } else { decided_html(p) };
+    let acts = match acts {
+        Acts::Decide => controls_html(p, csrf),
+        Acts::Undo => format!("{}{}", decided_html(p), undo_html(p, csrf)),
+        Acts::None => decided_html(p),
+    };
+    // `produced_by` names a model, and whoever wrote the row chose that string. It means one thing
+    // when this server's own pass produced the finding and another when a client posted it, so the
+    // poster goes beside the claim rather than leaving the two indistinguishable.
+    let by = match &p.posted_by {
+        Some(client) => {
+            format!("via {} &middot; posted by {}", escape(&p.produced_by), escape(client))
+        }
+        None => format!("via {} &middot; this server's own pass", escape(&p.produced_by)),
+    };
     format!(
         "<article class=\"cl-item\"><div class=\"cl-meta\">\
 <span class=\"cl-kind\">{kind}</span><span class=\"cl-sim\">{sim}</span>\
-<span class=\"cl-ns\">{namespace}</span><span class=\"cl-by\">via {by}</span></div>\
+<span class=\"cl-ns\">{namespace}</span><span class=\"cl-by\">{by}</span></div>\
 <p class=\"cl-why\">{why}</p><div class=\"cl-mems\">{members}</div>{acts}</article>",
         kind = escape(p.kind.as_str()),
         sim = escape(&similarity(p.similarity)),
         namespace = escape(&p.namespace),
-        by = escape(&p.produced_by),
+        by = by,
         why = escape(&p.rationale),
         members = members,
         acts = acts,
@@ -515,6 +602,23 @@ readable through its history.</p><div class=\"cl-keeps\">{keeps}</div>"
     )
 }
 
+/// The one control a rejected finding carries.
+///
+/// It reuses the `cl-acts` block the waiting controls sit in, so the button lands with the geometry
+/// every other button on this page has. A class here with no rule behind it draws a raw browser
+/// control jammed against the text, which is what shipped once and what
+/// `every_class_the_page_renders_has_a_rule_behind_it` now catches.
+fn undo_html(p: &Proposal, csrf: &dyn Fn(&str, &str) -> String) -> String {
+    format!(
+        "<div class=\"cl-acts\"><div class=\"cl-main\">\
+<form method=\"post\" action=\"/console/cleanup/{id}/unreject\">\
+<input type=\"hidden\" name=\"csrf\" value=\"{token}\">\
+<button type=\"submit\">Return to the queue</button></form></div></div>",
+        id = escape(&p.id),
+        token = escape(&csrf(UNREJECT_ACTION, &p.id)),
+    )
+}
+
 /// What a decided finding says instead of controls. The reason is printed because a rejection with
 /// no note is a decision nobody can evaluate a month later.
 fn decided_html(p: &Proposal) -> String {
@@ -542,7 +646,10 @@ fn done_note(done: Option<&str>) -> String {
     let line = match done.unwrap_or_default() {
         "applied" => "Applied. The rows it named moved, and a retired one is still readable through \
                       its history.",
+        "resolved" => "Resolved. The row you kept holds, and the other retired into it.",
         "rejected" => "Rejected. The pass will not raise that cluster again.",
+        "returned" => "Back in the queue, waiting like any other finding. The note about why it was \
+                       refused is gone.",
         _ => return String::new(),
     };
     format!("<p class=\"cl-done\">{}</p>", escape(line))
@@ -567,11 +674,12 @@ fn frame(title: &str, health: &Health, body: &str) -> String {
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
 <meta name=\"robots\" content=\"noindex,nofollow\">{favicon}\
-<title>{title}</title><style>{STYLE}</style></head>\n<body><div class=\"cl-doc\">\
+<title>{title}</title><style>{style}</style></head>\n<body><div class=\"cl-doc\">\
 <header class=\"cl-top\">{brand}\
 <nav class=\"cl-nav\">{nav}</nav>\
 <div class=\"cl-health{badclass}\">{line}</div></header>{body}</div></body></html>\n",
         title = escape(title),
+        style = style(),
         favicon = super::pages::FAVICON,
         brand = super::pages::BRAND,
         nav = nav(),
@@ -606,94 +714,23 @@ fn health_line(health: &Health) -> String {
 ///
 /// The custom properties sit on `.cl-doc` rather than `:root` for the same reason `aliases.rs` puts
 /// its own on `.al-doc`: a merged copy must not fight the block that file already declares.
-const STYLE: &str = "\
-html,body{background:#faf7f1;margin:0}
-.cl-doc{--paper:#faf7f1;--paper-2:#f4efe5;--paper-3:#efe8da;--ink:#211c17;--ink-2:#4a423a;
- --ink-3:#6b6258;--rule:#ddd4c4;--rule-2:#c3b7a2;--rule-3:#9a8d78;--pencil:#a3341f;
- --pencil-bg:#fbeee9;--blue:#1c4f8f;--green:#2c5f34;
- --serif:\"Iowan Old Style\",\"Palatino Linotype\",Palatino,\"Book Antiqua\",Georgia,\"Times New Roman\",serif;
- --sans:system-ui,-apple-system,\"Segoe UI\",Roboto,\"Helvetica Neue\",Arial,sans-serif;
- --mono:ui-monospace,\"SF Mono\",Menlo,Consolas,\"Liberation Mono\",monospace;
- background:var(--paper);color:var(--ink);font:400 15px/1.5 var(--sans)}
-.cl-doc *{box-sizing:border-box;margin:0;padding:0}
-.cl-doc :focus-visible{outline:2px solid var(--blue);outline-offset:2px}
-.cl-doc a{color:inherit}
-.cl-top{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:8px 24px;
- border-bottom:1px solid var(--rule-2);background:var(--paper-2)}
-.brand{display:flex;align-items:center;gap:8px;text-decoration:none;color:inherit}
-.brand img{display:block;width:24px;height:24px}
-.brand span{font:600 15px/1 var(--serif)}
-.brand em{font-style:normal;font:400 11px/1 var(--sans);color:var(--ink-3);
- text-transform:uppercase;letter-spacing:.1em;margin-left:8px}
-.cl-nav{display:flex;flex:1;flex-wrap:wrap}
-.cl-nav a{font:500 13px/1 var(--sans);color:var(--ink-2);text-decoration:none;padding:8px 12px;
- border-bottom:2px solid transparent}
-.cl-nav a.on{color:var(--ink);font-weight:700;border-bottom-color:var(--ink)}
-.cl-health{font:400 13px/1.4 var(--mono);color:var(--ink-3)}
-.cl-health b{color:var(--green);font-weight:600}
-.cl-health.bad b{color:var(--pencil)}
-.cl-page{padding:16px 24px 64px;max-width:1000px}
-.cl-head{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;padding-bottom:8px;
- border-bottom:2px solid var(--rule-2)}
-.cl-head h2{font:600 22px/1.15 var(--serif);letter-spacing:-.005em}
-.cl-head .when{font:400 13px/1.3 var(--sans);color:var(--ink-2)}
-.cl-lede{font:400 18px/1.6 var(--serif);color:var(--ink-2);max-width:64ch;margin-top:12px}
-.cl-bulk{margin-top:12px;max-width:64ch}
-.cl-bulk p{font:400 13px/1.55 var(--sans);color:var(--ink-3)}
-.cl-bulk code,.cl-none code{font:400 13px/1.5 var(--mono);background:var(--paper-3);
- padding:0px 4px}
-.cl-none{max-width:64ch;margin-top:24px}
-.cl-none .big{font:400 27px/1.35 var(--serif);max-width:32ch}
-.cl-none p{font:400 18px/1.6 var(--serif);color:var(--ink-2);margin:12px 0}
-.cl-sec{margin-top:32px}
-.cl-sec h3{font:700 11px/1.3 var(--sans);text-transform:uppercase;letter-spacing:.1em;
- color:var(--ink-3);padding-bottom:4px;border-bottom:1px solid var(--rule-2)}
-.cl-sec h3 span{color:var(--ink-2)}
-.cl-secline{font:400 13px/1.55 var(--sans);color:var(--ink-3);margin-top:8px;max-width:64ch}
-.cl-item{padding:12px 0;border-bottom:1px solid var(--rule)}
-.cl-meta{display:flex;gap:12px;flex-wrap:wrap;align-items:baseline}
-.cl-kind{font:700 11px/1.3 var(--sans);text-transform:uppercase;letter-spacing:.09em;
- color:var(--pencil)}
-.cl-sim{font:400 13px/1.4 var(--mono);color:var(--ink-2);font-variant-numeric:tabular-nums}
-.cl-ns{font:400 13px/1.4 var(--mono);color:var(--ink-2)}
-.cl-by{font:400 11px/1.5 var(--mono);color:var(--ink-3)}
-.cl-why{font:400 15px/1.55 var(--serif);color:var(--ink);margin-top:8px;max-width:70ch;
- overflow-wrap:anywhere}
-.cl-mems{margin-top:8px;border-left:2px solid var(--rule-2);padding-left:12px}
-.cl-mem{padding:4px 0}
-.cl-disp{font:700 11px/1.3 var(--sans);text-transform:uppercase;letter-spacing:.09em;
- color:var(--ink-3);margin-right:8px}
-.cl-id{font:400 11px/1.4 var(--mono);color:var(--blue)}
-.cl-moved{font:700 11px/1.3 var(--sans);letter-spacing:.08em;color:var(--pencil);
- background:var(--pencil-bg);padding:0px 4px;margin-left:8px}
-.cl-text{font:400 15px/1.5 var(--serif);color:var(--ink-2);margin-top:4px;max-width:70ch;
- overflow-wrap:anywhere}
-.cl-note{font:400 13px/1.55 var(--sans);color:var(--ink-2);background:var(--paper-3);
- border-left:3px solid var(--rule-3);padding:8px 12px;margin-top:12px;max-width:64ch}
-.cl-acts{display:flex;flex-direction:column;align-items:stretch;gap:12px;margin-top:16px}
-.cl-main{display:flex;gap:8px;flex-wrap:wrap}
-.cl-quiet{display:flex;gap:8px;align-items:center;padding-top:12px;border-top:1px solid var(--rule)}
-.cl-quiet input[type=text]{flex:1;max-width:32ch}
-.cl-acts form{display:flex;align-items:center;gap:8px}
-.cl-acts button{font:600 13px/1 var(--sans);padding:8px 16px;border:1px solid var(--rule-3);background:var(--paper-2);color:var(--ink-2);cursor:pointer;transition:background 160ms cubic-bezier(0.16,1,0.3,1),color 160ms cubic-bezier(0.16,1,0.3,1)}
-.cl-acts button:hover{background:var(--paper-3);color:var(--ink)}
-.cl-acts button.go{color:var(--paper);background:var(--ink);border-color:var(--ink)}
-.cl-acts button.go:hover{background:var(--ink-2)}
-.cl-acts input[type=text]{width:210px;padding:8px 8px;border:1px solid var(--rule-3);
- background:var(--paper);color:inherit;font:400 13px/1.4 var(--sans)}
-.cl-keeps{display:flex;flex-direction:column;gap:8px;margin-top:16px;max-width:70ch}
-.cl-keeps form{display:flex;align-items:baseline;gap:12px}
-.cl-keeps button{font:600 13px/1 var(--sans);padding:8px 16px;border:1px solid var(--ink);background:var(--ink);color:var(--paper);cursor:pointer;transition:background 160ms cubic-bezier(0.16,1,0.3,1)}
-.cl-keeps button:hover{background:var(--ink-2)}
-.cl-keep-text{font:400 13px/1.5 var(--serif);color:var(--ink-2);overflow-wrap:anywhere}
-.cl-state{font:400 13px/1.5 var(--mono);color:var(--ink-3);margin-top:8px}
-.cl-done{font:400 13px/1.55 var(--sans);color:var(--ink-2);background:var(--paper-3);
- border-left:3px solid var(--rule-3);padding:8px 12px;margin-top:12px;max-width:64ch}
-@media (max-width:860px){
- .cl-page{padding:12px 12px 48px}
- .cl-acts input[type=text]{width:100%}
- .cl-keeps form{flex-direction:column;align-items:flex-start;gap:4px}
-}";
+/// This screen's stylesheet. `include_str!` in a release build, read from disk on every render in
+/// a development one, so an edit to `cleanup.css` shows up on a browser refresh instead of a recompile
+/// and a restart. See the longer note in `pages.rs`.
+const STYLE: &str = include_str!("cleanup.css");
+
+#[cfg(debug_assertions)]
+fn style() -> std::borrow::Cow<'static, str> {
+    match std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/console/cleanup.css")) {
+        Ok(css) => std::borrow::Cow::Owned(css),
+        Err(_) => std::borrow::Cow::Borrowed(STYLE),
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn style() -> std::borrow::Cow<'static, str> {
+    std::borrow::Cow::Borrowed(STYLE)
+}
 
 #[cfg(test)]
 mod tests {
@@ -724,6 +761,8 @@ mod tests {
             seen_content: seen.into(),
             current_content: Some(seen.into()),
             superseded_by: None,
+            namespace: Some("user:me".into()),
+            sensitivity: Some(Sensitivity::Open),
         }
     }
 
@@ -738,6 +777,7 @@ mod tests {
             },
             rationale: "both rows say the port is 8787".into(),
             produced_by: "qwen/qwen3.7-flash".into(),
+            posted_by: None,
             similarity: Some(0.942),
             state: state.into(),
             reason: None,
@@ -862,13 +902,50 @@ mod tests {
     }
 
     #[test]
-    fn a_decided_finding_carries_no_controls_at_all() {
-        for state in ["applied", "rejected", "obsolete"] {
+    fn a_carried_out_finding_carries_no_controls_at_all() {
+        for state in ["applied", "obsolete"] {
             let html =
                 listing_html(&[proposal(CleanupKind::Paraphrase, state)], &health(), &token, None);
             assert!(!html.contains("<form"), "{state} is decided and offers no button: {html}");
             assert!(html.contains(state), "and the page says which it is");
         }
+    }
+
+    /// A rejected finding is decided and still has one way back, and exactly one.
+    ///
+    /// Apply beside it would be a second decision on a row nobody has looked at since it was
+    /// refused, which is the reason the section draws its own control rather than reusing the
+    /// waiting one.
+    #[test]
+    fn a_rejected_finding_offers_the_way_back_and_nothing_else() {
+        for kind in
+            [CleanupKind::Exact, CleanupKind::Paraphrase, CleanupKind::Contradiction, CleanupKind::Stale]
+        {
+            let html = listing_html(&[proposal(kind, "rejected")], &health(), &token, None);
+            assert_eq!(html.matches("<form").count(), 1, "{kind} draws one control: {html}");
+            assert!(html.contains("/unreject\""), "and it is the one that returns it: {html}");
+            assert!(!html.contains("/apply\""), "{kind} was refused, so there is nothing to apply");
+            assert!(!html.contains("/reject\""), "and nothing left to refuse");
+            assert!(!html.contains("/resolve\""), "a refused contradiction is not settled here");
+            assert!(html.contains("Return to the queue"));
+            assert!(html.contains("rejected"), "the page still says what happened to it");
+        }
+    }
+
+    /// The token on the way back is minted for that act and no other.
+    #[test]
+    fn the_way_back_carries_its_own_token() {
+        let html = listing_html(
+            &[proposal(CleanupKind::Paraphrase, "rejected")],
+            &health(),
+            &token,
+            None,
+        );
+        assert!(html.contains(&token(UNREJECT_ACTION, "11111111-1111-4111-8111-111111111111")));
+        assert!(
+            !html.contains(&token(REJECT_ACTION, "11111111-1111-4111-8111-111111111111")),
+            "a token minted to refuse a finding must not be sitting on the form that undoes one"
+        );
     }
 
     /// `close_answered` writes `obsolete` when the owner resolves a contradiction by hand. A page
@@ -921,6 +998,25 @@ mod tests {
         p.members[1].current_content = None;
         let html = listing_html(&[p], &health(), &token, None);
         assert!(html.contains("GONE"), "the page says in advance what the button would say after");
+    }
+
+    /// A finding written by this server's own pass and one posted over HTTP look the same on the
+    /// row, and the owner's click is what deletes memories. The page has to say which it is.
+    #[test]
+    fn a_finding_a_client_posted_names_the_client_and_one_the_server_produced_says_so() {
+        let own = listing_html(
+            &[proposal(CleanupKind::Paraphrase, "proposed")],
+            &health(),
+            &token,
+            None,
+        );
+        assert!(own.contains("this server's own pass"), "{own}");
+
+        let mut posted = proposal(CleanupKind::Paraphrase, "proposed");
+        posted.posted_by = Some("ingest-bot".into());
+        let html = listing_html(&[posted], &health(), &token, None);
+        assert!(html.contains("posted by ingest-bot"), "the poster is named: {html}");
+        assert!(!html.contains("own pass"), "and the row no longer reads as the server's own");
     }
 
     /// The rationale is a model's sentence about the owner's own rows, so it is untrusted text.
@@ -978,8 +1074,21 @@ mod tests {
         assert_eq!(counted(3, 9), "3 findings waiting of 9");
     }
 
+    /// Both halves of the closed list, and the second half is where it had already failed.
+    ///
+    /// `resolve` has redirected with `done=resolved` since it shipped and the list had no line for
+    /// it, so settling a contradiction bounced back to a page that said nothing about it. A word
+    /// the list does not know prints nothing, which is right for a hand-typed address and silent
+    /// for a handler.
     #[test]
     fn the_done_line_prints_only_words_this_file_redirected_with() {
+        for outcome in Outcome::ALL {
+            assert!(
+                !done_note(Some(outcome.word())).is_empty(),
+                "a handler redirects with {:?} and the page says nothing about it",
+                outcome.word()
+            );
+        }
         assert!(done_note(Some("applied")).contains("Applied."));
         assert!(done_note(Some("rejected")).contains("Rejected."));
         assert_eq!(done_note(Some("<script>")), "");
@@ -1033,13 +1142,17 @@ mod tests {
     }
 
     #[test]
-    fn the_two_acts_never_share_an_action_string() {
-        assert_ne!(APPLY_ACTION, REJECT_ACTION);
-        // And neither collides with the ingest queue's, which mints against the same label and the
-        // same session over uuids drawn from a different table.
-        for other in ["approve", "reject", "unreject", "write", "alias-record", "alias-forget"] {
-            assert_ne!(APPLY_ACTION, other);
-            assert_ne!(REJECT_ACTION, other);
+    fn no_two_acts_on_this_page_share_an_action_string() {
+        let mine = [APPLY_ACTION, REJECT_ACTION, RESOLVE_ACTION, UNREJECT_ACTION];
+        for (i, a) in mine.iter().enumerate() {
+            for b in &mine[i + 1..] {
+                assert_ne!(a, b, "two acts on one page minting the same label spend each other");
+            }
+            // And none collides with the ingest queue's, which mints against the same label and the
+            // same session over uuids drawn from a different table.
+            for other in ["approve", "reject", "unreject", "write", "alias-record", "alias-forget"] {
+                assert_ne!(*a, other);
+            }
         }
     }
 }

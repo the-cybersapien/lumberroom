@@ -138,7 +138,8 @@ pub fn router(state: Arc<AppState>, auth: Arc<dyn Authenticator>) -> Router {
         .route("/admin/cleanup/proposals/{id}", get(admin_cleanup_show))
         .route("/admin/cleanup/proposals/{id}/apply", post(admin_cleanup_apply))
         .route("/admin/cleanup/proposals/{id}/reject", post(admin_cleanup_reject))
-        .route("/admin/cleanup/proposals/{id}/resolve", post(admin_cleanup_resolve));
+        .route("/admin/cleanup/proposals/{id}/resolve", post(admin_cleanup_resolve))
+        .route("/admin/cleanup/proposals/{id}/unreject", post(admin_cleanup_unreject));
 
     // RFC 9728, in oauth mode as well as oidc: in oauth mode the document points at the built-in
     // server, and a hosted client reads it before it will show a login screen. Both paths, because
@@ -300,16 +301,43 @@ async fn healthz() -> impl IntoResponse {
     Json(serde_json::json!({ "ok": true, "name": SERVER_NAME, "version": SERVER_VERSION }))
 }
 
-async fn readyz(State(http): State<Http>) -> Response {
-    let mut checks = serde_json::json!({
-        "embedder": http.state.embedder.id(),
-        "embedder_degraded": http.state.degraded_embedder,
-        "auth_mode": http.state.cfg.mode_str(),
-        "kek_provider": http.state.cfg.crypto.provider.as_str(),
+/// The part of the readiness answer that needs no round trip, split out so a test can pin the key
+/// set without a database.
+///
+/// The build stamp is here rather than beside `db_ms` on purpose: a 503 body carries it too. When a
+/// container is failing, the first question is whether it is even running the code you are reading,
+/// and `docker restart` reuses the container's original image while a rebuilt one sits on disk.
+/// `scripts/deploy-check.sh` compares `build_sha` against what the caller built. `unknown` is
+/// honest and expected: a plain `cargo build` passes no stamp.
+fn static_checks(
+    embedder: &str,
+    embedder_degraded: bool,
+    auth_mode: &str,
+    kek_provider: &str,
+    kek_verified: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "embedder": embedder,
+        "embedder_degraded": embedder_degraded,
+        "auth_mode": auth_mode,
+        "kek_provider": kek_provider,
         // A server whose KEK did not verify refuses every private write and looks healthy
         // otherwise. Reported here so the refusal is visible before somebody hits it.
-        "kek_verified": http.state.kek_verified,
-    });
+        "kek_verified": kek_verified,
+        "build_sha": crate::build_info::SHA,
+        "build_tag": crate::build_info::TAG,
+        "built_at": crate::build_info::BUILT_AT,
+    })
+}
+
+async fn readyz(State(http): State<Http>) -> Response {
+    let mut checks = static_checks(
+        &http.state.embedder.id(),
+        http.state.degraded_embedder,
+        http.state.cfg.mode_str(),
+        http.state.cfg.crypto.provider.as_str(),
+        http.state.kek_verified,
+    );
 
     let started = std::time::Instant::now();
     if let Err(e) = http.state.repos.tool_calls.ping().await {
@@ -820,6 +848,9 @@ async fn admin_memory_delete(
             "deleted": outcome.count > 0,
             "count": outcome.count,
             "rows": outcome.rows,
+            "revived": outcome.revived,
+            "spliced": outcome.spliced,
+            "blocked": outcome.blocked,
         }))
         .into_response(),
         Err(e) => domain_error(&e, "delete_failed"),
@@ -1302,16 +1333,13 @@ async fn admin_ingest_scan(
 /// One candidate fact, asking whether the store handed this content out before the transcript
 /// recorded it.
 ///
-/// `content` is the field to send. The server hashes it with the same function that produces a
-/// proposal's fingerprint, which is the only reason the two can ever meet; a client that computed
-/// its own hash would be the second normaliser this layer was already built wrong by once.
-/// `content_sha256` stays accepted for a caller that already holds one.
+/// `content` is the only field to send. The server hashes it with the same function that produces
+/// a proposal's fingerprint, which is the only reason the two can ever meet; a client that computed
+/// its own hash would be the second normaliser this layer was already built wrong by once, and a
+/// caller-supplied digest is also the shape an offline guess arrives in.
 #[derive(Deserialize)]
 struct ProbeBody {
-    #[serde(default)]
-    content: Option<String>,
-    #[serde(default)]
-    content_sha256: Option<String>,
+    content: String,
     /// The source span's timestamp. The direction is the whole test, so an absent one is checked
     /// against now, which is the strictest reading available.
     #[serde(default)]
@@ -1323,32 +1351,36 @@ struct EmissionsCheck {
     probes: Vec<ProbeBody>,
 }
 
-fn probes(bodies: &[ProbeBody]) -> Result<Vec<EmissionProbe>, DomainError> {
-    bodies
+/// The probe digest is computed here from the content and never accepted from the client, through
+/// the same keyed `Digester` search and bootstrap record with. A second function would give the
+/// lookup one scheme and the store another, and the check would answer false forever.
+async fn probes(ctx: &Ctx, bodies: &[ProbeBody]) -> Result<Vec<EmissionProbe>, DomainError> {
+    if bodies.len() > ingest::MAX_EMISSION_PROBES {
+        return Err(DomainError::validation(format!(
+            "at most {} probes per check, got {}",
+            ingest::MAX_EMISSION_PROBES,
+            bodies.len()
+        )));
+    }
+    let digester = crate::crypto::Digester::from_provider(ctx.keys.as_ref()).await?;
+    Ok(bodies
         .iter()
-        .map(|b| {
-            let hash = match (&b.content, &b.content_sha256) {
-                (Some(text), _) => ingest::fingerprint(text),
-                (None, Some(hash)) => hash.trim().to_lowercase(),
-                (None, None) => {
-                    return Err(DomainError::validation(
-                        "every probe needs content, or content_sha256 when the caller already \
-                         hashed it",
-                    ))
-                }
-            };
-            Ok(EmissionProbe {
-                content_sha256: hash,
-                observed_at: b.observed_at.unwrap_or_else(chrono::Utc::now),
-            })
+        .map(|b| EmissionProbe {
+            content_sha256: digester.digest(&b.content),
+            observed_at: b.observed_at.unwrap_or_else(chrono::Utc::now),
         })
-        .collect()
+        .collect())
 }
 
 /// The read-only half of the anti-loop check, for a dry run and for the report.
 ///
 /// The authoritative check runs again inside `POST /admin/ingest/proposals`, so a client that
 /// skipped this one changes nothing.
+///
+/// Answers one boolean per probe, in probe order, and nothing else. A hit used to carry the memory
+/// id and tool of the row that matched, which told whoever guessed a sentence that the store holds
+/// it and where. The only consumer counts hits. The lookup itself runs inside the caller's grant,
+/// so an emission of a row the caller may not read is not an echo for that caller.
 async fn admin_ingest_emissions_check(
     State(http): State<Http>,
     headers: HeaderMap,
@@ -1358,12 +1390,14 @@ async fn admin_ingest_emissions_check(
         Ok(c) => c,
         Err(r) => return r,
     };
-    let probes = match probes(&body.probes) {
+    let probes = match probes(&ctx, &body.probes).await {
         Ok(p) => p,
         Err(e) => return domain_error(&e, "ingest_failed"),
     };
     match ingest::check_emissions(&ctx, http.state.ingest.as_ref(), &probes).await {
-        Ok(hits) => Json(serde_json::json!({ "hits": hits })).into_response(),
+        Ok(hits) => {
+            Json(serde_json::json!({ "echoes": ingest::echoes(&probes, &hits) })).into_response()
+        }
         Err(e) => domain_error(&e, "ingest_failed"),
     }
 }
@@ -1399,9 +1433,12 @@ struct FactBody {
     speaker: String,
     #[serde(default)]
     quote: Option<String>,
-    /// The frozen span this fact was drawn from. The server checks the substring claim against it
-    /// rather than trusting the extractor, which is why `auto` is not a field here and never will
-    /// be: a client that could set it would be approving its own writes.
+    /// The span this fact was drawn from, as the client read it. The server checks that the
+    /// content is a substring of it, which binds an honest extractor to quoting rather than
+    /// paraphrasing; it cannot bind the poster, since both strings arrive in the same request.
+    /// What binds the poster is its write grant on the namespace, and `auto` is set only when
+    /// both hold. `auto` is not a field here and never will be: a client that could set it would
+    /// be approving its own writes.
     #[serde(default)]
     span_text: Option<String>,
     source: SourceBody,
@@ -1483,6 +1520,8 @@ async fn admin_ingest_list(
         speaker: q.speaker,
         auto: q.auto,
         limit: q.limit.unwrap_or(50).clamp(1, 500),
+        // The service fills this from the credential. Nothing in the query string names a reader.
+        reader: Default::default(),
     };
     match ingest::list(&ctx, http.state.ingest.as_ref(), filter).await {
         Ok(rows) => Json(serde_json::json!({ "proposals": rows })).into_response(),
@@ -1909,6 +1948,40 @@ mod tests {
         headers.insert(SESSION_HEADER, "x".repeat(500).parse().unwrap());
         assert_eq!(session_id(&headers).0.unwrap().len(), MAX_SESSION_ID_CHARS);
     }
+
+    /// The wire contract is snake_case and scripts/deploy-check.sh reads three of these keys by
+    /// name. A rename here turns the stale-image check into a permanent warning that nobody trusts.
+    #[test]
+    fn readyz_publishes_the_build_stamp_under_the_names_deploy_check_reads() {
+        let v = static_checks("hash-32", false, "token", "none", false);
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "auth_mode",
+                "build_sha",
+                "build_tag",
+                "built_at",
+                "embedder",
+                "embedder_degraded",
+                "kek_provider",
+                "kek_verified",
+            ]
+        );
+
+        // Under `cargo test` nothing sets the stamp, so this asserts the default rather than a
+        // commit. A test that demanded a real sha would fail every local run.
+        for key in ["build_sha", "build_tag", "built_at"] {
+            assert!(v[key].is_string(), "{key} must be a string on the wire");
+            assert!(!v[key].as_str().unwrap().is_empty(), "{key} is never blank, it is 'unknown'");
+        }
+
+        // merge_ok runs over this on the 503 path too, so the stamp survives a failing ping.
+        let failed = merge_ok(static_checks("hash-32", true, "token", "none", false), false);
+        assert_eq!(failed["ok"], serde_json::json!(false));
+        assert_eq!(failed["build_sha"], serde_json::json!(crate::build_info::SHA));
+    }
 }
 
 // ---- cleanup -----------------------------------------------------------------------------------
@@ -1924,7 +1997,8 @@ mod tests {
 /// The pass, and the candidates it could not decide.
 #[derive(Deserialize)]
 struct CleanupRun {
-    /// A namespace glob. Absent means every namespace.
+    /// A namespace glob inside the caller's read grant. Absent means the whole grant, which for
+    /// the owner's own client is the whole store and for anyone else is less.
     #[serde(default)]
     namespace: Option<String>,
     /// `hourly` or `daily`. Daily is the one that looks at staleness.
@@ -1956,8 +2030,10 @@ async fn admin_cleanup_run(
         }
     };
     let limit = body.limit.unwrap_or(500).clamp(1, 5000);
-    match cleanup::run(
-        ctx.tenant(),
+    // `run_as`, never `run`. The tenant-only entry is the scheduler's and reads the whole store;
+    // this caller reads what its grant says, pushed into the query.
+    match cleanup::run_as(
+        &ctx,
         http.state.cleanup.as_ref(),
         body.namespace.as_deref(),
         &cadence,
@@ -2073,12 +2149,15 @@ async fn admin_cleanup_post(
             rationale: item.rationale,
             produced_by: item.produced_by,
             similarity: item.similarity,
+            // Set by the service from the credential; nothing in the body names the poster.
+            posted_by: None,
             members,
         };
-        // Through the service, so a proposal a model produced gets the same valid-time
-        // reconciliation the deterministic pass does. Posting straight to the repository would let
-        // the model half queue a cluster supersession refuses.
-        match cleanup::queue_checked(ctx.tenant(), http.state.cleanup.as_ref(), proposal).await {
+        // Through `queue_posted`, never `queue_checked`. The posted shape is the pass's own, and a
+        // client holding this route can fill it in by hand naming any memory id; the service
+        // resolves every member against the caller's grant before anything is queued, and then
+        // applies the same valid-time reconciliation the deterministic pass gets.
+        match cleanup::queue_posted(&ctx, http.state.cleanup.as_ref(), proposal).await {
             Ok((crate::ports::cleanup::QueueOutcome::Queued, id)) => {
                 queued += 1;
                 ids.push(id);
@@ -2143,6 +2222,26 @@ async fn admin_cleanup_reject(
     };
     match cleanup::reject(&ctx, http.state.cleanup.as_ref(), &id, body.reason.as_deref()).await {
         Ok(()) => Json(serde_json::json!({ "rejected": id })).into_response(),
+        Err(e) => domain_error(&e, "cleanup_failed"),
+    }
+}
+
+/// Return a refused finding to the queue.
+///
+/// A rejection blocks its cluster key for good, which is what makes an hourly pass safe to run
+/// hourly. It blocks the replacement too when the pass that wrote the finding was what was wrong,
+/// and the way out used to be a DELETE typed into psql.
+async fn admin_cleanup_unreject(
+    State(http): State<Http>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let ctx = match ingest_ctx(&http, &headers).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    match cleanup::unreject(&ctx, http.state.cleanup.as_ref(), &id).await {
+        Ok(()) => Json(serde_json::json!({ "unrejected": id })).into_response(),
         Err(e) => domain_error(&e, "cleanup_failed"),
     }
 }

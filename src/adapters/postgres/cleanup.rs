@@ -9,6 +9,11 @@
 //! row and one old one, and a window holding only the new one has nothing to compare it against.
 //! That case is the most common duplicate there is.
 //!
+//! **The caller's grant is a term in every candidate query.** It arrives as three parallel arrays
+//! and joins in as a table, the way the timeline walk in `memory.rs` does it, because the rows a
+//! pass may look at are the answer rather than the question and there is no namespace list to
+//! resolve the globs against beforehand. A row the caller may not read never leaves the database.
+//!
 //! **Nothing here touches the HNSW index.** Every query filters by namespace, by sensitivity and to
 //! live rows, and filtered HNSW is the trap this repository has already paid for: ten rows asked
 //! for, zero returned, forty candidates pulled and all forty filtered away, no error. A pass whose
@@ -23,6 +28,7 @@ use uuid::Uuid;
 
 use crate::domain::cleanup::{cluster_key, CleanupKind, Disposition};
 use crate::domain::errors::{DomainError, Result};
+use crate::domain::policy::NamespaceGrant;
 use crate::domain::types::Sensitivity;
 use crate::ports::cleanup::{
     Candidate, CandidatePair, CandidateQuery, CleanupRepository, Member, NewProposal, Proposal,
@@ -59,18 +65,30 @@ fn ns_bounds(namespace: Option<&str>) -> (String, bool) {
 
 /// The predicate every candidate query shares, spelled out in each of them rather than assembled.
 ///
-/// It reads: this tenant, live, in scope, at or below the ceiling, and holding readable text. It is
-/// written three times because `sqlx::query` refuses a string built at runtime, and rightly: a
-/// predicate assembled with `format!` is one edit away from carrying data. `$1` tenant, `$2`
-/// ceiling, `$3` namespace pattern, `$4` whether that pattern is exact.
+/// It reads: this tenant, live, in scope, at or below the ceiling, admitted by the grant, and
+/// holding readable text. It is written four times because `sqlx::query` refuses a string built at
+/// runtime, and rightly: a predicate assembled with `format!` is one edit away from carrying data.
+/// `$1` tenant, `$2` ceiling, `$3` namespace pattern, `$4` whether that pattern is exact, `$5` to
+/// `$7` the grant as prefix, exactness and ceiling.
 ///
 /// `content IS NOT NULL` drops sealed rows whose bytes the server cannot read. A sealed row has no
 /// plaintext to compare and no plaintext to show anyone, so it is not a cleanup candidate at all.
 ///
-/// A test at the bottom of this file asserts the three copies stay identical, because three copies
+/// A test at the bottom of this file asserts the four copies stay identical, because four copies
 /// of a security predicate is exactly the shape where one gets edited and the others do not.
 #[cfg_attr(not(test), allow(dead_code))]
 const IN_SCOPE_PREDICATE: &str = "AND ($3::text = '' OR ($4::bool AND m.namespace = $3) OR (NOT $4::bool AND m.namespace LIKE $3 || '%'))";
+
+/// `policy::admits` in SQL: some grant entry matches the namespace and its ceiling is at or above
+/// the row's stored level. Union across entries, like `policy::ceiling`. An empty grant admits
+/// nothing, which is the right reading of a caller that was granted nothing.
+#[cfg_attr(not(test), allow(dead_code))]
+const GRANT_PREDICATE: &str = r#"AND EXISTS (
+      SELECT 1 FROM unnest($5::text[], $6::bool[], $7::text[]) AS g(prefix, exact, max)
+       WHERE CASE WHEN g.exact THEN m.namespace = g.prefix
+                  ELSE left(m.namespace, length(g.prefix)) = g.prefix END
+         AND sensitivity_rank(m.sensitivity) <= sensitivity_rank(g.max)
+    )"#;
 
 /// Live rows whose normalised content is byte-identical, grouped, anchored on what changed.
 const EXACT_DUPLICATES_SQL: &str = r#"
@@ -90,22 +108,34 @@ const EXACT_DUPLICATES_SQL: &str = r#"
       END
     )
     AND ($3::text = '' OR ($4::bool AND m.namespace = $3) OR (NOT $4::bool AND m.namespace LIKE $3 || '%'))
+    AND EXISTS (
+      SELECT 1 FROM unnest($5::text[], $6::bool[], $7::text[]) AS g(prefix, exact, max)
+       WHERE CASE WHEN g.exact THEN m.namespace = g.prefix
+                  ELSE left(m.namespace, length(g.prefix)) = g.prefix END
+         AND sensitivity_rank(m.sensitivity) <= sensitivity_rank(g.max)
+    )
             ),
             -- The anchor: groups holding at least one row this run is responsible for. A group
             -- entirely older than the watermark was already proposed by an earlier run.
             touched AS (
               SELECT norm FROM scoped
-               WHERE $5::timestamptz IS NULL OR created_at >= $5
+               WHERE $8::timestamptz IS NULL OR created_at >= $8
                GROUP BY norm
             )
             SELECT s.* FROM scoped s
              WHERE s.norm IN (SELECT norm FROM touched)
                AND s.norm IN (SELECT norm FROM scoped GROUP BY norm HAVING count(*) > 1)
              ORDER BY s.norm, s.created_at
-             LIMIT $6
+             LIMIT $9
             "#;
 
 /// Live pairs within a cosine band, anchored on one side and open on the other.
+///
+/// `b.namespace = a.namespace`: a pair straddling two namespaces produced a proposal whose own
+/// `namespace` named only one of them, and the queue's grant check read that one field. Exact
+/// duplicates were already grouped per namespace by the `norm` prefix; this brings the cosine band
+/// to the same rule. The cost is that a fact restated under a second namespace is not a finding,
+/// which `docs/cleanup-schedule.md` had been promising all along.
 const SIMILAR_PAIRS_SQL: &str = r#"
             WITH scoped AS (
               SELECT m.id, m.namespace, m.sensitivity, m.content, m.created_at, m.access_count,
@@ -121,7 +151,13 @@ const SIMILAR_PAIRS_SQL: &str = r#"
         ELSE true
       END
     )
-    AND ($3::text = '' OR ($4::bool AND m.namespace = $3) OR (NOT $4::bool AND m.namespace LIKE $3 || '%')) AND m.embedding IS NOT NULL
+    AND ($3::text = '' OR ($4::bool AND m.namespace = $3) OR (NOT $4::bool AND m.namespace LIKE $3 || '%'))
+    AND EXISTS (
+      SELECT 1 FROM unnest($5::text[], $6::bool[], $7::text[]) AS g(prefix, exact, max)
+       WHERE CASE WHEN g.exact THEN m.namespace = g.prefix
+                  ELSE left(m.namespace, length(g.prefix)) = g.prefix END
+         AND sensitivity_rank(m.sensitivity) <= sensitivity_rank(g.max)
+    ) AND m.embedding IS NOT NULL
             )
             SELECT a.id AS a_id, a.namespace AS a_namespace, a.sensitivity AS a_sensitivity,
                    a.content AS a_content, a.created_at AS a_created_at,
@@ -131,11 +167,11 @@ const SIMILAR_PAIRS_SQL: &str = r#"
                    b.access_count AS b_access_count,
                    1 - (a.embedding <=> b.embedding) AS similarity
               FROM scoped a
-              JOIN scoped b ON b.id <> a.id AND a.id < b.id
-             WHERE ($5::timestamptz IS NULL OR a.created_at >= $5 OR b.created_at >= $5)
-               AND 1 - (a.embedding <=> b.embedding) >= $6
+              JOIN scoped b ON b.id <> a.id AND a.id < b.id AND b.namespace = a.namespace
+             WHERE ($8::timestamptz IS NULL OR a.created_at >= $8 OR b.created_at >= $8)
+               AND 1 - (a.embedding <=> b.embedding) >= $9
              ORDER BY similarity DESC
-             LIMIT $7
+             LIMIT $10
             "#;
 
 /// The newest live row in scope. No window: the question is what the store now holds.
@@ -153,6 +189,12 @@ const NEWEST_SQL: &str = r#"
       END
     )
     AND ($3::text = '' OR ($4::bool AND m.namespace = $3) OR (NOT $4::bool AND m.namespace LIKE $3 || '%'))
+    AND EXISTS (
+      SELECT 1 FROM unnest($5::text[], $6::bool[], $7::text[]) AS g(prefix, exact, max)
+       WHERE CASE WHEN g.exact THEN m.namespace = g.prefix
+                  ELSE left(m.namespace, length(g.prefix)) = g.prefix END
+         AND sensitivity_rank(m.sensitivity) <= sensitivity_rank(g.max)
+    )
 "#;
 
 /// Live rows nothing has read, older than the interval.
@@ -170,13 +212,126 @@ const UNREAD_SQL: &str = r#"
       END
     )
     AND ($3::text = '' OR ($4::bool AND m.namespace = $3) OR (NOT $4::bool AND m.namespace LIKE $3 || '%'))
+    AND EXISTS (
+      SELECT 1 FROM unnest($5::text[], $6::bool[], $7::text[]) AS g(prefix, exact, max)
+       WHERE CASE WHEN g.exact THEN m.namespace = g.prefix
+                  ELSE left(m.namespace, length(g.prefix)) = g.prefix END
+         AND sensitivity_rank(m.sensitivity) <= sensitivity_rank(g.max)
+    )
                AND m.access_count = 0
                AND m.last_confirmed_at IS NULL
-               AND m.created_at < now() - make_interval(days => $5::int)
+               AND m.created_at < now() - make_interval(days => $8::int)
              ORDER BY m.created_at
+             LIMIT $9
+            "#;
+
+/// A proposal this caller may read: its own namespace matched by some grant entry, and every
+/// member row readable at the level it is stored at. `$3` to `$5` are the grant arrays.
+///
+/// The member check is a NOT EXISTS over the members rather than a test on `p.namespace`, because
+/// the poster chose `p.namespace` and the members are what the proposal would act on. A member
+/// whose memory row is gone has nothing left to read and does not block; in practice the member
+/// row cascades away with the memory.
+#[cfg_attr(not(test), allow(dead_code))]
+const PROPOSAL_VISIBLE_PREDICATE: &str = r#"
+              AND EXISTS (
+                    SELECT 1 FROM unnest($3::text[], $4::bool[], $5::text[]) AS g(prefix, exact, max)
+                     WHERE CASE WHEN g.exact THEN p.namespace = g.prefix
+                                ELSE left(p.namespace, length(g.prefix)) = g.prefix END
+                  )
+              AND NOT EXISTS (
+                    SELECT 1
+                      FROM cleanup_proposal_member cm
+                      JOIN memory m ON m.id = cm.memory_id
+                     WHERE cm.proposal_id = p.id
+                       AND NOT EXISTS (
+                             SELECT 1
+                               FROM unnest($3::text[], $4::bool[], $5::text[]) AS g(prefix, exact, max)
+                              WHERE CASE WHEN g.exact THEN m.namespace = g.prefix
+                                         ELSE left(m.namespace, length(g.prefix)) = g.prefix END
+                                AND sensitivity_rank(m.sensitivity) <= sensitivity_rank(g.max)
+                           )
+                  )"#;
+
+const LIST_SQL: &str = r#"
+            SELECT p.id, p.kind, p.namespace, p.keep_id, p.rationale, p.produced_by, p.posted_by,
+                   p.similarity, p.state, p.reason, p.decided_at, p.created_at
+              FROM cleanup_proposal p
+             WHERE p.tenant_id = $1 AND ($2::text IS NULL OR p.state = $2)
+              AND EXISTS (
+                    SELECT 1 FROM unnest($3::text[], $4::bool[], $5::text[]) AS g(prefix, exact, max)
+                     WHERE CASE WHEN g.exact THEN p.namespace = g.prefix
+                                ELSE left(p.namespace, length(g.prefix)) = g.prefix END
+                  )
+              AND NOT EXISTS (
+                    SELECT 1
+                      FROM cleanup_proposal_member cm
+                      JOIN memory m ON m.id = cm.memory_id
+                     WHERE cm.proposal_id = p.id
+                       AND NOT EXISTS (
+                             SELECT 1
+                               FROM unnest($3::text[], $4::bool[], $5::text[]) AS g(prefix, exact, max)
+                              WHERE CASE WHEN g.exact THEN m.namespace = g.prefix
+                                         ELSE left(m.namespace, length(g.prefix)) = g.prefix END
+                                AND sensitivity_rank(m.sensitivity) <= sensitivity_rank(g.max)
+                           )
+                  )
+             ORDER BY p.created_at DESC
              LIMIT $6
             "#;
 
+const GET_SQL: &str = r#"
+            SELECT p.id, p.kind, p.namespace, p.keep_id, p.rationale, p.produced_by, p.posted_by,
+                   p.similarity, p.state, p.reason, p.decided_at, p.created_at
+              FROM cleanup_proposal p
+             WHERE p.tenant_id = $1 AND p.id = $2
+              AND EXISTS (
+                    SELECT 1 FROM unnest($3::text[], $4::bool[], $5::text[]) AS g(prefix, exact, max)
+                     WHERE CASE WHEN g.exact THEN p.namespace = g.prefix
+                                ELSE left(p.namespace, length(g.prefix)) = g.prefix END
+                  )
+              AND NOT EXISTS (
+                    SELECT 1
+                      FROM cleanup_proposal_member cm
+                      JOIN memory m ON m.id = cm.memory_id
+                     WHERE cm.proposal_id = p.id
+                       AND NOT EXISTS (
+                             SELECT 1
+                               FROM unnest($3::text[], $4::bool[], $5::text[]) AS g(prefix, exact, max)
+                              WHERE CASE WHEN g.exact THEN m.namespace = g.prefix
+                                         ELSE left(m.namespace, length(g.prefix)) = g.prefix END
+                                AND sensitivity_rank(m.sensitivity) <= sensitivity_rank(g.max)
+                           )
+                  )
+            "#;
+
+/// A grant as three parallel arrays: the text to compare, whether the comparison is exact, and the
+/// ceiling that pattern carries. `namespaces::matches` rewritten as something Postgres can compare:
+/// `*` is the empty prefix, a trailing star is a prefix match on what precedes it, anything else is
+/// the whole name. Trimmed and lowercased for the reason `matches` does it.
+///
+/// The memory adapter has its own copy for the timeline walk. Shared with the ingest adapter,
+/// which applies the same grant to the proposal queue and the emission lookup.
+pub(crate) fn grant_arrays(grants: &[NamespaceGrant]) -> (Vec<String>, Vec<bool>, Vec<String>) {
+    let mut prefixes = Vec::with_capacity(grants.len());
+    let mut exact = Vec::with_capacity(grants.len());
+    let mut maxima = Vec::with_capacity(grants.len());
+    for g in grants {
+        let pattern = g.namespace.trim().to_ascii_lowercase();
+        match pattern.strip_suffix('*') {
+            Some(prefix) => {
+                prefixes.push(prefix.to_string());
+                exact.push(false);
+            }
+            None => {
+                prefixes.push(pattern);
+                exact.push(true);
+            }
+        }
+        maxima.push(g.max.as_str().to_string());
+    }
+    (prefixes, exact, maxima)
+}
 
 fn candidate_from(row: &sqlx::postgres::PgRow, prefix: &str) -> Result<Candidate> {
     let id: Uuid = row.try_get(format!("{prefix}id").as_str()).map_err(map_err)?;
@@ -212,16 +367,19 @@ impl CleanupRepository for PgCleanupRepository {
         q: &CandidateQuery,
     ) -> Result<Vec<Vec<Candidate>>> {
         let (ns, exact) = ns_bounds(q.namespace.as_deref());
+        let (g_prefix, g_exact, g_max) = grant_arrays(&q.grant);
         // Normalised the way the fingerprint is: case folded, whitespace collapsed, trimmed. Two
         // rows that differ only in spacing are the same fact typed twice, and a byte comparison
         // would call them distinct and leave the pair to the cosine band, where they arrive with a
         // judgement attached that they do not need.
-        
         let rows = sqlx::query(EXACT_DUPLICATES_SQL)
             .bind(tenant)
             .bind(q.max_sensitivity.as_str())
             .bind(&ns)
             .bind(exact)
+            .bind(&g_prefix)
+            .bind(&g_exact)
+            .bind(&g_max)
             .bind(q.since)
             .bind(q.limit)
             .fetch_all(&self.pool)
@@ -254,17 +412,20 @@ impl CleanupRepository for PgCleanupRepository {
         min_similarity: f64,
     ) -> Result<Vec<CandidatePair>> {
         let (ns, exact) = ns_bounds(q.namespace.as_deref());
+        let (g_prefix, g_exact, g_max) = grant_arrays(&q.grant);
         // `<=>` is cosine distance, so similarity is 1 minus it. The join is anchored on `a` and
         // open on `b`: a is what changed, b is the whole store. a.id < b.id keeps one row per pair
         // rather than both directions, and the ORDER BY on created_at decides which is the older.
         //
         // No index hint and no HNSW. See the module comment.
-        
         let rows = sqlx::query(SIMILAR_PAIRS_SQL)
             .bind(tenant)
             .bind(q.max_sensitivity.as_str())
             .bind(&ns)
             .bind(exact)
+            .bind(&g_prefix)
+            .bind(&g_exact)
+            .bind(&g_max)
             .bind(q.since)
             .bind(min_similarity)
             .bind(q.limit)
@@ -285,14 +446,17 @@ impl CleanupRepository for PgCleanupRepository {
 
     async fn unread(&self, tenant: &str, q: &CandidateQuery, days: i64) -> Result<Vec<Candidate>> {
         let (ns, exact) = ns_bounds(q.namespace.as_deref());
+        let (g_prefix, g_exact, g_max) = grant_arrays(&q.grant);
         // No `since` here. Staleness is a property of a row growing older without being read, so
         // the rows that qualify are exactly the ones the window would exclude.
-        
         let rows = sqlx::query(UNREAD_SQL)
             .bind(tenant)
             .bind(q.max_sensitivity.as_str())
             .bind(&ns)
             .bind(exact)
+            .bind(&g_prefix)
+            .bind(&g_exact)
+            .bind(&g_max)
             .bind(i32::try_from(days).unwrap_or(i32::MAX))
             .bind(q.limit)
             .fetch_all(&self.pool)
@@ -307,11 +471,15 @@ impl CleanupRepository for PgCleanupRepository {
         q: &CandidateQuery,
     ) -> Result<Option<DateTime<Utc>>> {
         let (ns, exact) = ns_bounds(q.namespace.as_deref());
+        let (g_prefix, g_exact, g_max) = grant_arrays(&q.grant);
         let newest: Option<DateTime<Utc>> = sqlx::query_scalar(NEWEST_SQL)
             .bind(tenant)
             .bind(q.max_sensitivity.as_str())
             .bind(&ns)
             .bind(exact)
+            .bind(&g_prefix)
+            .bind(&g_exact)
+            .bind(&g_max)
             .fetch_one(&self.pool)
             .await
             .map_err(map_err)?;
@@ -330,8 +498,8 @@ impl CleanupRepository for PgCleanupRepository {
             r#"
             INSERT INTO cleanup_proposal
                    (id, tenant_id, kind, namespace, keep_id, rationale, produced_by, similarity,
-                    cluster_key)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    cluster_key, posted_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             ON CONFLICT (tenant_id, cluster_key) DO NOTHING
             RETURNING id
             "#,
@@ -345,6 +513,7 @@ impl CleanupRepository for PgCleanupRepository {
         .bind(&p.produced_by)
         .bind(p.similarity)
         .bind(&key)
+        .bind(p.posted_by.as_deref())
         .fetch_optional(&mut *tx)
         .await
         .map_err(map_err)?;
@@ -389,23 +558,24 @@ impl CleanupRepository for PgCleanupRepository {
         Ok((QueueOutcome::Queued, id.to_string()))
     }
 
-    async fn list(&self, tenant: &str, state: Option<&str>, limit: i64) -> Result<Vec<Proposal>> {
-        let rows = sqlx::query(
-            r#"
-            SELECT id, kind, namespace, keep_id, rationale, produced_by, similarity, state,
-                   reason, decided_at, created_at
-              FROM cleanup_proposal
-             WHERE tenant_id = $1 AND ($2::text IS NULL OR state = $2)
-             ORDER BY created_at DESC
-             LIMIT $3
-            "#,
-        )
-        .bind(tenant)
-        .bind(state)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(map_err)?;
+    async fn list(
+        &self,
+        tenant: &str,
+        state: Option<&str>,
+        limit: i64,
+        grant: &[NamespaceGrant],
+    ) -> Result<Vec<Proposal>> {
+        let (g_prefix, g_exact, g_max) = grant_arrays(grant);
+        let rows = sqlx::query(LIST_SQL)
+            .bind(tenant)
+            .bind(state)
+            .bind(&g_prefix)
+            .bind(&g_exact)
+            .bind(&g_max)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_err)?;
 
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -416,21 +586,23 @@ impl CleanupRepository for PgCleanupRepository {
         Ok(out)
     }
 
-    async fn get(&self, tenant: &str, id: &str) -> Result<Option<Proposal>> {
+    async fn get(
+        &self,
+        tenant: &str,
+        id: &str,
+        grant: &[NamespaceGrant],
+    ) -> Result<Option<Proposal>> {
         let Ok(uuid) = Uuid::parse_str(id) else { return Ok(None) };
-        let row = sqlx::query(
-            r#"
-            SELECT id, kind, namespace, keep_id, rationale, produced_by, similarity, state,
-                   reason, decided_at, created_at
-              FROM cleanup_proposal
-             WHERE tenant_id = $1 AND id = $2
-            "#,
-        )
-        .bind(tenant)
-        .bind(uuid)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(map_err)?;
+        let (g_prefix, g_exact, g_max) = grant_arrays(grant);
+        let row = sqlx::query(GET_SQL)
+            .bind(tenant)
+            .bind(uuid)
+            .bind(&g_prefix)
+            .bind(&g_exact)
+            .bind(&g_max)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(map_err)?;
 
         match row {
             None => Ok(None),
@@ -463,6 +635,30 @@ impl CleanupRepository for PgCleanupRepository {
         .bind(uuid)
         .bind(state)
         .bind(reason)
+        .execute(&self.pool)
+        .await
+        .map_err(map_err)?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    /// The way back out of `rejected`, and the only one short of deleting the row in psql.
+    ///
+    /// `decided_at` stays where the rejection put it, so the row still carries the fact that
+    /// somebody decided it once. The note goes: a finding sitting in the waiting list under a
+    /// sentence explaining why it was refused reads as one nobody has answered.
+    async fn unreject(&self, tenant: &str, id: &str) -> Result<bool> {
+        let Ok(uuid) = Uuid::parse_str(id) else { return Ok(false) };
+        // `state = 'rejected'` in the predicate for the reason `decide` puts `proposed` in its own.
+        // Two callers racing cannot both win, and a second undo is not a second decision.
+        let done = sqlx::query(
+            r#"
+            UPDATE cleanup_proposal
+               SET state = 'proposed', reason = NULL
+             WHERE tenant_id = $1 AND id = $2 AND state = 'rejected'
+            "#,
+        )
+        .bind(tenant)
+        .bind(uuid)
         .execute(&self.pool)
         .await
         .map_err(map_err)?;
@@ -587,7 +783,7 @@ impl PgCleanupRepository {
         let rows = sqlx::query(
             r#"
             SELECT cm.memory_id, cm.disposition, cm.seen_content,
-                   m.content AS current_content, m.superseded_by
+                   m.content AS current_content, m.superseded_by, m.namespace, m.sensitivity
               FROM cleanup_proposal_member cm
               LEFT JOIN memory m ON m.id = cm.memory_id
              WHERE cm.proposal_id = $1
@@ -604,6 +800,7 @@ impl PgCleanupRepository {
             let memory_id: Uuid = row.try_get("memory_id").map_err(map_err)?;
             let disposition: String = row.try_get("disposition").map_err(map_err)?;
             let superseded_by: Option<Uuid> = row.try_get("superseded_by").map_err(map_err)?;
+            let sensitivity: Option<String> = row.try_get("sensitivity").map_err(map_err)?;
             out.push(Member {
                 memory_id: memory_id.to_string(),
                 disposition: Disposition::parse(&disposition).ok_or_else(|| {
@@ -612,6 +809,8 @@ impl PgCleanupRepository {
                 seen_content: row.try_get("seen_content").map_err(map_err)?,
                 current_content: row.try_get("current_content").map_err(map_err)?,
                 superseded_by: superseded_by.map(|u| u.to_string()),
+                namespace: row.try_get("namespace").map_err(map_err)?,
+                sensitivity: sensitivity.as_deref().map(parse_sensitivity).transpose()?,
             });
         }
         Ok(out)
@@ -630,6 +829,7 @@ fn proposal_from(row: &sqlx::postgres::PgRow) -> Result<Proposal> {
         keep_id: keep_id.map(|u| u.to_string()),
         rationale: row.try_get("rationale").map_err(map_err)?,
         produced_by: row.try_get("produced_by").map_err(map_err)?,
+        posted_by: row.try_get("posted_by").map_err(map_err)?,
         similarity: row.try_get("similarity").map_err(map_err)?,
         state: row.try_get("state").map_err(map_err)?,
         reason: row.try_get("reason").map_err(map_err)?,
@@ -654,10 +854,33 @@ mod tests {
     }
 
     #[test]
-    fn no_namespace_means_every_namespace() {
-        // The empty pattern is what the SQL reads as "no scope filter". A prefix match on "" would
-        // also match everything, but only by accident, and the predicate says so explicitly.
+    fn no_namespace_means_no_scope_narrowing_and_the_grant_still_applies() {
+        // The empty pattern is what the SQL reads as "no scope filter". It is not "every
+        // namespace": the grant predicate runs beside it in every query, and a test below holds
+        // that. A prefix match on "" would also match everything, but only by accident, and the
+        // predicate says so explicitly.
         assert_eq!(ns_bounds(None), (String::new(), false));
+    }
+
+    #[test]
+    fn a_grant_becomes_three_arrays_in_the_same_order() {
+        let grants = vec![
+            NamespaceGrant::new("*", Sensitivity::Sealed),
+            NamespaceGrant::new("project:*", Sensitivity::Open),
+            NamespaceGrant::new(" User:Me ", Sensitivity::Private),
+        ];
+        let (prefix, exact, max) = grant_arrays(&grants);
+        assert_eq!(prefix, vec!["", "project:", "user:me"]);
+        assert_eq!(exact, vec![false, false, true]);
+        assert_eq!(max, vec!["sealed", "open", "private"]);
+    }
+
+    #[test]
+    fn an_empty_grant_becomes_empty_arrays_that_admit_nothing() {
+        // `EXISTS` over an empty `unnest` is false, so a caller granted nothing reads nothing.
+        // The arrays have to be empty rather than absent for that to hold.
+        let (prefix, exact, max) = grant_arrays(&[]);
+        assert!(prefix.is_empty() && exact.is_empty() && max.is_empty());
     }
 
     #[test]
@@ -666,10 +889,10 @@ mod tests {
     }
 
     #[test]
-    fn every_candidate_query_carries_the_same_scope_predicate() {
-        // Three copies of the filter that decides what a caller may see. One edited and two not is
-        // the failure this catches, and it is silent: the pass keeps working and starts reading
-        // rows it should not.
+    fn every_candidate_query_carries_the_same_scope_and_grant_predicates() {
+        // Four copies of the filter that decides what a caller may see. One edited and three not
+        // is the failure this catches, and it is silent: the pass keeps working and starts
+        // reading rows it should not.
         for (name, sql) in [
             ("exact_duplicates", EXACT_DUPLICATES_SQL),
             ("similar_pairs", SIMILAR_PAIRS_SQL),
@@ -677,6 +900,11 @@ mod tests {
             ("newest_in_scope", NEWEST_SQL),
         ] {
             assert!(sql.contains(IN_SCOPE_PREDICATE), "{name} lost the namespace scope predicate");
+            assert!(
+                sql.contains(GRANT_PREDICATE),
+                "{name} lost the grant predicate, which is what keeps a caller's run inside its \
+                 own namespaces"
+            );
             assert!(sql.contains("m.superseded_by IS NULL"), "{name} would read retired rows");
             assert!(sql.contains("m.content IS NOT NULL"), "{name} would read sealed rows");
             assert!(
@@ -706,11 +934,31 @@ mod tests {
     }
 
     #[test]
+    fn the_pair_join_stays_inside_one_namespace() {
+        // A pair across two namespaces produced a proposal whose `namespace` named one of them,
+        // and the queue's visibility check read only that field.
+        assert!(SIMILAR_PAIRS_SQL.contains("b.namespace = a.namespace"));
+    }
+
+    #[test]
+    fn both_queue_reads_refuse_a_proposal_with_a_member_outside_the_grant() {
+        // One string for the rule, so the two reads cannot drift. The member check has to be a
+        // NOT EXISTS over the members at their stored level rather than a test on the proposal's
+        // own namespace, which the poster chose.
+        for (name, sql) in [("list", LIST_SQL), ("get", GET_SQL)] {
+            assert!(sql.contains(PROPOSAL_VISIBLE_PREDICATE.trim()), "{name} lost the visibility rule");
+        }
+        assert!(PROPOSAL_VISIBLE_PREDICATE.contains("JOIN memory m ON m.id = cm.memory_id"));
+        assert!(PROPOSAL_VISIBLE_PREDICATE
+            .contains("sensitivity_rank(m.sensitivity) <= sensitivity_rank(g.max)"));
+    }
+
+    #[test]
     fn the_similar_pairs_window_leaves_one_side_open() {
         // The trap: filtering both sides makes the pass blind to a new row restating an old fact,
         // which is the most common duplicate there is.
         assert!(
-            SIMILAR_PAIRS_SQL.contains("a.created_at >= $5 OR b.created_at >= $5"),
+            SIMILAR_PAIRS_SQL.contains("a.created_at >= $8 OR b.created_at >= $8"),
             "the window has to admit a pair where only one side is new"
         );
     }
@@ -719,7 +967,7 @@ mod tests {
     fn staleness_does_not_take_the_window() {
         // A stale row qualifies by being old and unread, so a window over recent rows excludes
         // exactly the rows this query is looking for.
-        assert!(!UNREAD_SQL.contains("$5::timestamptz"));
+        assert!(!UNREAD_SQL.contains("::timestamptz"));
         assert!(UNREAD_SQL.contains("m.access_count = 0"));
     }
 }

@@ -19,6 +19,10 @@
 //! A member edited since the pass read it makes apply refuse rather than adapt.
 //!
 //! A finding the owner resolved by hand closes itself instead of sitting in the queue forever.
+//!
+//! A client granted ingestion and one namespace runs the pass, reads the queue and posts findings
+//! inside that namespace and nowhere else. The grant is a term of the candidate queries and of the
+//! queue reads, so this is the other place the SQL has to be checked.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -49,6 +53,9 @@ const TEST_KEK_ID: &str = "kek-test";
 /// owner named.
 const OWNER_TOKEN: &str = "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm";
 const INGEST_TOKEN: &str = "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii";
+/// Ingestion plus `project:*` at `open` and nothing else. The shape the console's Ingest bot preset
+/// produces once its read list is edited down, and the credential every grant test here holds.
+const NARROW_TOKEN: &str = "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn";
 
 /// A connection string with an inline password. The tripwire fires on it as
 /// `connection_string_password`, and it is the shape a transcript actually carries.
@@ -145,7 +152,8 @@ async fn setup() -> Option<Harness> {
         "AUTH_TOKENS",
         format!(
             r#"[{{"client":"mac","token":"{OWNER_TOKEN}","read":[{{"namespace":"*","max":"sealed"}}],"write":[{{"namespace":"*","max":"sealed"}}],"sealedCapable":true,"registryWrite":true}},
-                {{"client":"ingester","token":"{INGEST_TOKEN}","read":[{{"namespace":"*","max":"sealed"}}],"write":[{{"namespace":"*","max":"sealed"}}],"sealedCapable":true,"registryWrite":true,"mayIngest":true}}]"#
+                {{"client":"ingester","token":"{INGEST_TOKEN}","read":[{{"namespace":"*","max":"sealed"}}],"write":[{{"namespace":"*","max":"sealed"}}],"sealedCapable":true,"registryWrite":true,"mayIngest":true}},
+                {{"client":"narrow","token":"{NARROW_TOKEN}","read":[{{"namespace":"project:*","max":"open"}}],"write":[],"mayIngest":true}}]"#
         ),
     );
     std::env::set_var("EMBED_PROVIDER", "hash");
@@ -398,6 +406,7 @@ async fn the_similarity_window_admits_a_pair_where_only_one_side_is_new() {
     let q = CandidateQuery {
         namespace: Some("user:me".into()),
         max_sensitivity: lumberroom_server::domain::types::Sensitivity::Sealed,
+        grant: NamespaceGrant::everything(),
         since: Some(Utc::now() - chrono::Duration::days(1)),
         limit: 100,
     };
@@ -516,6 +525,7 @@ async fn a_private_row_never_reaches_the_list_handed_to_a_model() {
     let q = CandidateQuery {
         namespace: Some("personal:finance".into()),
         max_sensitivity: lumberroom_server::domain::types::Sensitivity::Sealed,
+        grant: NamespaceGrant::everything(),
         since: None,
         limit: 100,
     };
@@ -596,4 +606,281 @@ async fn a_cluster_with_no_valid_time_is_left_alone() {
     let rows = cleanup::list(&h.ctx, h.repo.as_ref(), Some("proposed"), 50).await.unwrap();
     let p = rows.iter().find(|p| p.kind == lumberroom_server::domain::cleanup::CleanupKind::Exact).unwrap();
     assert_eq!(p.keep_id.as_deref(), Some(first.as_str()), "the oldest should still survive");
+}
+
+// -- the grant, over HTTP ------------------------------------------------------------------------
+
+/// A client with ingestion and one namespace runs the pass and gets that namespace's findings.
+///
+/// Before the grant went into the query, a run with no `namespace` read every namespace at sealed
+/// and returned the text of every pair above the floor in `for_the_model`, whatever the caller was
+/// granted. The route answered 500 for a band holding a private pair and 200 otherwise, which made
+/// the floor itself readable by walking it.
+#[tokio::test]
+async fn a_narrow_client_running_the_pass_reads_nothing_outside_its_grant() {
+    let h = harness_or_skip!();
+    put_raw(&h, "user:me", "the owner's laptop is called kestrel").await;
+    put_raw(&h, "user:me", "The owner's laptop is called kestrel  ").await;
+    put_raw(&h, "user:me", "the owner's phone is on silent after ten").await;
+    let mine_a = put_raw(&h, "project:lumberroom", "the gate script is scripts/deploy-check.sh").await;
+    let mine_b = put_raw(&h, "project:lumberroom", "The gate script is scripts/deploy-check.sh").await;
+    let mine_c = put_raw(&h, "project:lumberroom", "the builder image carries g++").await;
+
+    // Floor at zero so every pair in reach lands in the model band, which is the band that leaves
+    // the machine and the one a narrow caller must not be able to widen.
+    let (status, body) = h
+        .post(
+            "/admin/cleanup/run",
+            NARROW_TOKEN,
+            serde_json::json!({ "cadence": "hourly", "min_similarity": 0.0 }),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["report"]["exact_groups"], 1, "only the project pair is in reach: {body}");
+    assert_eq!(v["report"]["queued"], 1, "{body}");
+    let pairs = v["for_the_model"].as_array().unwrap();
+    assert!(!pairs.is_empty(), "the floor at zero should put the unrelated project row in the band");
+    for pair in pairs {
+        assert_eq!(pair["namespace"], "project:lumberroom", "a pair leaked past the grant: {body}");
+        for id in [&pair["a_id"], &pair["b_id"]] {
+            let id = id.as_str().unwrap();
+            assert!(
+                id == mine_a || id == mine_b || id == mine_c,
+                "an id outside the grant was returned: {body}"
+            );
+        }
+    }
+
+    // The user:me pair was never queued, because the narrow run never saw it.
+    let outside: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM cleanup_proposal WHERE namespace = 'user:me'",
+    )
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    assert_eq!(outside, 0, "a narrow run queued a finding outside its grant");
+
+    // And a scope outside the grant is refused rather than narrowed to nothing.
+    let (status, body) = h
+        .post("/admin/cleanup/run", NARROW_TOKEN, serde_json::json!({ "namespace": "user:me" }))
+        .await;
+    assert_eq!(status, 403, "{body}");
+    let (status, body) = h
+        .post("/admin/cleanup/run", NARROW_TOKEN, serde_json::json!({ "namespace": "*" }))
+        .await;
+    assert_eq!(status, 403, "a prefix grant does not cover the whole store: {body}");
+}
+
+/// A private pair in the model band is counted and withheld. It used to fail the run with an
+/// internal error, and the exact floor at which a scope flipped from 200 to 500 was the cosine of
+/// its closest private pair.
+#[tokio::test]
+async fn a_private_pair_in_the_model_band_is_withheld_rather_than_failing_the_run() {
+    let h = harness_or_skip!();
+    put_private(&h, "personal:finance", "the mortgage renews in March").await;
+    put_private(&h, "personal:finance", "the car loan ends in June").await;
+
+    let (report, for_model) =
+        cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, Some(0.0))
+            .await
+            .expect("a private pair in the band must not fail the pass");
+    assert!(for_model.is_empty(), "a private row reached the model list: {for_model:?}");
+    assert!(report.withheld_from_model >= 1, "the withheld pair was not counted: {report:?}");
+}
+
+/// The queue reads apply the grant in the query. A proposal with a member the caller cannot read
+/// is absent from the list, and its id answers 404 from every route that takes one.
+#[tokio::test]
+async fn the_queue_shows_a_narrow_client_only_proposals_it_could_have_produced() {
+    let h = harness_or_skip!();
+    put_raw(&h, "user:me", "the backup runs at 02:00").await;
+    put_raw(&h, "user:me", "The backup runs at 02:00  ").await;
+    put_raw(&h, "project:lumberroom", "the console listens on 8787").await;
+    put_raw(&h, "project:lumberroom", "The console listens on 8787  ").await;
+    cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None).await.unwrap();
+
+    let everything = cleanup::list(&h.ctx, h.repo.as_ref(), Some("proposed"), 50).await.unwrap();
+    assert_eq!(everything.len(), 2, "the fixture should have queued one finding per namespace");
+    let theirs = everything.iter().find(|p| p.namespace == "user:me").unwrap();
+    let mine = everything.iter().find(|p| p.namespace == "project:lumberroom").unwrap();
+
+    let (status, body) = h.get("/admin/cleanup/proposals?state=proposed", NARROW_TOKEN).await;
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let ids: Vec<&str> =
+        v["proposals"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, vec![mine.id.as_str()], "{body}");
+
+    let (status, _) = h.get(&format!("/admin/cleanup/proposals/{}", theirs.id), NARROW_TOKEN).await;
+    assert_eq!(status, 404, "an id outside the grant must read as missing");
+    let (status, _) = h.get(&format!("/admin/cleanup/proposals/{}", mine.id), NARROW_TOKEN).await;
+    assert_eq!(status, 200);
+
+    for action in ["reject", "unreject", "apply"] {
+        let (status, body) = h
+            .post(
+                &format!("/admin/cleanup/proposals/{}/{action}", theirs.id),
+                NARROW_TOKEN,
+                serde_json::json!({}),
+            )
+            .await;
+        assert_eq!(status, 404, "{action} reached a proposal outside the grant: {body}");
+    }
+    let state: String = sqlx::query_scalar("SELECT state FROM cleanup_proposal WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(&theirs.id).unwrap())
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "proposed", "a refused route still decided the proposal");
+}
+
+/// A posted finding has to name rows the poster can read, in the namespace it claims, holding the
+/// text it says it saw. Anything else is refused before the queue, and a missing row and a row
+/// outside the grant are refused with the same answer.
+#[tokio::test]
+async fn a_posted_finding_cannot_name_a_row_the_poster_may_not_read() {
+    let h = harness_or_skip!();
+    let theirs = put_raw(&h, "user:me", "the owner's passport renews in 2031").await;
+    let mine_old = put_raw(&h, "project:lumberroom", "the image is built from Dockerfile").await;
+    let mine_new = put_raw(&h, "project:lumberroom", "The image is built from Dockerfile.").await;
+
+    let stale = |id: &str, namespace: &str, seen: &str| {
+        serde_json::json!({ "proposals": [{
+            "kind": "stale",
+            "namespace": namespace,
+            "rationale": "nothing has read this in the 214 days since it was written.",
+            "produced_by": "unread",
+            "members": [{ "memory_id": id, "disposition": "retire", "seen_content": seen }],
+        }] })
+    };
+
+    // The forged deletion from the report: a real id outside the grant, its exact text.
+    let (outside, body) = h
+        .post(
+            "/admin/cleanup/proposals",
+            NARROW_TOKEN,
+            stale(&theirs, "user:me", "the owner's passport renews in 2031"),
+        )
+        .await;
+    assert_eq!(outside, 404, "{body}");
+    let (missing, _) = h
+        .post(
+            "/admin/cleanup/proposals",
+            NARROW_TOKEN,
+            stale(&uuid::Uuid::new_v4().to_string(), "user:me", "anything"),
+        )
+        .await;
+    assert_eq!(missing, outside, "a missing row and a row outside the grant must answer alike");
+
+    // Inside the grant, a stale finding is a deletion and the poster holds no may_delete.
+    let (status, body) = h
+        .post(
+            "/admin/cleanup/proposals",
+            NARROW_TOKEN,
+            stale(&mine_old, "project:lumberroom", "the image is built from Dockerfile"),
+        )
+        .await;
+    assert_eq!(status, 403, "{body}");
+
+    let paraphrase = |namespace: &str, keep: &str, seen_new: &str| {
+        serde_json::json!({ "proposals": [{
+            "kind": "paraphrase",
+            "namespace": namespace,
+            "keep_id": keep,
+            "rationale": "these two say the same thing.",
+            "produced_by": "qwen/qwen3.7-flash",
+            "similarity": 0.91,
+            "members": [
+                { "memory_id": mine_new, "disposition": "keep", "seen_content": seen_new },
+                { "memory_id": mine_old, "disposition": "retire",
+                  "seen_content": "the image is built from Dockerfile" },
+            ],
+        }] })
+    };
+
+    // The namespace the item claims has to be where the members live.
+    let (status, body) = h
+        .post(
+            "/admin/cleanup/proposals",
+            NARROW_TOKEN,
+            paraphrase("project:other", &mine_new, "The image is built from Dockerfile."),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+    // And the text the poster says it saw has to be the text the row holds.
+    let (status, body) = h
+        .post(
+            "/admin/cleanup/proposals",
+            NARROW_TOKEN,
+            paraphrase("project:lumberroom", &mine_new, "something the row does not say"),
+        )
+        .await;
+    assert_eq!(status, 409, "{body}");
+    // The survivor has to be one of the cluster's own keep members.
+    let (status, body) = h
+        .post(
+            "/admin/cleanup/proposals",
+            NARROW_TOKEN,
+            paraphrase("project:lumberroom", &theirs, "The image is built from Dockerfile."),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+
+    // The honest shape queues, and the queue says who posted it.
+    let (status, body) = h
+        .post(
+            "/admin/cleanup/proposals",
+            NARROW_TOKEN,
+            paraphrase("project:lumberroom", &mine_new, "The image is built from Dockerfile."),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["queued"], 1, "{body}");
+    let id = v["ids"][0].as_str().unwrap();
+    let shown = cleanup::get(&h.ctx, h.repo.as_ref(), id).await.unwrap().unwrap();
+    assert_eq!(shown.posted_by.as_deref(), Some("narrow"));
+    assert_eq!(shown.produced_by, "qwen/qwen3.7-flash");
+
+    let forged: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM cleanup_proposal_member WHERE memory_id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(&theirs).unwrap())
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    assert_eq!(forged, 0, "a refused post still wrote a member row");
+}
+
+/// The in-process pass writes no poster, and a pair across two namespaces is not a finding.
+#[tokio::test]
+async fn the_scheduled_pass_stays_inside_one_namespace_and_names_no_poster() {
+    let h = harness_or_skip!();
+    put_raw(&h, "user:me", "the release tag is cut from main").await;
+    put_raw(&h, "project:lumberroom", "the release tag is cut from main").await;
+
+    // Two rows, one per namespace, identical text. With the floor at zero the only thing keeping
+    // them apart is the join.
+    let (report, for_model) =
+        cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, Some(0.0))
+            .await
+            .unwrap();
+    assert_eq!(report.exact_groups, 0, "exact groups are per namespace: {report:?}");
+    assert_eq!(report.queued, 0, "a cross-namespace pair was queued: {report:?}");
+    assert!(for_model.is_empty(), "a cross-namespace pair reached the model band: {for_model:?}");
+    let straddling: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM cleanup_proposal p
+           JOIN cleanup_proposal_member cm ON cm.proposal_id = p.id
+           JOIN memory m ON m.id = cm.memory_id
+          WHERE m.namespace <> p.namespace",
+    )
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    assert_eq!(straddling, 0);
+
+    let posters: Vec<Option<String>> =
+        sqlx::query_scalar("SELECT posted_by FROM cleanup_proposal").fetch_all(&h.pool).await.unwrap();
+    assert!(posters.iter().all(Option::is_none), "the in-process pass named a poster: {posters:?}");
 }

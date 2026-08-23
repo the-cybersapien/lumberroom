@@ -511,6 +511,9 @@ pub struct QueueRow {
     pub auto: bool,
     pub state: String,
     pub extractor: String,
+    /// The credential that posted the proposal. Beside `extractor` and `speaker`, which the poster
+    /// chose for itself, this is the one line of provenance the poster could not write.
+    pub posted_by: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_error: Option<String>,
 }
@@ -526,6 +529,7 @@ impl QueueRow {
             auto: p.auto,
             state: p.state.clone(),
             extractor: p.extractor.clone(),
+            posted_by: p.posted_by.clone(),
             created_at: p.created_at,
             last_error: p.last_error.clone(),
         }
@@ -550,12 +554,16 @@ impl QueueView {
 /// The proposal queue, newest first within each state.
 ///
 /// Reads through `IngestRepository` directly rather than through `Ctx.repos`, because ingestion is
-/// an operator surface `Repos` was never given a slot for. No namespace filter runs here: this
-/// reader already holds every namespace at sealed, and a proposal is pre-write content with no
-/// sensitivity of its own yet, so gating it a second time would only hide from the owner the thing
-/// this page exists to show him.
+/// an operator surface `Repos` was never given a slot for. The grant runs inside the query, as it
+/// does for every other read. This reader holds every namespace at sealed, so nothing is hidden
+/// from the owner; a narrower reader would see the proposals its grant admits at the level their
+/// namespace writes at.
 pub async fn queue(ctx: &Ctx, repo: &dyn IngestRepository) -> Result<QueueView> {
-    let filter = ProposalFilter { limit: QUEUE_LIMIT, ..ProposalFilter::default() };
+    let filter = ProposalFilter {
+        limit: QUEUE_LIMIT,
+        reader: crate::services::ingest::reader(ctx),
+        ..ProposalFilter::default()
+    };
     let rows = repo.list_proposals(ctx.tenant(), filter).await?;
 
     let mut view = QueueView::default();
@@ -699,6 +707,7 @@ mod tests {
             quote: None,
             auto: true,
             extractor: "claude-code".into(),
+            posted_by: Some("claude-code-mac".into()),
             state: state.into(),
             memory_id: None,
             last_error: None,

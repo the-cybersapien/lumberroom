@@ -179,20 +179,25 @@ fn approve_outcome_line(id: uuid::Uuid, outcome: &Result<api::ApproveOutcome>) -
     }
 }
 
-/// Ids, or a run filter with an optional speaker. The filtered form prints every row it will
-/// approve, counts them, and asks once unless `--yes`.
+/// Ids, or a run filter, optionally narrowed to the rows the server marked `auto`. The filtered
+/// form prints every row it will approve, counts them, and asks once unless `--yes`.
+///
+/// There is no `--speaker` filter here, on purpose. The speaker column is whatever the poster
+/// claimed, so `--speaker owner_typed --yes` approved in bulk on a client's say-so. `auto` is the
+/// column the server set itself, from the frozen span, the substring check and the poster's write
+/// grant, so it is the one a bulk approval can lean on.
 pub async fn approve(
     c: &Client,
     ids: &[uuid::Uuid],
     run: Option<uuid::Uuid>,
-    speaker: Option<&str>,
+    auto_only: bool,
     yes: bool,
     json: bool,
 ) -> Result<()> {
     let targets: Vec<uuid::Uuid> = if let Some(run_id) = run {
         let filter = ProposalFilter {
             run_id: Some(run_id),
-            speaker: speaker.map(str::to_string),
+            auto: if auto_only { Some(true) } else { None },
             state: Some("proposed".to_string()),
             ..Default::default()
         };
@@ -222,7 +227,7 @@ pub async fn approve(
         proposals.into_iter().map(|p| p.id).collect()
     } else {
         if ids.is_empty() {
-            return Err(err("usage: lumberroom ingest approve <id>... | --run <id> [--speaker s] [--yes]"));
+            return Err(err("usage: lumberroom ingest approve <id>... | --run <id> [--auto] [--yes]"));
         }
         ids.to_vec()
     };

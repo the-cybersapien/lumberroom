@@ -30,12 +30,14 @@ pub use ingest::{
 };
 pub use alias::{Alias, AliasRepository, NewAlias};
 pub use memory::{
-    ConflictPair, DigestData, DigestQuery, Emission, MemoryRepository, NamespaceSummary,
-    NeighbourQuery, NewMemory, RecentQuery, RegistrySummary, SearchQuery, Staleness, Timeline, Weights};
+    ChainEdits, ChainLink, ChainNeighbours, ConflictPair, DeleteOutcome, DeletePlan, DigestData,
+    DigestQuery, Emission, MemoryRepository, NamespaceSummary, NeighbourQuery, NewMemory,
+    RecentQuery, RegistrySummary, SearchQuery, Staleness, Timeline, Weights,
+};
 pub use oauth::{
     AccessTokenRecord, ClientGrantUpdate, CodeOutcome, NewAccessToken, NewAuthCode, NewOauthClient,
     NewRefreshToken, OauthClientRecord, OauthStore, RefreshOutcome,
 };
-pub use registry::{AliasOrigin, RegistryRepository, RegistryVersion, RegistryWrite};
+pub use registry::{AliasOrigin, RegistryRepository, RegistryUpsert, RegistryVersion, RegistryWrite};
 pub use sealed::SealedRepository;
 pub use tool_calls::{ClientStats, ToolCallRepository, ToolCallStats};

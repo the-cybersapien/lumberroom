@@ -40,7 +40,7 @@ run to noon. Waking on the clock keeps the schedule where you put it.
 | `CLEANUP_INTERVAL_SECS` | `3600` | seconds between in-server passes; `0` turns it off, and is the only way to |
 | `CLEANUP_NAMESPACE` | every namespace | a glob to narrow the in-server pass to |
 | `CLEANUP_LIMIT` | `500` | rows one in-server pass considers |
-| `LUMBERROOM_CLEANUP_TOKEN` | none | a client token carrying `mayIngest`; the daemon refuses at startup without it |
+| `LUMBERROOM_CLEANUP_TOKEN` | none | a client token carrying `mayIngest` and `read` at `open` over the namespaces it cleans; the daemon refuses at startup without it |
 | `CLEANUP_DAILY_AT` | `04:25` | local clock time for the model pass |
 | `CLEANUP_PROVIDER` | `openrouter` | `openrouter`, `zai`, `openai`, `anthropic` or `custom` |
 | `CLEANUP_MODEL` | `qwen/qwen3.7-flash` | the tier that decides the undecided pairs |
@@ -48,7 +48,31 @@ run to noon. Waking on the clock keeps the schedule where you put it.
 
 The provider key comes from `ZAI_API_KEY` or `OPENROUTER_API_KEY` in `.env`, passed to the container
 as `LUMBERROOM_INGEST_KEY_<PROVIDER>`. It never reaches a command line.
-[`docs/permissions.md`](permissions.md) covers what `mayIngest` opens and why it is off by default.
+
+## The daemon's grant
+
+The token in `LUMBERROOM_CLEANUP_TOKEN` carries `mayIngest` and a `read` list of the namespaces the
+daemon cleans, at `open`, and nothing else:
+
+```json
+{"client":"cleanup","token":"...","read":[{"namespace":"*","max":"open"}],"write":[],"mayIngest":true}
+```
+
+`mayIngest` opens the routes; the `read` list is what the run reads. A run with no `--namespace`
+covers the grant, a `--namespace` outside it is refused, and the server applies the grant inside
+the candidate queries rather than over the result. `open` is the right ceiling because every pair
+the daemon is handed goes to a provider, and the run withholds a pair with a side above `open`
+under any grant, so a higher ceiling buys the daemon no findings and hands the token private rows
+through every other route. The daemon never writes a memory row and never applies a finding, so it
+holds no `write` and no `mayDelete`. [`docs/permissions.md`](permissions.md) covers what `mayIngest`
+opens and why it is off by default.
+
+The ceiling also bounds the deterministic half of the daemon's run: an HTTP run groups exact and
+near-certain duplicates only among rows its grant admits, so the daemon never groups two private
+rows. The in-server pass does, unrestricted, because nothing it reads leaves the machine. Setting
+`CLEANUP_INTERVAL_SECS=0` switches that pass off and leaves private duplicates ungrouped; widen the
+daemon's ceiling only if you have done that and accept a provider-facing token that can read
+private rows.
 
 ## What a failed night looks like
 
@@ -72,9 +96,10 @@ and writes `LUMBERROOM_CLEANUP_TOKEN` into `.env`, so turning the profile on is 
 ## One project on its own cadence
 
 
-There is nothing to set up per project, on purpose. Grouping is already scoped to a namespace
-inside the query the pass runs, and one run walks every namespace, so the shared schedule already
-clusters within each project rather than across them.
+There is nothing to set up per project, on purpose. Grouping is scoped to a namespace inside the
+query the pass runs, on both the exact and the cosine side, and one run walks every namespace the
+caller's grant admits, so the shared schedule already clusters within each project rather than
+across them. A fact restated under a second namespace is not a finding.
 
 To narrow the in-server pass to one project, set `CLEANUP_NAMESPACE=project:lumberroom` and restart. To
 run one project on demand, on any cadence:

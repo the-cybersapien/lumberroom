@@ -17,6 +17,12 @@
 //! **A proposal's identity is its fingerprint, and speaker, quote and auto are frozen at first
 //! insert.** Re-proposing adds a source row and changes nothing else. Upgrading `auto` on a later
 //! arrival would let a row the owner is reading in the queue write itself while he reads it.
+//!
+//! **Every read of the queue and of the emission table carries the caller's grant**, and the
+//! adapter applies it inside the query. A proposal has no stored level, so it is read at the level
+//! its namespace would classify a write to; an emission is read at the stored level of the memory
+//! row it points at. There is no value of the grant that means "skip the check": an empty one
+//! reads nothing.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -24,6 +30,8 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::domain::errors::Result;
+use crate::domain::policy::NamespaceGrant;
+use crate::domain::types::Sensitivity;
 
 /// Where a proposal sits. `written` carries a memory id, `rejected` blocks its fingerprint from
 /// being proposed again, and `proposed` is everything the owner has yet to decide, including the
@@ -80,8 +88,9 @@ pub struct ProposalSource {
 /// itself. The repository stores what it is given; the gate is one layer up and never on the wire.
 #[derive(Debug, Clone)]
 pub struct NewProposal {
-    /// sha256 of the normalised content. The same function that produced every
-    /// `recall_emission.content_sha256`, or the echo check can never match a proposal.
+    /// `crypto::Digester::digest` of the content, an HMAC under a key derived from the KEK. The
+    /// same function that produced every `recall_emission.content_sha256`, or the echo check can
+    /// never match a proposal.
     pub fingerprint: String,
     pub content: String,
     pub namespace: String,
@@ -91,6 +100,9 @@ pub struct NewProposal {
     pub quote: Option<String>,
     pub auto: bool,
     pub extractor: String,
+    /// The client that posted it, from the credential and never from the body. `extractor` is a
+    /// string the poster chose; this is what the server knows.
+    pub posted_by: String,
     pub source: ProposalSource,
 }
 
@@ -106,6 +118,8 @@ pub struct Proposal {
     pub quote: Option<String>,
     pub auto: bool,
     pub extractor: String,
+    /// The client that posted it. `None` only on rows written before the column existed.
+    pub posted_by: Option<String>,
     pub state: String,
     pub memory_id: Option<Uuid>,
     pub last_error: Option<String>,
@@ -131,8 +145,24 @@ impl ProposalUpsert {
     }
 }
 
-/// Filters for the queue read. Every field is optional and absent means unfiltered, which is how
-/// the adapter answers them all with one statement and no generated SQL.
+/// Who is reading the queue, as the query applies it.
+///
+/// A proposal has no stored level: it is content waiting to be written, and the level it will be
+/// written at is what its namespace classifies to. So the grant is checked against that level,
+/// and the classification table travels with the grant because the database cannot call the Rust
+/// table. `levels` is `SensitivityDefaults::rules()`, longest pattern first, and the adapter takes
+/// the first match the way `for_namespace` does; no match means `open`.
+///
+/// `Default` is an empty grant, which reads nothing. A caller that wants the whole queue says so
+/// with the grant it holds.
+#[derive(Debug, Clone, Default)]
+pub struct ReadGrant {
+    pub grant: Vec<NamespaceGrant>,
+    pub levels: Vec<(String, Sensitivity)>,
+}
+
+/// Filters for the queue read. Every optional field absent means unfiltered, which is how the
+/// adapter answers them all with one statement and no generated SQL. `reader` is not optional.
 #[derive(Debug, Clone, Default)]
 pub struct ProposalFilter {
     pub state: Option<String>,
@@ -140,6 +170,7 @@ pub struct ProposalFilter {
     pub speaker: Option<String>,
     pub auto: Option<bool>,
     pub limit: i64,
+    pub reader: ReadGrant,
 }
 
 /// How far one file has been consumed, and why it is not being consumed further.
@@ -245,6 +276,11 @@ pub struct RunRecord {
 
 /// One candidate fact, asking whether the store handed this content out before the transcript
 /// recorded it.
+///
+/// `content_sha256` is the digest as the emission table stores it, already computed by
+/// `crypto::Digester::digest` (an HMAC under a key derived from the KEK). The lookup compares bytes
+/// and does not care how they were produced, so the keying lives in the function that fills this
+/// field and nowhere here.
 #[derive(Debug, Clone)]
 pub struct EmissionProbe {
     pub content_sha256: String,
@@ -253,10 +289,15 @@ pub struct EmissionProbe {
     pub observed_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// An emission the caller may know about. Never serialised to a client as it stands: the HTTP
+/// route answers a boolean per probe, and `memory_id`, `namespace` and `sensitivity` exist so the
+/// service can confirm the row and check the grant a second time.
+#[derive(Debug, Clone)]
 pub struct EmissionHit {
     pub content_sha256: String,
     pub memory_id: Uuid,
+    pub namespace: String,
+    pub sensitivity: Sensitivity,
     pub tool: String,
     pub first_emitted_at: DateTime<Utc>,
 }
@@ -282,10 +323,15 @@ pub trait IngestRepository: Send + Sync {
     /// content stays blocked.
     async fn insert_proposal(&self, tenant: &str, proposal: NewProposal) -> Result<ProposalUpsert>;
 
-    /// The queue read. Newest first, bounded by `limit`, filtered by whichever fields are set.
+    /// The queue read. Newest first, bounded by `limit`, filtered by whichever fields are set, and
+    /// inside `filter.reader` as a term of the query rather than a pass over the rows, so the
+    /// limit counts only what the caller gets.
     async fn list_proposals(&self, tenant: &str, filter: ProposalFilter) -> Result<Vec<Proposal>>;
 
-    async fn proposal(&self, tenant: &str, id: Uuid) -> Result<Option<Proposal>>;
+    /// One proposal under the same rule. `None` for an id outside the grant as much as for one
+    /// that does not exist.
+    async fn proposal(&self, tenant: &str, id: Uuid, reader: &ReadGrant)
+        -> Result<Option<Proposal>>;
 
     /// Every source that stated this fact, oldest first. This is the answer to "have I already
     /// counted this", and it is an exact one rather than a similarity guess.
@@ -305,6 +351,14 @@ pub trait IngestRepository: Send + Sync {
 
     /// `false` when the row was not at `proposed`, so a double reject is not a second decision.
     async fn reject(&self, tenant: &str, id: Uuid) -> Result<bool>;
+
+    /// Blank `content` and `quote` on one row, keeping the fingerprint and the state.
+    ///
+    /// The service calls this on a rejection in a namespace that classifies above open. Migration
+    /// 000018's trigger does the same when a proposal links to an encrypted memory or loses it, and
+    /// cannot do it here: the level of a namespace is a config lookup and the trigger cannot make
+    /// one. `content` stays `''` rather than NULL so readers built before 000018 still see text.
+    async fn clear_text(&self, tenant: &str, id: Uuid) -> Result<()>;
 
     /// Return a rejected row to `proposed`, sources intact.
     ///
@@ -365,11 +419,17 @@ pub trait IngestRepository: Send + Sync {
     /// The window belongs in the query rather than in a pass over the results: one probe against a
     /// popular fact can match many rows, and filtering after the fetch turns a bounded read into an
     /// unbounded one.
+    ///
+    /// The grant is applied to the memory row each emission points at, at that row's stored
+    /// level. An emission of a row the caller may not read is not a hit for that caller: the
+    /// lookup would otherwise answer "the store holds this sentence" about any namespace, one
+    /// digest at a time.
     async fn emissions_matching(
         &self,
         tenant: &str,
         probes: &[EmissionProbe],
         slack_secs: f64,
         window_secs: f64,
+        grant: &[NamespaceGrant],
     ) -> Result<Vec<EmissionHit>>;
 }

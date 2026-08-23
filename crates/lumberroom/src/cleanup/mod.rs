@@ -258,7 +258,7 @@ async fn daemon(c: &Client, args: &Args) -> Result<()> {
     }
 }
 
-/// `lumberroom cleanup <run|daemon|list|show|apply|reject>`.
+/// `lumberroom cleanup <run|daemon|list|show|apply|resolve|reject|unreject>`.
 pub async fn dispatch(c: &Client, args: &Args, sub: &str) -> Result<()> {
     match sub {
         "run" => run(c, args).await,
@@ -268,8 +268,10 @@ pub async fn dispatch(c: &Client, args: &Args, sub: &str) -> Result<()> {
         "apply" => apply(c, args).await,
         "resolve" => resolve(c, args).await,
         "reject" => reject(c, args).await,
+        "unreject" => unreject(c, args).await,
         other => Err(err(format!(
-            "unknown cleanup command {other:?}. One of: run, daemon, list, show, apply, resolve, reject"
+            "unknown cleanup command {other:?}. One of: run, daemon, list, show, apply, resolve, \
+             reject, unreject"
         ))),
     }
 }
@@ -313,6 +315,12 @@ async fn run(c: &Client, args: &Args) -> Result<()> {
              The watermark held where the findings did; run it again.",
         );
     }
+    // Printed beside the model count, or a store that is mostly private reads as a clean one.
+    crate::out(&format!(
+        "  {} pairs for the model, {} withheld from the model (a side above open)",
+        report["for_the_model"].as_i64().unwrap_or(0),
+        report["withheld_from_model"].as_i64().unwrap_or(0),
+    ));
 
     let pairs: Vec<Pair> = serde_json::from_value(response["for_the_model"].clone())
         .map_err(|e| err(format!("the server's candidate list did not parse: {e}")))?;
@@ -514,7 +522,33 @@ async fn reject(c: &Client, args: &Args) -> Result<()> {
     if status != 200 {
         return Err(err(format!("reject failed ({status}): {}", crate::commands::compact(&body))));
     }
-    crate::out(&format!("rejected {id}"));
+    // The way back, printed where it is read. A rejection blocks the cluster for good, and the
+    // owner who refused the wrong row finds out an hour later when the pass says nothing.
+    crate::out(&format!("rejected {id}. `lumberroom cleanup unreject {id}` puts it back."));
+    Ok(())
+}
+
+/// `cleanup unreject <id>`: put a refused finding back in the queue.
+///
+/// A rejected cluster counts as known forever, so the pass stays quiet about it. That is right
+/// until the pass was what was wrong, and then the fixed run finds the same pair and says nothing.
+/// The row goes back to `proposed` and the refusal note goes with it.
+async fn unreject(c: &Client, args: &Args) -> Result<()> {
+    let id = args.positional_at(2).ok_or_else(|| err("usage: lumberroom cleanup unreject <id>"))?;
+    let (status, body) = c
+        .http_request(
+            reqwest::Method::POST,
+            &format!("/admin/cleanup/proposals/{id}/unreject"),
+            None,
+        )
+        .await?;
+    if status != 200 {
+        return Err(err(format!(
+            "unreject refused ({status}): {}",
+            crate::commands::compact(&body)
+        )));
+    }
+    crate::out(&format!("{id} is back in the queue. `lumberroom cleanup show {id}` reads it."));
     Ok(())
 }
 

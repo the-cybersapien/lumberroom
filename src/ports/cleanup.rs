@@ -13,6 +13,7 @@ use serde::Serialize;
 
 use crate::domain::cleanup::{CleanupKind, Disposition};
 use crate::domain::errors::Result;
+use crate::domain::policy::NamespaceGrant;
 use crate::domain::types::Sensitivity;
 
 /// One row a pass is looking at, with only the fields a pass needs.
@@ -40,11 +41,16 @@ pub struct CandidatePair {
 /// What a pass asks for.
 #[derive(Debug, Clone)]
 pub struct CandidateQuery {
-    /// A namespace glob, matched the way grants are. `None` means every namespace.
+    /// A namespace glob, matched the way grants are. `None` means no narrowing beyond `grant`.
     pub namespace: Option<String>,
-    /// The highest sensitivity to return. A model pass passes `Open` and the query filters on it,
-    /// so a row above open never reaches the process that talks to a provider.
+    /// The highest sensitivity to return, on top of whatever `grant` admits.
     pub max_sensitivity: Sensitivity,
+    /// Whose rows these are, applied inside the query. A row is a candidate only when some entry
+    /// matches its namespace at or above its stored sensitivity, the same rule `policy::admits`
+    /// states. The scheduled pass passes `NamespaceGrant::everything()`, which is the honest
+    /// spelling of "the whole tenant"; an HTTP caller passes its own read grant, and there is no
+    /// value of this field that reads as "skip the check".
+    pub grant: Vec<NamespaceGrant>,
     /// Anchors the pass, and anchors only one side of it.
     ///
     /// A run reads rows created at or after this and compares each against **every** live row,
@@ -66,6 +72,9 @@ pub struct NewProposal {
     pub rationale: String,
     pub produced_by: String,
     pub similarity: Option<f64>,
+    /// The client that posted it over HTTP, or `None` for the in-process pass. `produced_by` is a
+    /// string the poster chose; this one is what the server knows.
+    pub posted_by: Option<String>,
     pub members: Vec<NewMember>,
 }
 
@@ -86,6 +95,9 @@ pub struct Proposal {
     pub keep_id: Option<String>,
     pub rationale: String,
     pub produced_by: String,
+    /// The client that posted this, or `None` when the in-process pass wrote it. A reader deciding
+    /// whether to trust `produced_by` has this beside it.
+    pub posted_by: Option<String>,
     pub similarity: Option<f64>,
     pub state: String,
     pub reason: Option<String>,
@@ -103,6 +115,11 @@ pub struct Member {
     pub current_content: Option<String>,
     /// Set when something else retired this row since the pass read it.
     pub superseded_by: Option<String>,
+    /// Where the row lives and at what level, as stored. Both `None` when the row is gone. The
+    /// query already refused a proposal holding a member the caller cannot read; these let the
+    /// service check that claim a second time at the boundary.
+    pub namespace: Option<String>,
+    pub sensitivity: Option<Sensitivity>,
 }
 
 /// What `queue` did with a cluster it was handed.
@@ -170,9 +187,25 @@ pub trait CleanupRepository: Send + Sync {
     /// Queue a cluster, or report that it is already known.
     async fn queue(&self, tenant: &str, p: NewProposal) -> Result<(QueueOutcome, String)>;
 
-    async fn list(&self, tenant: &str, state: Option<&str>, limit: i64) -> Result<Vec<Proposal>>;
+    /// The queue as one caller may see it.
+    ///
+    /// A proposal is visible when its own namespace is readable at `open` and every member row
+    /// is readable at the level it is stored at. The filter runs inside the query, so a row the
+    /// caller may not read never reaches the caller's process and the limit counts only what the
+    /// caller gets; a pass over the result after the limit would hand back pages that silently
+    /// shrink.
+    async fn list(
+        &self,
+        tenant: &str,
+        state: Option<&str>,
+        limit: i64,
+        grant: &[NamespaceGrant],
+    ) -> Result<Vec<Proposal>>;
 
-    async fn get(&self, tenant: &str, id: &str) -> Result<Option<Proposal>>;
+    /// One proposal, under the same rule as `list`. `None` for an id outside the grant as much as
+    /// for one that does not exist, so the answer is not an existence check.
+    async fn get(&self, tenant: &str, id: &str, grant: &[NamespaceGrant])
+        -> Result<Option<Proposal>>;
 
     /// Move a proposal to `applied`, `rejected` or `obsolete`. False when it was not `proposed`.
     async fn decide(
@@ -182,6 +215,13 @@ pub trait CleanupRepository: Send + Sync {
         state: &str,
         reason: Option<&str>,
     ) -> Result<bool>;
+
+    /// Return a rejected proposal to the queue. False when it was not `rejected`.
+    ///
+    /// A cluster rejected because the code that produced it was wrong blocks its own replacement:
+    /// `queue` counts every state as known, so the fixed pass finds the pair and says nothing. The
+    /// alternative was deleting the row by hand in psql.
+    async fn unreject(&self, tenant: &str, id: &str) -> Result<bool>;
 
     /// Close every proposed row whose cluster the store has already answered.
     ///

@@ -95,7 +95,7 @@ thing that can create a proposal is a process the owner started.
 ```
 POST   /admin/ingest/runs                       open a run, get a run id
 POST   /admin/ingest/scan                       tripwire on span text, rule names only (§9.1)
-POST   /admin/ingest/emissions/check            batch of content hashes, returns the hits (§4.4)
+POST   /admin/ingest/emissions/check            {probes:[{content, observed_at?}]}, at most 200, answers {echoes:[bool]} (§4.4)
 POST   /admin/ingest/proposals                  batch post, idempotent on fingerprint
 GET    /admin/ingest/proposals?state=proposed
 POST   /admin/ingest/proposals/{id}/approve     calls services::write::run
@@ -422,18 +422,25 @@ times is one row. The write is batched through the fire-and-forget path that alr
 `last_accessed_at` (`src/adapters/postgres/memory.rs:952`), so a read does not turn into a write
 storm.
 
-**One normalisation, or the hashes never meet.** `content_sha256` here and `fingerprint` on
+**One digest, or the hashes never meet.** `content_sha256` here and `fingerprint` on
 `ingest_proposal` are the same function of the same input: lowercase, collapse whitespace, strip
-terminal punctuation, sha256. Two normalisers would give this layer a hash that cannot match anything
-the extractor produces, which is the quiet way to build the same unreachable layer twice. The
-function lives once, in `src/domain/`, and the proposal handler and the emission writer both call it.
+terminal punctuation, then HMAC-SHA256 under a key derived from the KEK (plain SHA-256 on a
+deployment with no KEK). Two implementations would give this layer a hash that cannot match
+anything the extractor produces, which is the quiet way to build the same unreachable layer twice.
+The function lives once, `crypto::Digester::digest`, and the proposal handler, the emission
+writer and the check route all call it. The key is why a database dump cannot confirm a guessed
+sentence against the emission table.
 
-**The check.** For each candidate fact, `submit` sends its normalised hash to
-`POST /admin/ingest/emissions/check`, and the proposal handler runs the same query again on the way
-in so the CLI cannot skip it. A hit is a row for this tenant with a matching `content_sha256` whose
-`first_emitted_at` falls at or before the source span's timestamp plus five minutes of clock slack,
-and within `INGEST_EMISSION_WINDOW` (default 90 days) of it. The store handed the content out before
-the transcript recorded it, which is the direction that makes it an echo rather than a coincidence.
+**The check.** For each candidate fact, `submit` sends the content itself (never a hash: the
+server computes the digest so the client cannot probe with one it made offline) to
+`POST /admin/ingest/emissions/check` as `{probes:[{content, observed_at?}]}`, at most 200 probes
+per call, and the proposal handler runs the same query again on the way in so the CLI cannot skip
+it. The route answers `{echoes:[bool]}`, one per probe in probe order, and nothing else. A hit is
+a row for this tenant with a matching `content_sha256` whose `first_emitted_at` falls at or before
+the source span's timestamp plus five minutes of clock slack, and within `INGEST_EMISSION_WINDOW`
+(default 90 days) of it, and whose memory row the caller's read grant admits at its stored level.
+The store handed the content out before the transcript recorded it, which is the direction that
+makes it an echo rather than a coincidence.
 
 A hit is a **confirmation**: the handler calls `confirm` on the emitted `memory_id`, posts no
 proposal, and counts it in `ingest_run.confirmations`. The report names the memory id, so a spike in
@@ -1027,7 +1034,7 @@ Then the owner reads the queue:
 lumberroom ingest list [--state proposed|written|rejected] [--limit 50]
 lumberroom ingest show <id>                        # the fact, its sources, and the spans they came from
 lumberroom ingest approve <id>...                  # one or many ids in one call
-lumberroom ingest approve --run <id> [--speaker owner_typed] [--yes]
+lumberroom ingest approve --run <id> [--auto] [--yes]
 lumberroom ingest reject <id> [--reason "..."] [--yes]
 lumberroom ingest unreject <id>                    # returns a rejected row to proposed (§2.3)
 ```
@@ -1035,7 +1042,9 @@ lumberroom ingest unreject <id>                    # returns a rejected row to p
 `approve` takes several ids in one call and takes a `--run` filter, because a backfill queue runs to
 hundreds of rows and a queue that costs one command per row is a queue the owner abandons at row
 thirty. The filtered form prints every row it will approve, counts them, and asks once unless
-`--yes` is passed.
+`--yes` is passed. `--auto` narrows it to the rows the server marked `auto` itself; there is no
+`--speaker` filter, because the speaker column is the poster's claim and a bulk approval on a claim
+is a bulk approval on nothing.
 
 Either form calls `write::run` once per proposal and records the returned memory id, including the
 case where `write::run` collapses it into an existing row as a duplicate. That outcome is a success

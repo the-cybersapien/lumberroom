@@ -250,9 +250,10 @@ pub async fn run(c: &Client, args: &SubmitArgs) -> Result<SubmitReport> {
         }
     }
 
-    // The read-only half of the anti-loop check. Hits carry a content hash and no probe index, and
-    // this client may not normalise, so it cannot tell which fact echoed. It posts everything and
-    // the proposal handler runs the same check again, turning an echo into a confirmation.
+    // The read-only half of the anti-loop check. The server answers one bit per probe in the
+    // order sent, so this client could tell which fact echoed; it only counts them for the
+    // report, posts everything, and the proposal handler runs the same check again, turning an
+    // echo into a confirmation.
     let mut emission_hits = 0;
     if !survivors.is_empty() {
         let probes: Vec<api::EmissionProbeReq> = survivors
@@ -262,7 +263,7 @@ pub async fn run(c: &Client, args: &SubmitArgs) -> Result<SubmitReport> {
                 observed_at: span.timestamp,
             })
             .collect();
-        emission_hits = api::check_emissions(c, &probes).await?.len() as i32;
+        emission_hits = api::check_emissions(c, &probes).await?.iter().filter(|e| **e).count() as i32;
     }
 
     let requests: Vec<api::FactReq> = survivors

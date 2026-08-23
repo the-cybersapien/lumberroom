@@ -15,16 +15,25 @@
 //!
 //! # What a model is ever shown
 //!
-//! Rows at `open`, and the filter is in the query rather than here. Decision 0005 draws the same
-//! line for the lexical index on the same argument: publishing private content to a second system
-//! is publishing it. `assert_model_visible` is a second check at the boundary, and it is deliberate
-//! redundancy rather than the mechanism.
+//! Rows at `open`. The candidate query runs at the caller's ceiling so that the deterministic half
+//! can see private duplicates, and the band handed out for a model is filtered on the way out:
+//! a pair with a side above `open` is skipped before it reaches the list. Decision 0005 draws the
+//! same line for the lexical index on the same argument: publishing private content to a second
+//! system is publishing it. `assert_model_visible` is a second check at the boundary, and it is
+//! deliberate redundancy rather than the mechanism.
+//!
+//! # Whose rows a run reads
+//!
+//! The scheduled pass reads the whole tenant and hands nothing to anyone, so it runs over
+//! `NamespaceGrant::everything()`. An HTTP caller runs over its own read grant, pushed into the
+//! query as a term, and a scope it names has to sit inside that grant. `mayIngest` opens the
+//! route; it does not widen what the route may read.
 //!
 //! # The deterministic pass
 //!
 //! Exact duplicates and the near-certain cosine band need no model and no network. They run first,
-//! they run over every sensitivity because nothing they read leaves this machine, and on a store
-//! this size they are the majority of the findings.
+//! they run over every sensitivity the caller holds because nothing they read leaves this machine,
+//! and on a store this size they are the majority of the findings.
 
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
@@ -33,10 +42,12 @@ use super::Ctx;
 use crate::adapters::auth::can_read;
 use crate::domain::cleanup::{model_may_see, ApplyRefusal, CleanupKind, Disposition};
 use crate::domain::errors::{DomainError, Result};
+use crate::domain::namespaces;
+use crate::domain::policy::NamespaceGrant;
+use crate::domain::types::Sensitivity;
 use crate::ports::cleanup::{
     Candidate, CandidateQuery, CleanupRepository, NewMember, NewProposal, Proposal, QueueOutcome,
 };
-use crate::domain::types::Sensitivity;
 
 /// Above this, two rows are the same fact and the pass says so without asking anyone.
 ///
@@ -85,6 +96,10 @@ pub struct RunReport {
     /// Pairs in the band a model would be asked about. The deterministic pass counts them and
     /// leaves them; `lumberroom cleanup run` is what takes them to a provider.
     pub for_the_model: usize,
+    /// Pairs in the same band with a side above `open`. Counted so a run over a store that is
+    /// mostly private does not read as a clean store, and never listed: what makes them
+    /// uncountable for the model is the reason they are not here.
+    pub withheld_from_model: usize,
     /// The floor actually used, which is not always the one asked for.
     pub min_similarity: f64,
     pub through: Option<DateTime<Utc>>,
@@ -107,9 +122,10 @@ pub struct ModelCandidate {
 
 /// Refuses anything a model must not be shown.
 ///
-/// The query already filtered on `sensitivity = 'open'`. This runs at the point the rows are handed
-/// out, so a future caller that builds a candidate list some other way still cannot get a private
-/// row past it.
+/// The candidate query does not filter on `open`: it runs at the caller's ceiling so the
+/// deterministic half can group private duplicates. The pass skips a pair with a private side
+/// before it reaches this point, and this runs where the rows are handed out so that a future
+/// caller building a candidate list some other way still cannot get a private row past it.
 fn assert_model_visible(rows: &[&Candidate]) -> Result<()> {
     for r in rows {
         if !model_may_see(r.sensitivity) {
@@ -123,17 +139,18 @@ fn assert_model_visible(rows: &[&Candidate]) -> Result<()> {
     Ok(())
 }
 
-/// One deterministic pass over a scope.
+/// One deterministic pass over the whole tenant, for the scheduler.
 ///
-/// Reads nothing out to a network and calls no model. `max_sensitivity` is `Sealed`, which is to say
-/// unrestricted: nothing here leaves the machine, so restricting it would only make the pass blind
-/// to duplicates among private rows.
-/// Takes a tenant rather than a `Ctx`, and that is the whole of what it needs.
+/// Reads nothing out to a network and calls no model. The grant is `NamespaceGrant::everything()`
+/// and the ceiling is `Sealed`, which is to say unrestricted: nothing here leaves the machine, so
+/// restricting it would only make the pass blind to duplicates among private rows.
 ///
-/// A `Ctx` carries a `Principal`, and a function that takes one implies it does something with the
-/// caller's identity. This one reads nothing but the tenant, so the scheduled pass can call it
-/// without inventing a principal. A synthetic system identity holding `*` at `sealed` is the kind
-/// of thing that exists to satisfy a signature and then gets reused somewhere it decides an answer.
+/// Takes a tenant rather than a `Ctx`, and that is the whole of what it needs. A `Ctx` carries a
+/// `Principal`, and a function that takes one implies it does something with the caller's
+/// identity. This one reads nothing but the tenant, so the scheduled pass can call it without
+/// inventing a principal. A synthetic system identity holding `*` at `sealed` is the kind of thing
+/// that exists to satisfy a signature and then gets reused somewhere it decides an answer. The
+/// grant here is a query bound, not an identity, and the HTTP path cannot reach this function.
 pub async fn run(
     tenant: &str,
     repo: &dyn CleanupRepository,
@@ -142,27 +159,137 @@ pub async fn run(
     limit: i64,
     min_similarity: Option<f64>,
 ) -> Result<(RunReport, Vec<ModelCandidate>)> {
+    let scope_key = scope.unwrap_or("*").to_string();
+    pass(
+        tenant,
+        repo,
+        Bounds {
+            scope: scope.map(str::to_string),
+            scope_key,
+            cadence: cadence.to_string(),
+            limit,
+            min_similarity,
+            grant: NamespaceGrant::everything(),
+            posted_by: None,
+        },
+    )
+    .await
+}
+
+/// The same pass, run by an HTTP caller inside its own grant.
+///
+/// The scope the caller names has to sit inside what it may read; a scope outside is refused
+/// rather than narrowed, because a run that silently did less than it was asked is a run whose
+/// report lies. No scope means the caller's grant and nothing wider.
+///
+/// The watermark is keyed by client as well as by scope. A narrow client reads a subset of the
+/// rows the scheduler reads, and a mark it advanced under the scheduler's key would step the
+/// scheduler past rows only the scheduler can see.
+pub async fn run_as(
+    ctx: &Ctx,
+    repo: &dyn CleanupRepository,
+    scope: Option<&str>,
+    cadence: &str,
+    limit: i64,
+    min_similarity: Option<f64>,
+) -> Result<(RunReport, Vec<ModelCandidate>)> {
+    let scope = scope.map(|s| s.trim().to_ascii_lowercase()).filter(|s| !s.is_empty());
+    if let Some(glob) = scope.as_deref() {
+        if !covers(&ctx.principal.read, glob) {
+            // Names the scope the caller chose and nothing else, so the refusal maps nothing.
+            return Err(DomainError::forbidden(format!(
+                "client {} may not run cleanup over {glob}: the scope is outside its read grant",
+                ctx.principal.client
+            )));
+        }
+    }
+    let scope_key = format!("{}@{}", scope.as_deref().unwrap_or("*"), ctx.principal.client);
+    pass(
+        ctx.tenant(),
+        repo,
+        Bounds {
+            scope,
+            scope_key,
+            cadence: cadence.to_string(),
+            limit,
+            min_similarity,
+            grant: ctx.principal.read.clone(),
+            posted_by: Some(ctx.principal.client.clone()),
+        },
+    )
+    .await
+}
+
+/// Whether a read grant admits every namespace a scope glob can name, at `open`.
+///
+/// A glob is covered by an entry when the entry is `*`, or when both are prefix globs and the
+/// entry's prefix is a prefix of the scope's, or when the scope is one name the grant admits.
+/// `open` is the level asked for because a scope is a namespace question; the ceiling is applied
+/// row by row inside the query.
+pub fn covers(grant: &[NamespaceGrant], scope: &str) -> bool {
+    let scope = scope.trim().to_ascii_lowercase();
+    match scope.strip_suffix('*') {
+        Some(prefix) => grant.iter().any(|g| {
+            let pattern = g.namespace.trim().to_ascii_lowercase();
+            match pattern.strip_suffix('*') {
+                Some(granted) => prefix.starts_with(granted),
+                None => false,
+            }
+        }),
+        None => grant.iter().any(|g| namespaces::matches(&g.namespace, &scope)),
+    }
+}
+
+/// Whether a grant admits every namespace at every level, which is what a tenant-wide write needs.
+fn reads_everything(grant: &[NamespaceGrant]) -> bool {
+    grant.iter().any(|g| g.namespace.trim() == "*" && g.max == Sensitivity::Sealed)
+}
+
+/// What one pass runs over. Built by `run` for the scheduler and by `run_as` for a caller, and
+/// the only way into `pass`.
+struct Bounds {
+    scope: Option<String>,
+    scope_key: String,
+    cadence: String,
+    limit: i64,
+    min_similarity: Option<f64>,
+    grant: Vec<NamespaceGrant>,
+    posted_by: Option<String>,
+}
+
+async fn pass(
+    tenant: &str,
+    repo: &dyn CleanupRepository,
+    bounds: Bounds,
+) -> Result<(RunReport, Vec<ModelCandidate>)> {
+    let Bounds { scope, scope_key, cadence, limit, min_similarity, grant, posted_by } = bounds;
+    let cadence = cadence.as_str();
     // The floor a pair has to clear to be worth a model's attention. `WORTH_ASKING` is a guess and
     // the store says so: on 21 August 2026 the owner's two statements of the same image-generation
     // preference scored 0.694 against this embedder, so the shipped floor of 0.85 would never have
     // shown a model the one duplicate anyone had noticed by reading. Clamped below `NEAR_CERTAIN`,
     // because a floor at or above it leaves the model nothing to decide.
     let floor = min_similarity.unwrap_or(WORTH_ASKING).clamp(0.0, NEAR_CERTAIN - 0.001);
-    let scope_key = scope.unwrap_or("*").to_string();
     let mut report = RunReport {
-        scope: scope_key.clone(),
+        scope: scope.clone().unwrap_or_else(|| "*".to_string()),
         cadence: cadence.to_string(),
         ..Default::default()
     };
 
     // Closing first. A finding the store has already answered should not be counted as work still
-    // outstanding in the same report that goes on to queue new ones.
-    report.closed_as_answered = repo.close_answered(tenant).await?.len();
+    // outstanding in the same report that goes on to queue new ones. The sweep is tenant-wide and
+    // touches findings in every namespace at every level, so only a caller that reads all of that
+    // runs it: `*` at open would let a client obsolete findings over rows it cannot see. The
+    // scheduler covers everyone else within the hour.
+    if reads_everything(&grant) {
+        report.closed_as_answered = repo.close_answered(tenant).await?.len();
+    }
 
     let mark = repo.watermark(tenant, &scope_key, cadence).await?;
     let query = CandidateQuery {
-        namespace: scope.map(str::to_string),
+        namespace: scope,
         max_sensitivity: Sensitivity::Sealed,
+        grant,
         since: mark.map(|m| m.through),
         limit,
     };
@@ -225,6 +352,7 @@ pub async fn run(
                     ),
                     produced_by: "exact".to_string(),
                     similarity: Some(1.0),
+                    posted_by: posted_by.clone(),
                     members,
                 },
             )
@@ -259,6 +387,7 @@ pub async fn run(
                         ),
                         produced_by: "cosine".to_string(),
                         similarity: Some(pair.similarity),
+                        posted_by: posted_by.clone(),
                         members: vec![
                             NewMember {
                                 memory_id: pair.newer.id.clone(),
@@ -279,6 +408,16 @@ pub async fn run(
         }
         // Below the certain band. A model decides whether these are the same fact, whether they
         // contradict, or whether a cosine simply put two unrelated sentences near each other.
+        //
+        // Skipped, and counted, when a side is above `open`. The query ran at the full ceiling so
+        // the deterministic half could see private duplicates; this band leaves the machine. The
+        // skip sits before the assert on purpose: an assert that fired here turned the exact floor
+        // at which a private pair entered the band into an answer the caller could read off a
+        // 500, one probe at a time.
+        if !model_may_see(pair.older.sensitivity) || !model_may_see(pair.newer.sensitivity) {
+            report.withheld_from_model += 1;
+            continue;
+        }
         assert_model_visible(&[&pair.older, &pair.newer])?;
         for_model.push(ModelCandidate {
             similarity: pair.similarity,
@@ -313,6 +452,7 @@ pub async fn run(
                         ),
                         produced_by: "unread".to_string(),
                         similarity: None,
+                        posted_by: posted_by.clone(),
                         members: vec![NewMember {
                             memory_id: row.id.clone(),
                             disposition: Disposition::Retire,
@@ -391,6 +531,106 @@ pub async fn queue_checked(
     repo.queue(tenant, p).await
 }
 
+/// Queue a cluster an HTTP caller posted, after checking it names rows the caller may read.
+///
+/// The posted shape is the shape the pass produces, and a client holding the route can fill it in
+/// by hand: one `stale` member naming any memory id, a rationale copied from the deterministic
+/// pass, and the queue shows the owner a finding that looks like the server's own. So nothing here
+/// is taken on trust. Every member is resolved; the caller must be able to read each one at the
+/// level it is stored at; the members must all live in the namespace the item claims; the text the
+/// caller says it saw must be the text the row holds; a kind that names a survivor must name one of
+/// its own `keep` members; and a kind that deletes needs the delete capability, because applying
+/// it is a hard delete.
+///
+/// One message covers "missing" and "not yours", the way `forget::by_id` phrases it, so a refusal
+/// does not say whether the id exists.
+pub async fn queue_posted(
+    ctx: &Ctx,
+    repo: &dyn CleanupRepository,
+    mut p: NewProposal,
+) -> Result<(QueueOutcome, String)> {
+    if p.members.is_empty() {
+        return Err(DomainError::validation("a cleanup proposal names at least one row"));
+    }
+    if p.kind.has_keep() && p.members.len() < 2 {
+        return Err(DomainError::validation(format!(
+            "a {} proposal names at least two rows: one survives, the rest retire into it",
+            p.kind
+        )));
+    }
+    let namespace = namespaces::normalize(&p.namespace)?;
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for m in &p.members {
+        let not_yours = || {
+            DomainError::not_found(format!(
+                "memory {} does not exist or is not yours to propose against",
+                m.memory_id
+            ))
+        };
+        let uuid = uuid::Uuid::parse_str(m.memory_id.trim()).map_err(|_| {
+            DomainError::validation(format!("{:?} is not a memory id", m.memory_id))
+        })?;
+        if !seen.insert(uuid.to_string()) {
+            return Err(DomainError::validation(format!(
+                "memory {uuid} is named twice in one proposal"
+            )));
+        }
+        let row = ctx.repos.memories.find_by_id(ctx.tenant(), uuid).await?;
+        let Some(row) = row.filter(|r| can_read(&ctx.principal, &r.namespace, r.sensitivity))
+        else {
+            return Err(not_yours());
+        };
+        if row.namespace != namespace {
+            // The caller can read the row, so naming its namespace back maps nothing.
+            return Err(DomainError::validation(format!(
+                "memory {uuid} lives in {}, not in {namespace}",
+                row.namespace
+            )));
+        }
+        // Compared here so the queue shows what applying would do. A row the caller read one way
+        // and the store holds another is refused at apply anyway, and a row whose text the server
+        // cannot read has nothing to compare. Empty content is the second case.
+        if row.content.is_empty() || row.content != m.seen_content {
+            return Err(DomainError::conflict(format!(
+                "memory {uuid} does not hold the text this proposal says it saw"
+            )));
+        }
+    }
+
+    // After the members, so a caller without the capability learns nothing about rows it cannot
+    // read: those answered not_found above, the same as a row that does not exist.
+    if p.kind.deletes() && !ctx.principal.may_delete {
+        return Err(DomainError::forbidden(format!(
+            "client {} may not propose a {} cleanup: applying one deletes, and the grant carries \
+             no may_delete",
+            ctx.principal.client, p.kind
+        )));
+    }
+
+    if p.kind.has_keep() {
+        let keep = p.keep_id.as_deref().map(str::trim).ok_or_else(|| {
+            DomainError::validation(format!("a {} proposal names its survivor in keep_id", p.kind))
+        })?;
+        let keeps: Vec<&NewMember> =
+            p.members.iter().filter(|m| m.disposition == Disposition::Keep).collect();
+        if keeps.len() != 1 || keeps[0].memory_id.trim() != keep {
+            return Err(DomainError::validation(
+                "keep_id names exactly one member, and that member's disposition is keep",
+            ));
+        }
+    } else if p.members.iter().any(|m| m.disposition == Disposition::Keep) && p.kind.deletes() {
+        return Err(DomainError::validation(format!(
+            "a {} proposal keeps nothing; every member retires",
+            p.kind
+        )));
+    }
+
+    p.namespace = namespace;
+    p.posted_by = Some(ctx.principal.client.clone());
+    queue_checked(ctx.tenant(), repo, p).await
+}
+
 fn tally(outcome: &QueueOutcome, report: &mut RunReport) {
     match outcome {
         QueueOutcome::Queued => report.queued += 1,
@@ -400,27 +640,42 @@ fn tally(outcome: &QueueOutcome, report: &mut RunReport) {
 
 /// The queue, filtered to what this caller may read.
 ///
-/// Every row is checked against the caller's grant for its own namespace. The queue is an operator
+/// The grant goes into the query: a proposal comes back only when every member row is readable at
+/// the level it is stored at, and the limit counts what the caller gets. The queue is an operator
 /// surface, and "operator surface" is not a grant: `services::review` makes the same argument in
-/// the same words, and for the same reason.
+/// the same words, and for the same reason. The check repeated here is the second line, the way
+/// `search` repeats its ceiling check.
 pub async fn list(
     ctx: &Ctx,
     repo: &dyn CleanupRepository,
     state: Option<&str>,
     limit: i64,
 ) -> Result<Vec<Proposal>> {
-    let rows = repo.list(ctx.tenant(), state, limit.clamp(1, 200)).await?;
-    Ok(rows
-        .into_iter()
-        .filter(|p| can_read(&ctx.principal, &p.namespace, Sensitivity::Open))
-        .collect())
+    let rows = repo.list(ctx.tenant(), state, limit.clamp(1, 200), &ctx.principal.read).await?;
+    Ok(rows.into_iter().filter(|p| readable(ctx, p)).collect())
 }
 
+/// One proposal, or `None` for an id outside the grant as much as for one that does not exist.
 pub async fn get(ctx: &Ctx, repo: &dyn CleanupRepository, id: &str) -> Result<Option<Proposal>> {
-    Ok(repo
-        .get(ctx.tenant(), id)
-        .await?
-        .filter(|p| can_read(&ctx.principal, &p.namespace, Sensitivity::Open)))
+    Ok(repo.get(ctx.tenant(), id, &ctx.principal.read).await?.filter(|p| readable(ctx, p)))
+}
+
+/// The second line behind the query's visibility rule. A proposal that reaches here with a member
+/// the caller cannot read is a repository that got the SQL wrong, and it is logged as such.
+fn readable(ctx: &Ctx, p: &Proposal) -> bool {
+    let ok = can_read(&ctx.principal, &p.namespace, Sensitivity::Open)
+        && p.members.iter().all(|m| match (&m.namespace, m.sensitivity) {
+            (Some(ns), Some(level)) => can_read(&ctx.principal, ns, level),
+            _ => true,
+        });
+    if !ok {
+        tracing::error!(
+            proposal = %p.id,
+            client = %ctx.principal.client,
+            "repository returned a cleanup proposal outside the caller's grant; dropped"
+        );
+    }
+    ok
 }
 
 /// What applying a proposal did.
@@ -461,6 +716,22 @@ pub async fn apply(ctx: &Ctx, repo: &dyn CleanupRepository, id: &str) -> Result<
         }
         if m.superseded_by.is_some() {
             return Err(refusal(ApplyRefusal::MemberRetired(m.memory_id.clone())));
+        }
+    }
+
+    // The survivor has to be one of the cluster's own `keep` members. A posted proposal could
+    // otherwise name any readable row as `keep_id` and retire its members into it.
+    if p.kind.has_keep() {
+        let named = p.keep_id.as_deref();
+        let keeps_it = p
+            .members
+            .iter()
+            .any(|m| m.disposition == Disposition::Keep && Some(m.memory_id.as_str()) == named);
+        if !keeps_it {
+            return Err(DomainError::conflict(format!(
+                "proposal {} names a survivor that is not one of its own keep members",
+                p.id
+            )));
         }
     }
 
@@ -579,6 +850,26 @@ pub async fn reject(
     Ok(())
 }
 
+/// Put a refused finding back in the queue.
+///
+/// A rejection is permanent by design: `queue` treats a cluster it already holds as known in every
+/// state, which is what makes an hourly pass safe to run hourly. The cost lands when the pass was
+/// what was wrong. The cluster key is the same one the fixed pass computes, so the replacement
+/// finding is swallowed as already known and the owner reads a queue that says nothing. Until this
+/// existed the way out was a DELETE typed into psql.
+pub async fn unreject(ctx: &Ctx, repo: &dyn CleanupRepository, id: &str) -> Result<()> {
+    let Some(p) = get(ctx, repo, id).await? else {
+        return Err(DomainError::not_found(format!("no cleanup proposal {id}")));
+    };
+    if !repo.unreject(ctx.tenant(), id).await? {
+        return Err(DomainError::conflict(format!(
+            "cleanup proposal {id} is {}, and only a rejected one returns to the queue",
+            p.state
+        )));
+    }
+    Ok(())
+}
+
 /// A refusal a person reads, at the status that says the store moved rather than that they erred.
 fn refusal(r: ApplyRefusal) -> DomainError {
     match r {
@@ -677,6 +968,47 @@ mod tests {
         ] {
             assert_eq!(refusal(r).kind, crate::domain::errors::Kind::Conflict);
         }
+    }
+
+    #[test]
+    fn a_scope_is_covered_only_by_a_grant_that_reaches_all_of_it() {
+        let grant = vec![NamespaceGrant::open("project:*"), NamespaceGrant::open("user:me")];
+        assert!(covers(&grant, "project:*"));
+        assert!(covers(&grant, "project:lumberroom*"));
+        assert!(covers(&grant, "project:lumberroom"));
+        assert!(covers(&grant, "user:me"));
+        assert!(!covers(&grant, "*"), "a prefix grant does not cover the whole store");
+        assert!(!covers(&grant, "personal:*"));
+        assert!(!covers(&grant, "global"));
+        // An exact grant covers its one name and never a glob over it.
+        assert!(!covers(&grant, "user:*"));
+    }
+
+    #[test]
+    fn the_whole_store_grant_covers_every_scope_and_an_empty_grant_covers_none() {
+        for scope in ["*", "project:*", "global", "personal:finance"] {
+            assert!(covers(&NamespaceGrant::everything(), scope), "{scope}");
+            assert!(!covers(&[], scope), "{scope}");
+        }
+    }
+
+    #[test]
+    fn the_tenant_wide_sweep_needs_every_namespace_at_sealed_and_not_just_the_wildcard() {
+        assert!(reads_everything(&NamespaceGrant::everything()));
+        assert!(!reads_everything(&[NamespaceGrant::open("*")]), "* at open cannot see what it would close");
+        assert!(!reads_everything(&[NamespaceGrant::new("project:*", Sensitivity::Sealed)]));
+        assert!(!reads_everything(&[]));
+    }
+
+    #[test]
+    fn a_private_side_is_withheld_from_the_model_band_rather_than_refused() {
+        // The decision `pass` makes before the assert, isolated. The assert still refuses, and
+        // the skip in front of it is what turns a 500 into a count.
+        let open = candidate("a", Sensitivity::Open);
+        let private = candidate("b", Sensitivity::Private);
+        let hidden = !model_may_see(open.sensitivity) || !model_may_see(private.sensitivity);
+        assert!(hidden);
+        assert!(assert_model_visible(&[&open, &private]).is_err());
     }
 
     #[test]

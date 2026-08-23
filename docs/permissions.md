@@ -96,12 +96,29 @@ write, and every capability flag left at its default of `false`.
   than one that hoards them, which is why this reads only the explicit flag. Opens
   `memory_forget`.
 
-- **`mayIngest`** (default `false`). Gates the ingest routes and the `/admin/cleanup/*` routes:
+- **`mayIngest`** (default `false`). Opens the ingest routes and the `/admin/cleanup/*` routes:
   `admin_cleanup_run`, `admin_cleanup_list`, `admin_cleanup_post`, `admin_cleanup_show`,
   `admin_cleanup_apply`, `admin_cleanup_reject`. A client that can post proposals can fill the
   queue the owner has to read, and a queue he stops reading is an approval gate in name only, so
   cleanup rides the same flag as ingestion rather than a separate one. No MCP tool sits behind
   this; the routes are HTTP-only, for `lumberroom ingest` and the process the owner runs by hand.
+
+  It opens the routes and widens nothing. Every one of them runs inside the client's `read`
+  grant, applied in the query: a cleanup run reads the namespaces the grant admits and refuses a
+  `namespace` outside them; the two queues list, show, reject and unreject only proposals whose
+  rows the grant admits, and an id outside it answers 404; an ingested fact is accepted only for
+  a namespace the client may read at the level that namespace writes at; the emission check
+  answers one boolean per probe, only for rows the grant admits, and at most 200 probes per
+  call. A cleanup finding posted over HTTP has to name rows the client can read, in the
+  namespace it claims, holding the text it says it saw, and a `stale` finding needs `mayDelete`
+  as well, because applying one deletes. `mayIngest` with an empty `read` list is a client that
+  can open runs and nothing else.
+
+  One disclosure rides the flag and no grant narrows it: `GET /admin/ingest/watermarks` lists the
+  path and session id of every transcript file ingestion has walked, and the `POST` moves any
+  file's mark forward. Watermarks are per file, not per namespace, and a plan needs every file's
+  offset or it re-reads what another client already extracted, so they are tenant-wide by design.
+  Give `mayIngest` to a process you run yourself and to nothing that reads a browser tab.
 
 - **`mayReadHistory`** (default `false`). Whether this client may read facts that no longer hold.
   A retired fact can be more revealing than the one that replaced it, so this is off unless the
@@ -187,6 +204,26 @@ Pick one of four shapes and the form fills the grant in:
 | Read and write | `*@sealed` | `*@open` | none |
 | Ingest bot | nothing | nothing | `mayIngest` |
 | Full | `*@sealed` | `*@sealed` | everything except `mayDelete` |
+
+The Ingest bot shape as it stands can open runs and post nothing: a fact is accepted only for a
+namespace the poster may read, so give it the namespaces it extracts for, at `open`, through the
+advanced view. Write is not needed for the queue; it is what turns an `owner_typed` quote into an
+auto-approval, and a client without it gets a proposal the owner reads instead of a badge.
+
+## The cleanup daemon's client
+
+`lumberroom cleanup daemon` holds one credential, `LUMBERROOM_CLEANUP_TOKEN`, and it needs exactly
+this: `mayIngest`, and `read` over the namespaces it cleans at `open`. `{"namespace":"*","max":"open"}`
+is the whole store's open rows. Nothing more.
+
+`open` is enough because everything the daemon reads leaves the machine: the pairs it is handed go to
+a provider, and the run withholds any pair with a side above `open` whatever the grant says. A ceiling
+of `private` would not show the daemon one more pair and would let the same token read private rows
+through every other route. Private duplicates are grouped by the in-server pass, which runs
+unrestricted because it sends nothing anywhere; `docs/cleanup-schedule.md` says what switching that
+pass off costs. No `write`: the daemon proposes and the owner applies, through the
+console's own credential. No `mayDelete`: the model pass produces `paraphrase` and `contradiction`
+findings, and the only kind that deletes is `stale`, which the in-server pass writes itself.
 
 **No shape grants `mayDelete`**, and a test holds that. Deletion is reachable only by opening the
 advanced view and ticking it, which is the point: a client that can silently remove a memory is a

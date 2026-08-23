@@ -140,7 +140,7 @@ commands to read and act on the queue:
 lumberroom ingest list --state proposed --run <run_id>
 lumberroom ingest show <id>
 lumberroom ingest approve <id>...
-lumberroom ingest approve --run <run_id> [--speaker owner_typed] [--yes]
+lumberroom ingest approve --run <run_id> [--auto] [--yes]
 lumberroom ingest reject <id> --reason "..."
 ```
 

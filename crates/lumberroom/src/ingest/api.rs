@@ -96,14 +96,6 @@ pub struct EmissionProbeReq {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct EmissionHit {
-    pub content_sha256: String,
-    pub memory_id: Uuid,
-    pub tool: String,
-    pub first_emitted_at: chrono::DateTime<chrono::Utc>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct Proposal {
     pub id: Uuid,
     pub fingerprint: String,
@@ -303,17 +295,37 @@ pub async fn scan(c: &Client, texts: &[String]) -> Result<Vec<Option<String>>> {
     Ok(rules.into_iter().map(|v| v.as_str().map(|s| s.to_string())).collect())
 }
 
-pub async fn check_emissions(c: &Client, probes: &[EmissionProbeReq]) -> Result<Vec<EmissionHit>> {
-    let (status, body) = c
-        .http_request(
-            reqwest::Method::POST,
-            "/admin/ingest/emissions/check",
-            Some(json!({ "probes": probes })),
-        )
-        .await?;
-    let body = ok(status, body, "the emission check")?;
-    serde_json::from_value(body.get("hits").cloned().unwrap_or(json!([])))
-        .map_err(|e| err(format!("the emission check answered something unreadable: {e}")))
+/// The most probes one call carries. The server refuses more than 200 per call; half that keeps
+/// a request well inside the cap if the cap is ever lowered to match the post batch.
+pub const EMISSION_PROBE_BATCH: usize = 100;
+
+/// One boolean per probe, in probe order. The server answers `{"echoes":[bool, ...]}` and nothing
+/// else: a hit used to name the row that matched, and that told whoever guessed a sentence that
+/// the store holds it and where. Probes go in batches of `EMISSION_PROBE_BATCH`.
+pub async fn check_emissions(c: &Client, probes: &[EmissionProbeReq]) -> Result<Vec<bool>> {
+    let mut echoes = Vec::with_capacity(probes.len());
+    for batch in probes.chunks(EMISSION_PROBE_BATCH) {
+        let (status, body) = c
+            .http_request(
+                reqwest::Method::POST,
+                "/admin/ingest/emissions/check",
+                Some(json!({ "probes": batch })),
+            )
+            .await?;
+        let body = ok(status, body, "the emission check")?;
+        let answered: Vec<bool> = serde_json::from_value(body.get("echoes").cloned().unwrap_or(json!([])))
+            .map_err(|e| err(format!("the emission check answered something unreadable: {e}")))?;
+        if answered.len() != batch.len() {
+            // A zip over a short answer would pair echoes with the wrong facts.
+            return Err(err(format!(
+                "the emission check answered {} echoes for {} probes",
+                answered.len(),
+                batch.len()
+            )));
+        }
+        echoes.extend(answered);
+    }
+    Ok(echoes)
 }
 
 pub async fn post_proposals(c: &Client, extractor: &str, facts: &[FactReq]) -> Result<PostReport> {
