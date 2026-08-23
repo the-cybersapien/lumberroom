@@ -29,15 +29,19 @@ adds an external issuer's JWTs.
 touches nothing:
 
 ```bash
-./client/wire-mac.sh --url https://memory.example.com --token <token> --dry-run
+LUMBERROOM_TOKEN=<token> ./client/wire-mac.sh --url https://memory.example.com --dry-run
 ```
 
-Drop the flag to apply. Every file it edits gets a backup next to the original with a `.lumberroom.bak`
-suffix, and each of its four steps is idempotent:
+Drop `--dry-run` to apply. Every file it edits gets a backup next to the original with a
+`.lumberroom.bak` suffix, and each of its four steps is idempotent:
 
 ```bash
-./client/wire-mac.sh --url https://memory.example.com --token <token>
+LUMBERROOM_TOKEN=<token> ./client/wire-mac.sh --url https://memory.example.com
 ```
+
+There is no `--token` flag: a value on the command line sits in `ps` output and in shell history for
+as long as either persists. Leave `LUMBERROOM_TOKEN` unset in a terminal and `wire-mac.sh` prompts for
+the token with echo off instead.
 
 1. writes `~/.config/lumberroom/config.json` at mode 600, carrying the endpoint and the token
 2. installs `bin/lumberroom.mjs` to `~/.local/bin/lumberroom` and `client/lumberroom-bootstrap-hook.sh` to
@@ -218,18 +222,20 @@ The same digest the hook injects, as markdown. From the same run:
 Store: 3 memories, 1 registry entries across user:me, global, project:memoryengine.
 
 ### About the user and standing preferences
-- The lumberroom server is written in Rust, with rmcp for MCP and sqlx for compile-checked SQL [rust, decision] _(global, 2026-08-19)_
-- Lumberroom measures its own recall by comparing indexed search against an exact scan [recall, verification] _(global, 2026-08-19)_
+- The lumberroom server is written in Rust, with rmcp for MCP and sqlx for compile-checked SQL [rust, decision] _(global, 2026-08-19, via claude-code-mac)_
+- Lumberroom measures its own recall by comparing indexed search against an exact scan [recall, verification] _(global, 2026-08-19, via claude-code-mac)_
 
 ### Recently learned
-- The internal nickname for the lumberroom project is QUARTZLARK-8297b522; use it in commit messages and status notes for lumberroom. [naming, convention] _(project:lumberroom, 2026-08-19)_
+- The internal nickname for the lumberroom project is QUARTZLARK-8297b522; use it in commit messages and status notes for lumberroom. [naming, convention] _(project:lumberroom, 2026-08-19, via claude-code-mac)_
 
 ### Registry
 - host/mcp-endpoint: "https://lumberroom.example.com/mcp" _(global)_
 ```
 
 `QUARTZLARK-8297b522` is a per-run nonce that `scripts/done-when-test.sh` generates and plants, so
-your own digest carries a different one. One more line sits under the `Store:` line naming the
+your own digest carries a different one. The `via` at the end of each bullet names the client that
+wrote the row, which a body cannot forge; a row that carries line breaks or a heading of its own is
+flattened onto one bullet before it is rendered. One more line sits under the `Store:` line naming the
 active project namespace and telling the model to pass it to `memory_search`. A pass here means facts and a count. Section 6 covers a digest that
 comes back with a count and no facts.
 
@@ -420,8 +426,8 @@ docker compose up -d server
 On the second Mac, from its own clone:
 
 ```bash
-./client/wire-mac.sh --url https://memory.example.com --token <second> --dry-run
-./client/wire-mac.sh --url https://memory.example.com --token <second>
+LUMBERROOM_TOKEN=<second> ./client/wire-mac.sh --url https://memory.example.com --dry-run
+LUMBERROOM_TOKEN=<second> ./client/wire-mac.sh --url https://memory.example.com
 ```
 
 Then check the server can tell them apart:
