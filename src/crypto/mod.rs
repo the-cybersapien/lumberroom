@@ -25,10 +25,16 @@
 //! search, so a live compromise reads private content exactly as the service does. And the
 //! embedding of a private row stays plaintext, because search has to work, which leaks the gist of
 //! the row to anyone holding the database.
+//!
+//! The KEK also keys the content digest in [`digest`]. A hash of a private row's plaintext that
+//! anyone could recompute is a way to confirm a guess against the ciphertext, so the hash is an
+//! HMAC under a key derived from the KEK and is worth nothing to a dump holder.
 
+pub mod digest;
 pub mod envelope;
 pub mod kek;
 
+pub use digest::{DigestKey, Digester};
 pub use envelope::{open, seal, SealedContent, ALG};
 pub use kek::{fingerprint, generate_kek_hex, EnvKeyProvider, FileKeyProvider, Kek, KeyProvider};
 

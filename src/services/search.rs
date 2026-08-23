@@ -130,11 +130,13 @@ pub async fn run(
     // The capability check has to live here. A repository holds no principal, so the as-of statement
     // will hand retired rows to anything that sets the field, and a grant over live rows is not a
     // grant over the history behind them.
-    if as_of.is_some() && !ctx.principal.may_read_history {
-        return Err(DomainError::forbidden(format!(
-            "client {} may not read facts that no longer hold",
-            ctx.principal.client
-        )));
+    //
+    // `include_superseded` is the same door with a different handle. It returns the retired rows
+    // with their content, which is what `memory_history` refuses the same client, and for a while
+    // only `as_of` was gated: the replaced credential location that `may_read_history` exists to
+    // protect came back through this flag. One check, one spelling of the refusal.
+    if as_of.is_some() || include_superseded == Some(true) {
+        super::history::assert_may_read(ctx)?;
     }
     // Both set is a caller that believes two different things about what it asked for. The as-of
     // statement applies no supersession filter of its own, so the flag would be silently ignored.
@@ -274,19 +276,12 @@ pub async fn run(
 
     // What the store handed out, so an extractor reading a transcript of this answer proposes a
     // confirmation rather than the same fact again. Recorded from `out`, after decryption and after
-    // the ceiling check, because a row dropped by either was never handed to anyone. The hash is
-    // `ingest::fingerprint`, the same function that produces a proposal's, and using any other one
-    // here would give this layer a hash that can never meet a proposal.
-    let emissions: Vec<Emission> = out
-        .iter()
-        .filter(|h| !h.content.is_empty())
-        .filter_map(|h| {
-            uuid::Uuid::parse_str(&h.id).ok().map(|memory_id| Emission {
-                content_sha256: super::ingest::fingerprint(&h.content),
-                memory_id,
-            })
-        })
-        .collect();
+    // the ceiling check, because a row dropped by either was never handed to anyone.
+    let emissions = emissions_for(
+        ctx,
+        out.iter().map(|h| (h.id.as_str(), h.content.as_str(), h.sensitivity)),
+    )
+    .await;
     ctx.repos.memories.record_emissions(
         ctx.tenant(),
         SEARCH_TOOL,
@@ -296,6 +291,42 @@ pub async fn run(
 
     answered.sort();
     Ok(SearchResult { namespaces: names(&primary), also_searched: answered, hits: out })
+}
+
+/// The emission rows for a result set, digested under the KEK-derived key.
+///
+/// Encrypted rows are left out. Their digest would be the one record of a private row's plaintext
+/// that the database holds beside the ciphertext, and however it is keyed, a row whose content
+/// only exists under the KEK should not also exist as a hash a narrow credential can probe. The
+/// cost is that an ingest pass never recognises a private fact as an echo and queues it again;
+/// the owner declines it once more, which is the cheaper side.
+///
+/// The digest is `Digester::digest`, the same function that produces a proposal's fingerprint.
+/// Using any other one here would give this layer a hash that can never meet a proposal. A digester
+/// that cannot be built means the KEK did not read, and recording nothing is the right answer:
+/// the read already succeeded and this record must not fail it.
+pub(crate) async fn emissions_for<'a>(
+    ctx: &Ctx,
+    rows: impl Iterator<Item = (&'a str, &'a str, Sensitivity)>,
+) -> Vec<Emission> {
+    let candidates: Vec<(uuid::Uuid, &str)> = rows
+        .filter(|(_, content, sensitivity)| !content.is_empty() && !sensitivity.is_encrypted())
+        .filter_map(|(id, content, _)| uuid::Uuid::parse_str(id).ok().map(|id| (id, content)))
+        .collect();
+    if candidates.is_empty() {
+        return vec![];
+    }
+    let digester = match crate::crypto::Digester::from_provider(ctx.keys.as_ref()).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(error = %e.log_message(), "could not derive the content digest key; no emissions recorded");
+            return vec![];
+        }
+    };
+    candidates
+        .into_iter()
+        .map(|(memory_id, content)| Emission { content_sha256: digester.digest(content), memory_id })
+        .collect()
 }
 
 fn names(ceilings: &[NamespaceCeiling]) -> Vec<String> {

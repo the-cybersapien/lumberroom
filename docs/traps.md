@@ -73,6 +73,14 @@ because recalled memories were re-extracted as new ones by a capture hook with n
 that writes back from context has to exclude what the digest and search put there. The whole
 ingestion design is arranged around this.
 
+**Switching `KEK_PROVIDER` from `none` to a key changes every content digest.**
+`recall_emission.content_sha256` and `ingest_proposal.fingerprint` are HMACs under a key derived
+from the KEK (`crypto::digest`); with no KEK they are plain SHA-256. Emissions and proposals
+recorded before the switch never meet the ones recorded after, so the echo check answers false
+for old emissions and a rejected proposal re-proposes once. Run migration 000017's `DELETE` by hand
+after the switch if the stale rows bother you. Migration 000009's column comment still describes
+the unkeyed hash; migrations are forward-only, so `crypto/digest.rs` is the description that holds.
+
 ## Protocol and auth
 
 **`rmcp` validates the `Host` header against an allowlist defaulting to loopback only.** A deployment
