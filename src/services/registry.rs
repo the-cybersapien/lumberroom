@@ -22,8 +22,8 @@ use super::Ctx;
 use crate::adapters::auth::{assert_writable, filter_readable};
 use crate::domain::errors::{DomainError, Result};
 use crate::domain::types::{Principal, Provenance, Sensitivity};
-use crate::ports::registry::RegistryVersion;
-use crate::domain::{canonical, namespaces};
+use crate::ports::registry::{RegistryUpsert, RegistryVersion};
+use crate::domain::{canonical, namespaces, policy, tripwire};
 
 /// How long a fact of each kind stays trustworthy without being looked at.
 ///
@@ -283,6 +283,34 @@ pub async fn set(
     }
     assert_writable(&ctx.principal, &namespace, resolved)?;
 
+    // The same backstop `memory_write` runs, for the same reason. A registry value at open is
+    // plaintext every reader of the namespace sees, and the registry is where a credential gets
+    // written when somebody means to write where it lives. Only at open: a private value is
+    // behind the grant already. The scan runs over the JSON text, so a secret inside a nested
+    // object is found as readily as a bare string.
+    if ctx.cfg.policy.tripwire && resolved == Sensitivity::Open {
+        if let Some(finding) = tripwire::scan(&value.to_string()) {
+            tracing::warn!(
+                client = %ctx.principal.client,
+                namespace = %namespace,
+                rule = %finding.rule,
+                "credential tripwire refused a registry write at open"
+            );
+            return Err(DomainError::validation(format!(
+                "this value matches the {} pattern and will not be stored in the registry at \
+                 open. Store the secret with `lumberroom seal <key> --namespace credentials:<slug>` \
+                 and keep a credential-ref here that names where it lives. The matched text is \
+                 not repeated here on purpose.",
+                finding.rule
+            )));
+        }
+    }
+
+    // The level this caller may overwrite in this namespace. `assert_writable` has passed, so a
+    // ceiling exists.
+    let replace_ceiling =
+        policy::ceiling(&ctx.principal.write, &namespace).unwrap_or(Sensitivity::Open);
+
     let stored_key = match canonical::validate_key(key) {
         Ok(k) => k,
         Err(rejection) => {
@@ -326,7 +354,7 @@ pub async fn set(
     };
     let review_after = chrono::Utc::now() + chrono::Duration::days(review_after_days(&kind));
 
-    let (id, version) = ctx
+    let written = ctx
         .repos
         .registry
         .upsert(crate::ports::RegistryWrite {
@@ -337,9 +365,22 @@ pub async fn set(
             value: value.clone(),
             provenance,
             sensitivity: resolved,
+            replace_ceiling,
             review_after: Some(review_after),
         })
         .await?;
+    let (id, version) = match written {
+        RegistryUpsert::Written { id, version } => (id, version),
+        // The slot holds something above this caller's ceiling. The message names neither the
+        // level nor the value; "may not replace" is all the caller is owed, and it is the same
+        // sentence whether the stored level is private or sealed.
+        RegistryUpsert::Refused => {
+            return Err(DomainError::forbidden(format!(
+                "client {} may not replace what {namespace} holds under {kind}/{stored_key}",
+                ctx.principal.client
+            )))
+        }
+    };
 
     super::bootstrap::clear_cache();
 

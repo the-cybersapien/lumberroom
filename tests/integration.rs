@@ -6,15 +6,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use lumberroom_server::adapters::embedding::HashEmbedder;
 use lumberroom_server::adapters::postgres;
 use lumberroom_server::config::{self, Config};
 use lumberroom_server::crypto::kek::{EnvKeyProvider, KeyProvider};
 use lumberroom_server::domain::policy::{NamespaceGrant, SensitivityDefaults};
 use lumberroom_server::domain::types::{Invocation, Principal, Sensitivity, ToolCall};
+use lumberroom_server::ports::registry::RegistryUpsert;
 use lumberroom_server::ports::RegistryWrite;
-use lumberroom_server::services::{bootstrap, export, recall, registry, review, search, write, Ctx, Repos};
+use lumberroom_server::services::{bootstrap, export, forget, recall, registry, review, search, write, Ctx, Repos};
 
 mod common;
 
@@ -269,6 +270,8 @@ fn registry_write_at(
         value: serde_json::json!(value),
         provenance: provenance.clone(),
         sensitivity,
+        // The helpers write as the owner, whose ceiling reaches everything.
+        replace_ceiling: Sensitivity::Sealed,
         review_after: None,
     }
 }
@@ -511,13 +514,13 @@ async fn registry_is_exact_and_prefers_a_project_override() {
     assert_eq!(override_hit.namespace.as_deref(), Some("project:warden"));
 
     // The upsert bumps the version rather than inserting a second row.
-    let (_, version) = ctx
+    let written = ctx
         .repos
         .registry
         .upsert(registry_write("global", "https://changed.example.com/mcp", &provenance))
         .await
         .unwrap();
-    assert_eq!(version, 2);
+    assert!(matches!(written, RegistryUpsert::Written { version: 2, .. }), "{written:?}");
 }
 
 #[tokio::test]
@@ -1983,4 +1986,480 @@ async fn a_client_without_the_history_capability_is_refused_the_registry_archive
     // narrower grant.
     let live = registry::get(&blind, "service", "services.lumberroom.port", Some("global"), None).await.unwrap();
     assert_eq!(live.value.as_str(), Some("8787"));
+}
+
+// -- data at rest --------------------------------------------------------------------------------
+//
+// Each test here pins one property of what the database holds, or of what a narrow grant can
+// learn from it: the keyed emission digest, the proposal plaintext, the foreign keys a forget
+// has to get past, the chain edits a delete may make, and the registry overwrite guard.
+
+/// A second principal built from the owner's, with one capability flipped. The policy tests above
+/// use `restricted_at` for grants; this is for the boolean axes.
+fn with_principal(ctx: &Ctx, edit: impl FnOnce(&mut Principal)) -> Ctx {
+    let mut c = ctx.clone();
+    edit(&mut c.principal);
+    c
+}
+
+fn narrow(ctx: &Ctx, namespace: &str, max: Sensitivity) -> Ctx {
+    restricted_at(ctx, &at(&[(namespace, max)]), &at(&[(namespace, max)]))
+}
+
+async fn memory_links(pool: &PgPool, id: &str) -> (Option<String>, Option<String>) {
+    let row = sqlx::query("SELECT supersedes, superseded_by FROM memory WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(id).unwrap())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    (
+        row.get::<Option<uuid::Uuid>, _>("supersedes").map(|u| u.to_string()),
+        row.get::<Option<uuid::Uuid>, _>("superseded_by").map(|u| u.to_string()),
+    )
+}
+
+async fn memory_exists(pool: &PgPool, id: &str) -> bool {
+    sqlx::query_scalar::<_, i64>("SELECT count(*) FROM memory WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(id).unwrap())
+        .fetch_one(pool)
+        .await
+        .unwrap()
+        > 0
+}
+
+/// A queue row written straight into the table, the way the post path would leave it. The ingest
+/// service is not under test here; the column contents after a decision are.
+async fn raw_proposal(pool: &PgPool, content: &str, quote: Option<&str>) -> uuid::Uuid {
+    let id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO ingest_proposal
+             (id, tenant_id, fingerprint, content, namespace, speaker, quote, extractor)
+         VALUES ($1, 'me', $2, $3, 'user:me', 'owner_typed', $4, 'test')",
+    )
+    .bind(id)
+    .bind(format!("fp-{id}"))
+    .bind(content)
+    .bind(quote)
+    .execute(pool)
+    .await
+    .unwrap();
+    id
+}
+
+async fn proposal_state(
+    pool: &PgPool,
+    id: uuid::Uuid,
+) -> (String, Option<String>, Option<uuid::Uuid>, Option<uuid::Uuid>) {
+    let row = sqlx::query(
+        "SELECT content, quote, memory_id, supersedes FROM ingest_proposal WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    (row.get("content"), row.get("quote"), row.get("memory_id"), row.get("supersedes"))
+}
+
+async fn link_proposal(pool: &PgPool, proposal: uuid::Uuid, memory: &str) {
+    sqlx::query(
+        "UPDATE ingest_proposal SET state = 'written', memory_id = $2, decided_at = now()
+          WHERE id = $1",
+    )
+    .bind(proposal)
+    .bind(uuid::Uuid::parse_str(memory).unwrap())
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn include_superseded_needs_the_history_capability_like_as_of_does() {
+    let (ctx, _pool, _serial) = ctx_or_skip!();
+    let old = write::run(&ctx, "the vault password lives in the old keychain", "user:me", None, None, None, None)
+        .await
+        .unwrap();
+    write::run(&ctx, "the vault password lives in 1Password", "user:me", None, Some(&old.id), None, None)
+        .await
+        .unwrap();
+
+    let blind = with_principal(&ctx, |p| p.may_read_history = false);
+    let refused = search::run(&blind, "where the vault password lives", None, None, None, Some(true), None)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.kind.http_status(), 403);
+    assert!(refused.client_message().contains("no longer hold"), "{}", refused.client_message());
+
+    // The same client still searches live rows, and the retired one is not among them.
+    let live = search::run(&blind, "where the vault password lives", None, None, None, None, None)
+        .await
+        .unwrap();
+    assert!(!live.hits.iter().any(|h| h.id == old.id));
+
+    // With the capability, the flag does what it says.
+    let seen = search::run(&ctx, "where the vault password lives", None, None, None, Some(true), None)
+        .await
+        .unwrap();
+    assert!(seen.hits.iter().any(|h| h.id == old.id), "the owner asked for history and did not get it");
+}
+
+#[tokio::test]
+async fn an_emission_is_a_keyed_digest_and_is_never_recorded_for_an_encrypted_row() {
+    let (ctx, pool, _serial) = ctx_or_skip!();
+    let open_text = format!("the open fact is {}", nonce("emitopen"));
+    let private_text = format!("the private fact is {}", nonce("emitpriv"));
+    let open = write::run(&ctx, &open_text, "user:me", None, None, None, None).await.unwrap();
+    let private = write::run(&ctx, &private_text, "user:me", None, None, Some("private"), None).await.unwrap();
+    assert_eq!(private.sensitivity, Sensitivity::Private);
+
+    let hits = search::run(&ctx, "the fact is", Some(vec!["user:me".into()]), Some(10), None, None, None)
+        .await
+        .unwrap();
+    assert!(hits.hits.iter().any(|h| h.id == open.id));
+    assert!(hits.hits.iter().any(|h| h.id == private.id), "the owner reads the private row");
+    // record_emissions is fire and forget by contract.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    let recorded: Vec<(uuid::Uuid, String)> =
+        sqlx::query_as("SELECT memory_id, content_sha256 FROM recall_emission WHERE tenant_id = 'me'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    let open_id = uuid::Uuid::parse_str(&open.id).unwrap();
+    let private_id = uuid::Uuid::parse_str(&private.id).unwrap();
+    assert!(
+        !recorded.iter().any(|(id, _)| *id == private_id),
+        "an encrypted row must leave no digest of its plaintext behind"
+    );
+    let stored = recorded
+        .iter()
+        .find(|(id, _)| *id == open_id)
+        .map(|(_, h)| h.clone())
+        .expect("the open row was emitted");
+
+    let keyed = lumberroom_server::crypto::Digester::from_provider(ctx.keys.as_ref()).await.unwrap();
+    assert!(keyed.is_keyed());
+    assert_eq!(stored, keyed.digest(&open_text), "the stored digest is the keyed one");
+    assert_ne!(
+        stored,
+        lumberroom_server::crypto::Digester::unkeyed().digest(&open_text),
+        "a plain hash of the text would let a dump holder verify a guess"
+    );
+}
+
+#[tokio::test]
+async fn a_proposal_loses_its_plaintext_once_its_memory_is_encrypted_or_forgotten() {
+    let (ctx, pool, _serial) = ctx_or_skip!();
+    let secret = nonce("proposal");
+    let text = format!("the health note is {secret}");
+
+    // Linked to a private row: cleared at the link.
+    let sealed = raw_proposal(&pool, &text, Some(&text)).await;
+    let private = write::run(&ctx, &text, "user:me", None, None, Some("private"), None).await.unwrap();
+    link_proposal(&pool, sealed, &private.id).await;
+    let (content, quote, memory_id, _) = proposal_state(&pool, sealed).await;
+    assert_eq!(content, "", "the plaintext stayed in the queue after the row was sealed");
+    assert_eq!(quote, None);
+    assert_eq!(memory_id.map(|u| u.to_string()), Some(private.id.clone()));
+
+    // Linked to an open row: kept, there is nothing to protect.
+    let open_text = format!("the open note is {}", nonce("proposalopen"));
+    let plain = raw_proposal(&pool, &open_text, None).await;
+    let open = write::run(&ctx, &open_text, "user:me", None, None, None, None).await.unwrap();
+    link_proposal(&pool, plain, &open.id).await;
+    let (content, _, _, _) = proposal_state(&pool, plain).await;
+    assert_eq!(content, open_text);
+
+    // Forgotten: the link goes, and the text with it.
+    let gone = forget::by_id(&ctx, &open.id, Some("test"), false).await.unwrap();
+    assert_eq!(gone.count, 1);
+    let (content, _, memory_id, _) = proposal_state(&pool, plain).await;
+    assert_eq!(memory_id, None, "the proposal still pointed at a deleted row");
+    assert_eq!(content, "", "a shred that leaves the sentence in the queue is not a shred");
+}
+
+#[tokio::test]
+async fn forgetting_a_memory_the_queue_produced_or_targets_succeeds() {
+    let (ctx, pool, _serial) = ctx_or_skip!();
+    let text = format!("an ingested private fact {}", nonce("fk"));
+    let produced = write::run(&ctx, &text, "user:me", None, None, Some("private"), None).await.unwrap();
+    let proposal = raw_proposal(&pool, &text, None).await;
+    link_proposal(&pool, proposal, &produced.id).await;
+
+    let target = write::run(&ctx, "a fact a proposal wants to replace", "user:me", None, None, None, None)
+        .await
+        .unwrap();
+    let pinned = raw_proposal(&pool, "the replacement", None).await;
+    sqlx::query("UPDATE ingest_proposal SET supersedes = $2 WHERE id = $1")
+        .bind(pinned)
+        .bind(uuid::Uuid::parse_str(&target.id).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let preview = forget::by_id(&ctx, &produced.id, None, true).await.unwrap();
+    assert!(preview.dry_run && preview.count == 1);
+    let done = forget::by_id(&ctx, &produced.id, Some("test"), false).await.unwrap();
+    assert_eq!(done.count, 1, "{}", done.text);
+    assert!(!memory_exists(&pool, &produced.id).await, "the foreign key kept the row alive");
+
+    let done = forget::by_id(&ctx, &target.id, Some("test"), false).await.unwrap();
+    assert_eq!(done.count, 1, "{}", done.text);
+    assert!(!memory_exists(&pool, &target.id).await);
+    let (_, _, _, supersedes) = proposal_state(&pool, pinned).await;
+    assert_eq!(supersedes, None, "a proposal cannot pin a memory against the owner's forget");
+}
+
+#[tokio::test]
+async fn no_foreign_key_into_memory_is_left_to_block_a_delete() {
+    let (_ctx, pool, _serial) = ctx_or_skip!();
+    let keys: Vec<(String, String)> = sqlx::query_as(
+        "SELECT conname::text, confdeltype::text FROM pg_constraint
+          WHERE confrelid = 'memory'::regclass ORDER BY conname",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(!keys.is_empty());
+    for (name, action) in &keys {
+        match name.as_str() {
+            // The delete path edits these itself under the caller's grant, and a constraint that
+            // refuses is the signal that it missed one. Anything else pointing at memory has to
+            // release the row on its own.
+            "memory_supersedes_fkey" | "memory_superseded_by_fkey" => {
+                assert_eq!(action, "a", "{name}")
+            }
+            _ => assert!(
+                action == "n" || action == "c",
+                "{name} is {action:?}: a NO ACTION key into memory makes forget fail with an \
+                 internal error on the rows it references"
+            ),
+        }
+    }
+}
+
+#[tokio::test]
+async fn deleting_a_correction_does_not_revive_a_row_the_caller_cannot_reach() {
+    let (ctx, pool, _serial) = ctx_or_skip!();
+    let retired = write::run(&ctx, "the salary figure, the old one", "user:me", None, None, Some("private"), None)
+        .await
+        .unwrap();
+    let correction = write::run(&ctx, "the salary figure was corrected", "user:me", None, Some(&retired.id), None, None)
+        .await
+        .unwrap();
+    assert_eq!(correction.sensitivity, Sensitivity::Open);
+    assert_eq!(memory_links(&pool, &retired.id).await.1, Some(correction.id.clone()));
+
+    let mut limited = narrow(&ctx, "user:me", Sensitivity::Open);
+    limited.principal.may_delete = true;
+    let refused = forget::by_id(&limited, &correction.id, None, false).await.unwrap_err();
+    assert_eq!(refused.kind.http_status(), 404);
+    assert!(!refused.client_message().contains("private"), "{}", refused.client_message());
+    assert!(memory_exists(&pool, &correction.id).await, "the refusal has to leave the row");
+    assert_eq!(
+        memory_links(&pool, &retired.id).await.1,
+        Some(correction.id.clone()),
+        "the private fact the owner retired came back to life"
+    );
+    // The dry run says the same thing, so a preview never promises a delete that is then refused.
+    assert!(forget::by_id(&limited, &correction.id, None, true).await.is_err());
+
+    // The owner holds both grants and the revival is reported.
+    let done = forget::by_id(&ctx, &correction.id, Some("test"), false).await.unwrap();
+    assert_eq!(done.revived, vec![retired.id.clone()], "{}", done.text);
+    assert!(done.text.contains("Revived 1 row"), "{}", done.text);
+    assert_eq!(memory_links(&pool, &retired.id).await, (None, None));
+}
+
+#[tokio::test]
+async fn deleting_the_middle_of_a_chain_splices_the_ends_together() {
+    let (ctx, pool, _serial) = ctx_or_skip!();
+    let first = write::run(&ctx, "the port is 8080", "user:me", None, None, None, None).await.unwrap();
+    let second = write::run(&ctx, "the port is 8443", "user:me", None, Some(&first.id), None, None)
+        .await
+        .unwrap();
+    let third = write::run(&ctx, "the port is 8787", "user:me", None, Some(&second.id), None, None)
+        .await
+        .unwrap();
+
+    let done = forget::by_id(&ctx, &second.id, Some("test"), false).await.unwrap();
+    assert_eq!(done.count, 1);
+    assert_eq!(done.spliced, vec![first.id.clone()], "{}", done.text);
+    assert!(done.revived.is_empty(), "a row with a successor revives nothing");
+
+    assert_eq!(
+        memory_links(&pool, &first.id).await.1,
+        Some(third.id.clone()),
+        "the first row stays retired, behind the third"
+    );
+    assert_eq!(
+        memory_links(&pool, &third.id).await.0,
+        Some(first.id.clone()),
+        "the third row now names the first as what it replaced"
+    );
+
+    // The first row is retired, so a live search does not serve it beside the third.
+    let live = search::run(&ctx, "the port", Some(vec!["user:me".into()]), Some(10), None, None, None)
+        .await
+        .unwrap();
+    assert!(live.hits.iter().any(|h| h.id == third.id));
+    assert!(!live.hits.iter().any(|h| h.id == first.id), "two live versions of one fact");
+}
+
+#[tokio::test]
+async fn a_write_only_grant_cannot_learn_whether_its_exact_sentence_is_stored() {
+    let (ctx, _pool, _serial) = ctx_or_skip!();
+    let sentence = format!("the production database password is kept in {}", nonce("dedupe"));
+    let existing = write::run(&ctx, &sentence, "project:secret", None, None, None, None).await.unwrap();
+
+    let write_only = restricted(&ctx, &[], &["project:secret"]);
+    let probe = write::run(&write_only, &sentence, "project:secret", None, None, None, None).await.unwrap();
+    assert!(!probe.deduplicated, "deduplicated:true is a yes to an exact-content guess");
+    assert_ne!(probe.id, existing.id, "and the id is the row's own");
+
+    // The same sentence from a client that may read the namespace collapses, as before.
+    let reader = restricted(&ctx, &["project:secret"], &["project:secret"]);
+    let again = write::run(&reader, &sentence, "project:secret", None, None, None, None).await.unwrap();
+    assert!(again.deduplicated);
+}
+
+#[tokio::test]
+async fn a_private_write_is_refused_while_the_server_is_degraded_onto_the_hash_embedder() {
+    use lumberroom_server::config::EmbedProvider;
+    use lumberroom_server::ports::Embedder as _;
+    // The harness runs the hash embedder under EMBED_PROVIDER=hash, which is the operator's own
+    // choice and goes through. Tuning the config to `local` while the embedder stays the hash
+    // sketch is the fallback window.
+    let (ctx, _pool, _serial) =
+        ctx_or_skip!(|cfg: &mut Config| cfg.embed.provider = EmbedProvider::Local);
+    assert!(
+        HashEmbedder::new(768).id().starts_with(write::HASH_EMBEDDER_ID_PREFIX),
+        "the service keys on this prefix"
+    );
+
+    let refused = write::run(&ctx, "a private fact while degraded", "user:me", None, None, Some("private"), None)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.kind.http_status(), 503);
+    assert!(refused.client_message().contains("fallback hash embedder"), "{}", refused.client_message());
+
+    // Open writes are unaffected: the sketch of an open row sits beside its plaintext anyway.
+    write::run(&ctx, "an open fact while degraded", "user:me", None, None, None, None).await.unwrap();
+}
+
+#[tokio::test]
+async fn an_open_ceiling_writer_cannot_replace_or_declassify_a_private_registry_row() {
+    let (ctx, pool, _serial) = ctx_or_skip!();
+    let secret = nonce("regslot");
+    ctx.repos
+        .registry
+        .upsert(registry_write_at("user:me", "credentials.aws.root", &secret, Sensitivity::Private, &provenance()))
+        .await
+        .unwrap();
+
+    let mut bot = narrow(&ctx, "user:me", Sensitivity::Open);
+    bot.principal.registry_write = true;
+    let refused = registry::set(&bot, "user:me", "host", "credentials.aws.root", &serde_json::json!("poisoned"), None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.kind.http_status(), 403);
+    let message = refused.client_message().to_string();
+    assert!(!message.contains("private"), "the level is the thing being hidden: {message}");
+    assert!(!message.contains(&secret), "{message}");
+
+    let row = sqlx::query("SELECT value, sensitivity, version FROM registry WHERE key = 'credentials.aws.root'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(row.get::<serde_json::Value, _>("value"), serde_json::json!(secret));
+    assert_eq!(row.get::<&str, _>("sensitivity"), "private");
+    assert_eq!(row.get::<i32, _>("version"), 1, "a refused write must not bump the version");
+
+    // The owner's agents still read the owner's value.
+    let got = registry::get(&ctx, "host", "credentials.aws.root", Some("user:me"), None).await.unwrap();
+    assert_eq!(got.value, serde_json::json!(secret));
+
+    // And the same bot writes an empty slot at open, which is all its grant was for.
+    registry::set(&bot, "user:me", "host", "machines.laptop.os", &serde_json::json!("macOS"), None, None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn raising_a_registry_keys_level_takes_its_history_with_it() {
+    let (ctx, _pool, _serial) = ctx_or_skip!();
+    let secret = nonce("reghist");
+    registry::set(&ctx, "user:me", "credential-ref", "credentials.vault.root", &serde_json::json!("old-place"), None, None)
+        .await
+        .unwrap();
+    registry::set(&ctx, "user:me", "credential-ref", "credentials.vault.root", &serde_json::json!(secret), None, None)
+        .await
+        .unwrap();
+    // The same value, reclassified. Before this, the archive took an identical copy at open.
+    registry::set(&ctx, "user:me", "credential-ref", "credentials.vault.root", &serde_json::json!(secret), Some("private"), None)
+        .await
+        .unwrap();
+
+    let mut open_reader = narrow(&ctx, "user:me", Sensitivity::Open);
+    open_reader.principal.may_read_history = true;
+    let seen = registry::history(&open_reader, "credential-ref", "credentials.vault.root", Some("user:me"), None, None)
+        .await
+        .unwrap();
+    assert!(
+        seen.entries.is_empty(),
+        "an open ceiling read the private value out of the archive: {:?}",
+        seen.entries.iter().map(|e| e.value.clone()).collect::<Vec<_>>()
+    );
+
+    let all = registry::history(&ctx, "credential-ref", "credentials.vault.root", Some("user:me"), None, None)
+        .await
+        .unwrap();
+    assert_eq!(all.entries.len(), 2);
+    assert!(
+        all.entries.iter().all(|e| e.sensitivity == Sensitivity::Private),
+        "the raise lifts every earlier row"
+    );
+
+    // Lowering never lowers the archive.
+    registry::set(&ctx, "user:me", "credential-ref", "credentials.vault.root", &serde_json::json!("public-place"), Some("open"), None)
+        .await
+        .unwrap();
+    let after = registry::history(&ctx, "credential-ref", "credentials.vault.root", Some("user:me"), None, None)
+        .await
+        .unwrap();
+    assert_eq!(after.entries.len(), 3);
+    assert!(after.entries.iter().all(|e| e.sensitivity == Sensitivity::Private));
+}
+
+#[tokio::test]
+async fn a_registry_value_at_open_goes_through_the_credential_tripwire() {
+    let (ctx, _pool, _serial) = ctx_or_skip!();
+    let token = "6f2a4c1e7b3d4f8a9c2e1d5b6a7c8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d";
+    let refused = registry::set(
+        &ctx,
+        "user:me",
+        "credential-ref",
+        "credentials.lumberroom.token",
+        &serde_json::json!({ "token": token }),
+        None,
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.kind.http_status(), 400);
+    let message = refused.client_message().to_string();
+    assert!(message.contains("hex_credential"), "{message}");
+    assert!(!message.contains(token), "{message}");
+
+    // A reference to where it lives is what the registry is for.
+    registry::set(
+        &ctx,
+        "user:me",
+        "credential-ref",
+        "credentials.lumberroom.token",
+        &serde_json::json!({ "vault": "1Password", "item": "lumberroom client token" }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 }

@@ -20,16 +20,33 @@ pub struct RegistryWrite {
     pub value: serde_json::Value,
     pub provenance: Provenance,
     pub sensitivity: Sensitivity,
+    /// The highest level this caller may overwrite in this namespace: the write ceiling of their
+    /// grant there. A row already stored above it is left as it is and the write reports
+    /// `Refused`. Without this, an open-ceiling grant could replace a private slot with an open
+    /// value, which both declassifies the slot and confirms it existed.
+    pub replace_ceiling: Sensitivity,
     /// Per-kind expectation of how fast this fact goes stale. A host ages slowly; a model route ages
     /// fast because routing preferences change monthly. Expiry marks a row for review, never removes it.
     pub review_after: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// What an upsert did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegistryUpsert {
+    /// The row id and the version this write produced.
+    Written { id: String, version: i32 },
+    /// The slot holds a value above `replace_ceiling`. Nothing changed, and the caller is told no
+    /// more than that.
+    Refused,
+}
+
 /// A value this key used to hold, and the moment it stopped holding it.
 ///
-/// Every field is the row as it was when it was current, including `sensitivity`. A key
-/// reclassified from private to open does not declassify what it held before, so a reader's ceiling
-/// is checked against the archived level rather than the level the live row carries today.
+/// Every field is the row as it was when it was current, except `sensitivity`, which is the higher
+/// of the level it carried and the level that replaced it. A key reclassified from private to open
+/// does not declassify what it held before, and a key raised from open to private takes its past
+/// with it: the value that was open a moment ago is the value the owner has just decided is not.
+/// A reader's ceiling is checked against that archived level, never the live row's.
 #[derive(Debug, Clone, Serialize)]
 pub struct RegistryVersion {
     /// The live row this value belonged to. A key deleted and written again gets a new id under the
@@ -81,7 +98,12 @@ pub trait RegistryRepository: Send + Sync {
         key: &str,
     ) -> Result<Option<RegistryEntry>>;
 
-    /// Returns the row id and the version this write produced.
+    /// Returns the row id and the version this write produced, or `Refused` when the slot already
+    /// holds a value above `w.replace_ceiling`.
+    ///
+    /// The ceiling is checked inside the statement, against the stored row, in the same way the
+    /// read paths apply theirs: a check in the service over a row it fetched first would read a
+    /// value the caller may not see, and would race a second writer.
     ///
     /// An implementation owes the caller one thing beyond the write: the value it replaces has to
     /// survive somewhere, in the same transaction as the replacement. A registry value overwritten
@@ -89,7 +111,7 @@ pub trait RegistryRepository: Send + Sync {
     /// can fail on its own is worse than none, because the gaps are undetectable. Postgres does it
     /// with an append-only table and a trigger. The contract here is the durability; an
     /// implementation picks its own mechanism. Read it back with `history`.
-    async fn upsert(&self, w: RegistryWrite) -> Result<(String, i32)>;
+    async fn upsert(&self, w: RegistryWrite) -> Result<RegistryUpsert>;
 
     /// What this key used to hold, newest first, at most `limit` rows.
     ///

@@ -11,7 +11,7 @@ use crate::domain::canonical;
 use crate::domain::errors::{DomainError, Result};
 use crate::domain::policy::NamespaceCeiling;
 use crate::domain::types::{RegistryEntry, Sensitivity};
-use crate::ports::registry::RegistryVersion;
+use crate::ports::registry::{RegistryUpsert, RegistryVersion};
 use crate::ports::{AliasOrigin, RegistryRepository, RegistryWrite};
 
 pub struct PgRegistryRepository {
@@ -90,6 +90,25 @@ const HISTORY_SQL: &str = r#"
       JOIN answering w ON c.preference = w.preference
      ORDER BY c.replaced_at DESC, c.version DESC
      LIMIT $6
+"#;
+
+/// The write, with the overwrite guard in the statement.
+///
+/// `$9` is the caller's replace ceiling. A row stored above it is not touched, which keeps an
+/// open-ceiling writer from declassifying a private slot and from learning its version. The guard
+/// sits on the conflict arm only: an insert into an empty slot has nothing to overwrite.
+const UPSERT_SQL: &str = r#"
+    INSERT INTO registry (tenant_id, namespace, kind, key, value, provenance,
+                          sensitivity, review_after)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    ON CONFLICT (tenant_id, namespace, kind, key)
+    DO UPDATE SET value        = EXCLUDED.value,
+                  provenance   = EXCLUDED.provenance,
+                  sensitivity  = EXCLUDED.sensitivity,
+                  review_after = EXCLUDED.review_after,
+                  version      = registry.version + 1
+          WHERE sensitivity_rank(registry.sensitivity) <= sensitivity_rank($9)
+    RETURNING id, version
 "#;
 
 fn entry_from_row(r: &sqlx::postgres::PgRow) -> RegistryEntry {
@@ -172,31 +191,32 @@ impl RegistryRepository for PgRegistryRepository {
     /// rather than in this statement so a writer that is not this adapter, an owner in psql above
     /// all, cannot replace a value without leaving the old one behind. Read that migration before
     /// changing anything here: the trigger is the reason this can stay one statement.
-    async fn upsert(&self, w: RegistryWrite) -> Result<(String, i32)> {
-        let row = sqlx::query(
-            "INSERT INTO registry (tenant_id, namespace, kind, key, value, provenance,
-                                   sensitivity, review_after)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             ON CONFLICT (tenant_id, namespace, kind, key)
-             DO UPDATE SET value        = EXCLUDED.value,
-                           provenance   = EXCLUDED.provenance,
-                           sensitivity  = EXCLUDED.sensitivity,
-                           review_after = EXCLUDED.review_after,
-                           version      = registry.version + 1
-             RETURNING id, version",
-        )
-        .bind(&w.tenant_id)
-        .bind(&w.namespace)
-        .bind(&w.kind)
-        .bind(&w.key)
-        .bind(&w.value)
-        .bind(serde_json::to_value(&w.provenance).unwrap_or(serde_json::Value::Null))
-        .bind(w.sensitivity.as_str())
-        .bind(w.review_after)
-        .fetch_one(&self.pool)
-        .await?;
+    ///
+    /// The `WHERE` on the `DO UPDATE` is the overwrite guard. A stored level above the caller's
+    /// replace ceiling makes the update a no-op, `RETURNING` yields no row, and that absence is
+    /// the refusal. `fetch_optional` rather than `fetch_one` for that reason: the guard biting is
+    /// an answer, not a missing row.
+    async fn upsert(&self, w: RegistryWrite) -> Result<RegistryUpsert> {
+        let row = sqlx::query(UPSERT_SQL)
+            .bind(&w.tenant_id)
+            .bind(&w.namespace)
+            .bind(&w.kind)
+            .bind(&w.key)
+            .bind(&w.value)
+            .bind(serde_json::to_value(&w.provenance).unwrap_or(serde_json::Value::Null))
+            .bind(w.sensitivity.as_str())
+            .bind(w.review_after)
+            .bind(w.replace_ceiling.as_str())
+            .fetch_optional(&self.pool)
+            .await?;
 
-        Ok((row.get::<uuid::Uuid, _>("id").to_string(), row.get("version")))
+        Ok(match row {
+            Some(row) => RegistryUpsert::Written {
+                id: row.get::<uuid::Uuid, _>("id").to_string(),
+                version: row.get("version"),
+            },
+            None => RegistryUpsert::Refused,
+        })
     }
 
     /// The reader for what the trigger has been writing since migration `20260821000012`.
@@ -469,6 +489,30 @@ mod tests {
         assert!(!HISTORY_MIGRATION.contains("REFERENCES registry"));
         assert!(HISTORY_MIGRATION.contains("registry_history_key"));
         assert!(HISTORY_MIGRATION.contains("replaced_at DESC"));
+    }
+
+    #[test]
+    fn the_write_refuses_to_replace_a_row_stored_above_the_callers_ceiling() {
+        assert!(UPSERT_SQL.contains(
+            "WHERE sensitivity_rank(registry.sensitivity) <= sensitivity_rank($9)"
+        ));
+        // The guard belongs to the update arm. On the insert arm there is no stored level to
+        // compare and the clause would refuse every first write.
+        let guard = UPSERT_SQL.find("WHERE sensitivity_rank").unwrap();
+        assert!(UPSERT_SQL.find("DO UPDATE").unwrap() < guard);
+    }
+
+    const HISTORY_LEVEL_MIGRATION: &str =
+        include_str!("../../../migrations/20260823000020_registry_history_level.sql");
+
+    #[test]
+    fn the_archive_records_a_replaced_value_at_the_higher_of_the_two_levels() {
+        // Raising a key's level must not leave its previous value readable at the old one: the
+        // value the owner just classified is, more often than not, the value that was there.
+        assert!(HISTORY_LEVEL_MIGRATION.contains("sensitivity_rank(OLD.sensitivity) >= sensitivity_rank(NEW.sensitivity)"));
+        assert!(HISTORY_LEVEL_MIGRATION.contains("UPDATE registry_history"));
+        assert!(HISTORY_LEVEL_MIGRATION.contains("CREATE OR REPLACE FUNCTION registry_archive_old_value()"));
+        assert!(!HISTORY_LEVEL_MIGRATION.contains("WHEN ("));
     }
 
     #[test]
