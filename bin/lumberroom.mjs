@@ -157,6 +157,57 @@ function headers(extra = {}) {
   return h;
 }
 
+const MAX_REDIRECTS = 5;
+
+function sameOrigin(a, b) {
+  return a.protocol === b.protocol && a.hostname === b.hostname && a.port === b.port;
+}
+
+/**
+ * Follows a redirect only to the origin the call started at. A `Bearer` token in `Authorization`
+ * is the bearer's whole identity: if the server (or anything on path to it, which is the threat a
+ * redirect exists to let in) answers with a redirect to another origin, `fetch`'s built-in
+ * following resends every header verbatim and the token leaves for wherever the Location line
+ * points. A cross-origin hop is refused outright, with an error naming both origins, rather than
+ * followed without the header: this client talks to one server, an unauthenticated request to a
+ * different one is never what the caller meant, and refusing also keeps the client_secret in the
+ * two /oauth/token POST bodies at home. Same-origin hops follow with the method and body rules
+ * browsers apply.
+ */
+async function fetchManagedRedirects(url, init) {
+  let current = new URL(url);
+  let currentInit = init;
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const res = await fetch(current, { ...currentInit, redirect: 'manual' });
+    if (res.status < 300 || res.status >= 400 || !res.headers.has('location')) return res;
+    if (hop === MAX_REDIRECTS) {
+      throw new Error(`too many redirects (${MAX_REDIRECTS}) fetching ${url}`);
+    }
+    const next = new URL(res.headers.get('location'), current);
+    const crossOrigin = !sameOrigin(next, current);
+    if (crossOrigin) {
+      throw new Error(
+        `refusing a cross-origin redirect from ${current.origin} to ${next.origin}. ` +
+          'A credential is never sent past the origin it was configured for.',
+      );
+    }
+    // 303 always downgrades to GET with no body; 301/302 do the same for a non-GET/HEAD request,
+    // matching every browser's de facto behaviour even though the original RFC said to preserve
+    // the method. 307/308 are the only codes that keep method and body across the hop.
+    const method = String(currentInit?.method ?? 'GET').toUpperCase();
+    const nextHeaders = { ...(currentInit?.headers ?? {}) };
+    let nextBody = currentInit?.body;
+    let nextMethod = method;
+    if (res.status === 303 || ((res.status === 301 || res.status === 302) && method !== 'GET' && method !== 'HEAD')) {
+      nextMethod = 'GET';
+      nextBody = undefined;
+    }
+    current = next;
+    currentInit = { ...currentInit, method: nextMethod, headers: nextHeaders, body: nextBody };
+  }
+  throw new Error(`too many redirects (${MAX_REDIRECTS}) fetching ${url}`);
+}
+
 /**
  * One refresh, one retry, no loop. A refresh token that itself fails just falls through and lets
  * the caller's own 401 handling report the failure: retrying a bad refresh token is how a
@@ -170,7 +221,7 @@ async function refreshAccessToken() {
     if (!oauth?.refresh_token || !oauth?.client_id) return false;
     let res;
     try {
-      res = await fetch(`${httpBase}/oauth/token`, {
+      res = await fetchManagedRedirects(`${httpBase}/oauth/token`, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         // /oauth/token takes form encoding, never JSON: a stack wired only for JSON returns 415
@@ -212,10 +263,10 @@ async function refreshAccessToken() {
  * replaying the stale Authorization header that caused the 401.
  */
 async function fetchWithAuth(url, buildInit) {
-  let res = await fetch(url, buildInit());
+  let res = await fetchManagedRedirects(url, buildInit());
   if (res.status === 401 && fileConfig.oauth?.refresh_token) {
     const refreshed = await refreshAccessToken();
-    if (refreshed) res = await fetch(url, buildInit());
+    if (refreshed) res = await fetchManagedRedirects(url, buildInit());
   }
   return res;
 }
@@ -616,7 +667,7 @@ const commands = {
         });
       });
 
-      const tokenRes = await fetch(`${httpBase}/oauth/token`, {
+      const tokenRes = await fetchManagedRedirects(`${httpBase}/oauth/token`, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({

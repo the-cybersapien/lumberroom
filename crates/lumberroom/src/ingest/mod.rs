@@ -14,6 +14,10 @@
 
 pub mod api;
 pub mod batch;
+/// Mode C driven against a loopback stub, so the submit-poll-split lifecycle has a test that is
+/// not a pure function over a fixture.
+#[cfg(test)]
+mod batch_stub_test;
 pub mod claude;
 pub mod codex;
 pub mod extract;
@@ -190,6 +194,14 @@ pub struct PlanCounters {
     /// `INGEST_MAX_FILES` or `INGEST_MAX_ENTRIES` fired. Silent partial coverage of a corpus reads
     /// exactly like complete coverage.
     pub traversal_capped: bool,
+    /// Spans the tripwire refused before a byte of them ever reached a provider, keyed by rule
+    /// name. This is the plan-time scan, upstream of the one `submit` already runs on the facts a
+    /// provider hands back; a span dropped here never became a chunk in the first place.
+    ///
+    /// Defaulted on read: a worklist planned before this field existed and still inside the
+    /// retention window has to submit, and a missing key is an empty table, not a broken run.
+    #[serde(default)]
+    pub spans_dropped_tripwire: std::collections::BTreeMap<String, i32>,
 }
 
 impl PlanCounters {
@@ -204,6 +216,9 @@ impl PlanCounters {
     }
     pub fn speaker(&mut self, s: Speaker) {
         *self.speakers.entry(s.as_str().to_string()).or_insert(0) += 1;
+    }
+    pub fn tripwire(&mut self, rule: &str) {
+        *self.spans_dropped_tripwire.entry(rule.to_string()).or_insert(0) += 1;
     }
 }
 
@@ -333,9 +348,8 @@ impl RunPaths {
     }
 
     pub fn create(&self) -> Result<()> {
-        std::fs::create_dir_all(self.spans_dir())
-            .and_then(|_| std::fs::create_dir_all(self.out_dir()))
-            .map_err(|e| err(format!("could not create the run directory: {e}")))
+        create_dir_owner_only(&self.spans_dir())
+            .and_then(|_| create_dir_owner_only(&self.out_dir()))
     }
 
     pub fn read_worklist(&self) -> Result<Worklist> {
@@ -376,15 +390,57 @@ pub fn runs_dir() -> Result<PathBuf> {
     Ok(ingest_dir()?.join("runs"))
 }
 
-/// Serialise pretty and write. Every file this module writes is one the owner may open.
+/// Serialise pretty and write, owner-only. Every file this module writes holds verbatim transcript
+/// text or the facts extracted from it, so it is one the owner may open and no one else may.
 pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| err(format!("could not create {}: {e}", parent.display()))) ?;
+        create_dir_owner_only(parent)?;
     }
     let body = serde_json::to_vec_pretty(value)
         .map_err(|e| err(format!("could not serialise {}: {e}", path.display())))?;
-    std::fs::write(path, body).map_err(|e| err(format!("could not write {}: {e}", path.display())))
+    write_owner_only(path, &body)
+}
+
+/// Create every directory in `path` that does not already exist at mode 0700, so a run directory
+/// under the state dir is never left at the process umask (typically 0755) for even a moment.
+/// `DirBuilder::recursive` mode applies to each component it creates, existing ones are untouched.
+pub fn create_dir_owner_only(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+            .map_err(|e| err(format!("could not create {}: {e}", path.display())))
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(path).map_err(|e| err(format!("could not create {}: {e}", path.display())))
+    }
+}
+
+/// Write `body` to `path` at mode 0600 from the moment it is created, rather than writing at the
+/// umask and chmod-ing after: a file that already exists loses nothing (the open truncates it and
+/// keeps its mode), but a fresh one never has a window where another local account can read it.
+pub fn write_owner_only(path: &Path, body: &[u8]) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| err(format!("could not write {}: {e}", path.display())))?;
+        file.write_all(body).map_err(|e| err(format!("could not write {}: {e}", path.display())))
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, body).map_err(|e| err(format!("could not write {}: {e}", path.display())))
+    }
 }
 
 /// Hex sha256 of a byte range starting at zero. The watermark's `prefix_sha256` and nothing else.
@@ -490,6 +546,144 @@ pub const FENCE_BEGIN: &str = "lumberroom-ingest-begin:";
 pub const FENCE_END: &str = "lumberroom-ingest-end:";
 pub const FENCE_RUN: &str = "lumberroom-ingest-run:";
 
+/// The run id immediately after `prefix` in `line`, if the prefix appears at all. `Some(Ok(id))`
+/// is a real marker; `Some(Err(()))` is the prefix with no parseable uuid after it, which is what
+/// an unrelated line quoting the literal prefix (a grep hit, a WebFetch of this file, a README)
+/// produces; `None` is no occurrence of the prefix at all.
+fn marker_uuid(line: &str, prefix: &str) -> Option<std::result::Result<uuid::Uuid, ()>> {
+    let pos = line.find(prefix)?;
+    let rest = &line[pos + prefix.len()..];
+    match rest.get(..36).and_then(|s| uuid::Uuid::parse_str(s).ok()) {
+        Some(id) => Some(Ok(id)),
+        None => Some(Err(())),
+    }
+}
+
+/// Tracks the ingest fence across a file's lines, bound to the run id the emitter writes rather
+/// than a bare substring match. `contains(FENCE_BEGIN)` alone means any line quoting that literal
+/// string opens a fence that swallows the rest of the file with no end marker in sight, since an
+/// ordinary session carries no closer; binding to a uuid makes an accidental hit fall through to
+/// ordinary parsing instead, and a mismatched close leaves a genuine fence open rather than
+/// closing early on a coincidence.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FenceState {
+    open: Option<uuid::Uuid>,
+    /// Byte offset of the line that opened the fence currently held open, so a fence still open
+    /// at EOF can hold the file's watermark there instead of at the read ceiling.
+    open_since: Option<i64>,
+}
+
+impl FenceState {
+    /// Feed one line. Returns whether it belongs to a fenced region (exclude it whole either way).
+    pub fn observe(&mut self, line: &str, byte_start: i64, counters: &mut PlanCounters) -> bool {
+        let begin = marker_uuid(line, FENCE_BEGIN).or_else(|| marker_uuid(line, FENCE_RUN));
+        let end = marker_uuid(line, FENCE_END);
+
+        if self.open.is_none() {
+            match begin {
+                Some(Ok(id)) => {
+                    self.open = Some(id);
+                    self.open_since = Some(byte_start);
+                    counters.exclude("ingest_fence");
+                    counters.fenced_entries += 1;
+                    return true;
+                }
+                Some(Err(())) => counters.unknown("fence_marker", "begin_no_uuid"),
+                None => {}
+            }
+            if let Some(Err(())) = end {
+                counters.unknown("fence_marker", "end_no_uuid");
+            }
+            return false;
+        }
+
+        match end {
+            Some(Ok(id)) if Some(id) == self.open => {
+                self.open = None;
+                self.open_since = None;
+            }
+            Some(Ok(_)) | Some(Err(())) => counters.unknown("fence_marker", "close_mismatch"),
+            None => {}
+        }
+        counters.exclude("ingest_fence");
+        counters.fenced_entries += 1;
+        true
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.open.is_some()
+    }
+
+    /// The byte offset to hold a file's watermark at if EOF arrives with this still open. `None`
+    /// once closed, so a closed-then-reopened fence within the same file does not resurrect a
+    /// stale offset.
+    pub fn open_since(&self) -> Option<i64> {
+        self.open_since
+    }
+}
+
+#[cfg(test)]
+mod fence_state_tests {
+    use super::*;
+
+    fn counters() -> PlanCounters {
+        PlanCounters::default()
+    }
+
+    #[test]
+    fn a_bare_prefix_with_no_uuid_never_opens_a_fence() {
+        let mut state = FenceState::default();
+        let mut c = counters();
+        let excluded = state.observe("saw the string lumberroom-ingest-begin: in a grep hit", 0, &mut c);
+        assert!(!excluded, "no valid uuid after the prefix must not open a fence");
+        assert!(!state.is_open());
+        assert_eq!(c.unknown_types.get("fence_marker:begin_no_uuid"), Some(&1));
+    }
+
+    #[test]
+    fn a_matching_uuid_opens_and_closes_the_fence() {
+        let mut state = FenceState::default();
+        let mut c = counters();
+        let id = uuid::Uuid::new_v4();
+        let opened = state.observe(&format!("lumberroom-ingest-begin:{id}"), 100, &mut c);
+        assert!(opened);
+        assert!(state.is_open());
+        assert_eq!(state.open_since(), Some(100));
+
+        let middle = state.observe("anything at all while the fence is open", 150, &mut c);
+        assert!(middle, "content between the markers is still excluded");
+
+        let closed = state.observe(&format!("lumberroom-ingest-end:{id}"), 200, &mut c);
+        assert!(closed);
+        assert!(!state.is_open());
+        assert_eq!(state.open_since(), None);
+    }
+
+    #[test]
+    fn a_close_with_the_wrong_uuid_leaves_the_fence_open() {
+        let mut state = FenceState::default();
+        let mut c = counters();
+        let id = uuid::Uuid::new_v4();
+        let other = uuid::Uuid::new_v4();
+        state.observe(&format!("lumberroom-ingest-begin:{id}"), 0, &mut c);
+
+        let still_fenced = state.observe(&format!("lumberroom-ingest-end:{other}"), 50, &mut c);
+        assert!(still_fenced);
+        assert!(state.is_open(), "a mismatched close must not end the fence");
+        assert_eq!(c.unknown_types.get("fence_marker:close_mismatch"), Some(&1));
+    }
+
+    #[test]
+    fn a_fence_still_open_at_eof_keeps_its_opening_offset() {
+        let mut state = FenceState::default();
+        let mut c = counters();
+        let id = uuid::Uuid::new_v4();
+        state.observe(&format!("lumberroom-ingest-run:{id}"), 42, &mut c);
+        assert!(state.is_open());
+        assert_eq!(state.open_since(), Some(42));
+    }
+}
+
 /// `lumberroom ingest <sub>`. One subcommand table, so a flag renamed here is renamed once.
 pub async fn dispatch(
     c: &crate::client::Client,
@@ -524,6 +718,16 @@ pub async fn dispatch(
             plan::run(c, &a).await.map(|_| ())
         }
         "extract" => {
+            // Before the run id is resolved: `--batch --help` is how the owner reads what a batch
+            // costs him in retention and turnaround, and asking for a run id first would answer
+            // that question with an error.
+            let batched = args.present("batch")
+                || args.present("batch-status")
+                || args.present("batch-fetch");
+            if batched && args.present("help") {
+                crate::out(batch::HELP);
+                return Ok(());
+            }
             let a = extract::ExtractArgs {
                 run_id: run_id(2)?,
                 provider: args.value("provider").unwrap_or("zai").to_string(),
@@ -539,7 +743,7 @@ pub async fn dispatch(
             // A batch is one request that a provider answers hours later, so it takes the same
             // spans and the same prompt down a different path. The flags pick the stage rather
             // than a mode: submit, ask, collect.
-            if args.present("batch") || args.present("batch-status") || args.present("batch-fetch") {
+            if batched {
                 let b = batch::BatchArgs {
                     run_id: a.run_id,
                     provider: a.provider.clone(),
@@ -643,7 +847,7 @@ pub async fn dispatch(
             if ids.is_empty() && run.is_none() {
                 return Err(e("approve needs one or more proposal ids, or --run <id>"));
             }
-            queue::approve(c, &ids, run, args.value("speaker"), yes, json).await
+            queue::approve(c, &ids, run, args.present("auto"), yes, json).await
         }
         "reject" => {
             let raw = args.positional_at(2).ok_or_else(|| e("reject needs a proposal id"))?;
@@ -679,5 +883,61 @@ pub async fn dispatch(
             "unknown ingest subcommand {other}. Try: plan, extract, submit, run, keys, list, show, approve, \
              reject, unreject, watermarks, unskip, clean"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod run_dir_permission_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn mode_of(path: &Path) -> u32 {
+        std::fs::metadata(path).expect("the path was just created").permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn run_paths_create_makes_spans_and_out_owner_only() {
+        let dir = std::env::temp_dir().join(format!("lumberroom-run-perm-{}", uuid::Uuid::new_v4()));
+        let run_id = uuid::Uuid::new_v4();
+        let paths = RunPaths { root: dir.clone(), run_id };
+
+        paths.create().expect("creating the run directory succeeds");
+
+        assert_eq!(mode_of(&paths.spans_dir()), 0o700, "spans/ must not be group- or world-readable");
+        assert_eq!(mode_of(&paths.out_dir()), 0o700, "out/ must not be group- or world-readable");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_json_creates_the_file_at_0600_and_its_parent_at_0700() {
+        let dir = std::env::temp_dir().join(format!("lumberroom-run-perm-{}", uuid::Uuid::new_v4()));
+        let nested = dir.join("nested");
+        let path = nested.join("worklist.json");
+
+        write_json(&path, &serde_json::json!({"spans": [{"text": "verbatim transcript text"}]}))
+            .expect("writing the file succeeds");
+
+        assert_eq!(mode_of(&nested), 0o700, "a newly created parent must be owner-only");
+        assert_eq!(mode_of(&path), 0o600, "a worklist holding span text must be owner-only");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_owner_only_leaves_an_existing_files_mode_alone() {
+        // A file that already exists at some other mode (e.g. restored from a backup) keeps that
+        // mode: `open` with `create(true)` does not chmod an existing inode. The property this
+        // guards is the create path, not a repair of files write_owner_only did not create.
+        let dir = std::env::temp_dir().join(format!("lumberroom-run-perm-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("run.log");
+        std::fs::write(&path, b"first").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_owner_only(&path, b"second run").expect("overwriting an existing file succeeds");
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"second run");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

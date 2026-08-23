@@ -160,6 +160,9 @@ async fn respond(socket: &mut tokio::net::TcpStream, status: u16, body: &str) {
 }
 
 pub async fn login(client: &Client, args: &crate::args::Args) -> Result<()> {
+    // Before the saved client id and secret are read out of it. A file at 0644 is reported, never
+    // used and never repaired.
+    crate::config::refuse_loose_permissions(&client.file.borrow().path).map_err(|e| err(e.to_string()))?;
     let state = hex(&random_bytes(16)?);
     let verifier = base64url(&random_bytes(32)?);
     let challenge = pkce_challenge(&verifier);

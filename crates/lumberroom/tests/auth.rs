@@ -76,6 +76,13 @@ fn temp_config(name: &str, value: serde_json::Value) -> FileConfig {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("config.json");
     std::fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+    // The CLI refuses to read a token file other users can read, so the fixture has to look like
+    // one the CLI wrote.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
     FileConfig::load(path)
 }
 

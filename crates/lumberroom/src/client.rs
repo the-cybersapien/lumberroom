@@ -130,6 +130,12 @@ impl Client {
     pub async fn refresh(&self) -> bool {
         let (refresh_token, client_id, client_secret, existing) = {
             let file = self.file.borrow();
+            // The refresh token is read out of this file and sent. A file every local account can
+            // read is reported here, and the 401 the caller is handling stands.
+            if let Err(e) = crate::config::refuse_loose_permissions(&file.path) {
+                eprintln!("{e}");
+                return false;
+            }
             let Some(rt) = file.oauth("refresh_token") else { return false };
             let Some(cid) = file.oauth("client_id") else { return false };
             let secret = file.oauth("client_secret").map(str::to_string);

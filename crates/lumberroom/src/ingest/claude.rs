@@ -10,10 +10,7 @@ use serde_json::Value;
 
 use crate::client::Result;
 use crate::ingest::spans::ClassifiedEntry;
-use crate::ingest::{
-    backstop_token, is_memory_tool, Limits, PlanCounters, Speaker, FENCE_BEGIN, FENCE_END,
-    FENCE_RUN,
-};
+use crate::ingest::{backstop_token, is_memory_tool, FenceState, Limits, PlanCounters, Speaker};
 
 #[derive(Debug, Clone, Default)]
 pub struct FileParse {
@@ -25,8 +22,12 @@ pub struct FileParse {
     pub cwd: Option<String>,
     /// One past the last complete line read. The plan ceiling is a bound, not a promise.
     pub consumed: i64,
-    /// A fence opened inside this range and never closed by an end marker.
+    /// A fence opened inside this range and never closed by a matching end marker.
     pub fence_open: bool,
+    /// Byte offset the fence opened at, when `fence_open` is true. `plan` holds the file's
+    /// watermark here instead of at `consumed`, so an unclosed fence costs a re-read of the
+    /// fenced region rather than losing everything after it for good.
+    pub fence_open_byte: Option<i64>,
 }
 
 /// The subtypes measured in this corpus. Membership buys nothing on its own: every attachment is
@@ -99,7 +100,7 @@ pub fn parse_file(
 
     let mut out = FileParse { is_sidechain: from_agent_file, consumed: start, ..FileParse::default() };
     let mut tool_names: HashMap<String, String> = HashMap::new();
-    let mut fence_open = false;
+    let mut fence = FenceState::default();
 
     let stats = crate::ingest::reader::for_each_line(
         path,
@@ -112,19 +113,10 @@ pub fn parse_file(
 
             // The fence runs on the raw line before anything reads its type. The marker the owner
             // needs to see lands inside a `tool_result`, so a scan sitting after E1 or E2 would
-            // never meet it and the fix would do nothing.
-            let opens = line.contains(FENCE_BEGIN) || line.contains(FENCE_RUN);
-            let closes = line.contains(FENCE_END);
-            let fenced = fence_open || opens || closes;
-            if opens {
-                fence_open = true;
-            }
-            if closes {
-                fence_open = false;
-            }
-            if fenced {
-                counters.exclude("ingest_fence");
-                counters.fenced_entries += 1;
+            // never meet it and the fix would do nothing. Bound to the run's own uuid rather than
+            // a bare `contains`, so a line that merely quotes the marker (a grep hit, a fetched
+            // page) falls through to ordinary parsing instead of swallowing the rest of the file.
+            if fence.observe(line, byte_start, counters) {
                 return Ok(());
             }
 
@@ -157,8 +149,9 @@ pub fn parse_file(
     )?;
 
     out.consumed = stats.consumed;
-    out.fence_open = fence_open;
-    if fence_open {
+    out.fence_open = fence.is_open();
+    out.fence_open_byte = fence.open_since();
+    if out.fence_open {
         counters.fences_unclosed += 1;
     }
     Ok(out)
@@ -624,14 +617,15 @@ mod tests {
     }
 
     #[test]
-    fn the_fence_eats_everything_between_its_markers() {
+    fn the_fence_eats_everything_between_a_matching_pair_of_markers() {
+        let id = "0199e5ef-9698-7cb3-8c23-3297e08d3c03";
         let (p, c) = parse(
             "fence",
             &[
                 user_text("before the run"),
-                json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"lumberroom-ingest-begin:4c1e"}]}}),
+                json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":format!("lumberroom-ingest-begin:{id}")}]}}),
                 user_text("inside, and never extracted"),
-                json!({"type":"assistant","message":{"content":[{"type":"text","text":"done: lumberroom-ingest-end:4c1e"}]}}),
+                json!({"type":"assistant","message":{"content":[{"type":"text","text":format!("done: lumberroom-ingest-end:{id}")}]}}),
                 user_text("after the run"),
             ],
         );
@@ -644,11 +638,29 @@ mod tests {
     }
 
     #[test]
-    fn a_fence_with_no_end_marker_is_reported() {
+    fn a_begin_marker_with_no_parseable_uuid_never_opens_a_fence() {
+        // "4c1e" is not a uuid; a line that merely quotes the marker prefix must fall through to
+        // ordinary parsing rather than swallowing the rest of the file.
+        let (p, c) = parse(
+            "fence-no-uuid",
+            &[
+                json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"lumberroom-ingest-begin:4c1e"}]}}),
+                user_text("not swallowed"),
+            ],
+        );
+        assert_eq!(p.entries.len(), 1);
+        assert_eq!(p.entries[0].text, "not swallowed");
+        assert!(!p.fence_open);
+        assert_eq!(c.unknown_types.get("fence_marker:begin_no_uuid"), Some(&1));
+    }
+
+    #[test]
+    fn a_fence_with_no_end_marker_is_reported_with_its_opening_offset() {
+        let id = "0199e5ef-9698-7cb3-8c23-3297e08d3c03";
         let (p, c) = parse(
             "openfence",
             &[
-                json!({"type":"assistant","message":{"content":[{"type":"text","text":"lumberroom-ingest-run:9a"}]}}),
+                json!({"type":"assistant","message":{"content":[{"type":"text","text":format!("lumberroom-ingest-run:{id}")}]}}),
                 user_text("swallowed"),
             ],
         );
@@ -656,6 +668,24 @@ mod tests {
         assert!(p.fence_open);
         assert_eq!(c.fences_unclosed, 1);
         assert_eq!(c.fenced_entries, 2);
+        assert_eq!(p.fence_open_byte, Some(0), "the offset of the line that opened it");
+    }
+
+    #[test]
+    fn a_close_with_a_different_uuid_leaves_a_real_fence_open() {
+        let opened = "0199e5ef-9698-7cb3-8c23-3297e08d3c03";
+        let other = "1199e5ef-9698-7cb3-8c23-3297e08d3c03";
+        let (p, c) = parse(
+            "fence-mismatch",
+            &[
+                json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":format!("lumberroom-ingest-begin:{opened}")}]}}),
+                json!({"type":"assistant","message":{"content":[{"type":"text","text":format!("lumberroom-ingest-end:{other}")}]}}),
+                user_text("still swallowed"),
+            ],
+        );
+        assert!(p.entries.is_empty());
+        assert!(p.fence_open);
+        assert_eq!(c.unknown_types.get("fence_marker:close_mismatch"), Some(&1));
     }
 
     #[test]

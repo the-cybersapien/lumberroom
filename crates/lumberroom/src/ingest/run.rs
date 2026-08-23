@@ -15,7 +15,9 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
 
 use crate::client::{err, err_code, CliError, Client, Result};
-use crate::ingest::{extract, plan, provider, submit, write_json, RunPaths, FENCE_END};
+use crate::ingest::{
+    extract, plan, provider, runlock, submit, write_json, write_owner_only, RunPaths, FENCE_END,
+};
 
 /// Everything went out and everything came back.
 pub const EXIT_DONE: i32 = 0;
@@ -324,7 +326,10 @@ async fn execute(c: &Client, args: &RunArgs, log: &mut Log) -> Finished {
             // the lock opened no fence and must not close one: another run may hold an open fence
             // in this same transcript. Every other plan failure happens after the marker went out.
             if failure != Failure::LockHeld {
-                close_fence(None);
+                // The lock is already released by the time we get here, but its note survives:
+                // `Some` means `plan` opened a run and printed the begin marker before this
+                // failure, `None` means it failed before that and there is no fence to close.
+                close_fence(runlock::last_run_id());
             }
             outcome.failure = Some(failure);
             return Finished { paths: None, outcome, note: e.message, submit: None, started_at };
@@ -526,7 +531,7 @@ fn settle(args: &RunArgs, finished: Finished, mut log: Log) -> Result<()> {
 
         // Best effort. A run that cannot write its own log still has an exit code, and turning a
         // full disk into a different failure would hide the one that happened.
-        let _ = std::fs::write(paths.root.join("run.log"), log.body());
+        let _ = write_owner_only(&paths.root.join("run.log"), log.body().as_bytes());
 
         let report = RunReport {
             run_id: Some(paths.run_id),
@@ -585,14 +590,17 @@ fn sweep_plaintext(paths: &RunPaths, log: &mut Log) {
     }
 }
 
-/// Close the fence `plan` opened. An unclosed fence is the expensive failure: the parsers exclude
-/// every entry after an unmatched begin marker, so one abandoned run costs the whole rest of that
-/// transcript on every future walk. The parsers match on `contains`, so a marker with no run id
-/// closes the fence just as well.
+/// Close the fence `plan` opened. An unclosed fence is the expensive failure: the parsers hold a
+/// file's watermark at the byte offset where it opened rather than advance past it, so one
+/// abandoned run costs a re-read of that file on every future walk until this closes it.
+///
+/// `run_id` absent means nothing to close (no begin marker went out), not "close whatever fence
+/// happens to be open": the parsers require a close marker's run id to match the open one, so a
+/// bare `FENCE_END` would no longer close anything anyway, and emitting one for no reason is just
+/// noise in a transcript ingestion later has to parse past.
 fn close_fence(run_id: Option<uuid::Uuid>) {
-    match run_id {
-        Some(id) => emit(&format!("{FENCE_END}{id}")),
-        None => emit(FENCE_END),
+    if let Some(id) = run_id {
+        emit(&format!("{FENCE_END}{id}"));
     }
 }
 

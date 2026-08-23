@@ -73,19 +73,95 @@ impl FileConfig {
     ///
     /// Two chmods' worth of care, for the reason node states: the create-mode argument is ignored
     /// for a file that already exists, so an existing config keeps whatever bits it had unless the
-    /// permissions are set again after the write.
+    /// permissions are set again after the write. `create_owner_only` closes the other half:
+    /// `std::fs::write` on a file that does not exist yet creates it at the process umask (0644
+    /// under the usual 022), so `login` writing a refresh token here had a window, however short,
+    /// where a second local account could read it before the `restrict` call below ever ran.
+    /// `keys_set` in `ingest/provider.rs` already guards its own credential file this way; this is
+    /// the same guard for the one every command shares.
     pub fn save(&mut self, patch: Map<String, Value>) -> std::io::Result<()> {
+        // A file already sitting at 0644, from a crash between write and chmod or a restore from
+        // a backup, is refused rather than rewritten: repairing it silently would make a token
+        // that has been readable by every local account for a week look clean.
+        refuse_loose_permissions(&self.path)?;
         let obj = self.value.as_object_mut().expect("config value is an object by construction");
         for (k, v) in patch {
             obj.insert(k, v);
         }
         if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
+            create_private_dir(parent)?;
         }
+        create_owner_only(&self.path)?;
         let body = format!("{}\n", serde_json::to_string_pretty(&self.value)?);
         std::fs::write(&self.path, body)?;
         restrict(&self.path)
     }
+}
+
+/// Refuse a config file that group or other can read. No file is fine: a first `login` has
+/// nothing to leak yet. Called before a token is read out of the file as well as before one is
+/// written into it, so a loose file is never used, only reported.
+#[cfg(unix)]
+pub fn refuse_loose_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let mode = meta.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "{} has mode {mode:04o} and must not be readable by group or other. It holds a \
+                 credential that every local account could have read; treat that credential as \
+                 exposed, run `chmod 600 {}`, then `lumberroom login` again or re-run wire-mac.sh \
+                 with a fresh token.",
+                path.display(),
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn refuse_loose_permissions(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// The config directory at 0700, every level of it this call creates. `create_dir_all` would
+/// make it at the umask, usually 0755, which is traversable by every local account and makes the
+/// file's own mode the only thing between them and the token.
+#[cfg(unix)]
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+/// Create the file empty at 0600 if it does not exist yet; a no-op on one that already does. Mirrors
+/// `ingest::provider::create_owner_only`, kept separate rather than shared because that one returns
+/// `crate::client::Result` (this module's callers want a plain `std::io::Result`) and lives in a
+/// module this one does not otherwise depend on.
+#[cfg(unix)]
+fn create_owner_only(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+#[cfg(not(unix))]
+fn create_owner_only(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Owner-only, on a file holding a bearer token.
@@ -298,6 +374,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.json");
         std::fs::write(&path, r#"{"url":"https://s.example","somethingElse":{"a":1}}"#).unwrap();
+        restrict(&path).unwrap();
 
         let mut cfg = FileConfig::load(path.clone());
         let mut patch = Map::new();
@@ -316,6 +393,80 @@ mod tests {
             assert_eq!(mode, 0o600);
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_a_config_that_never_existed_creates_it_at_0600_directly() {
+        // Distinct from `save_keeps_keys_this_client_does_not_know`, which pre-creates the file
+        // with a plain `std::fs::write` before ever calling `save`: that test only proves the
+        // final mode, not that the file was never briefly world-readable on the way there. This
+        // one drives `save` against a path nothing has touched, the shape `lumberroom login` hits on a
+        // first run.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("lumberroom-cfg-fresh-{}", uuid_like()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("nested").join("config.json");
+        assert!(!path.exists());
+
+        let mut cfg = FileConfig::empty(path.clone());
+        let mut patch = Map::new();
+        patch.insert("oauth".into(), json!({ "access_token": "t" }));
+        cfg.save(patch).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "a config file must never be created at a looser mode than 0600");
+        let dir_mode =
+            std::fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "the directory save creates is not traversable by others");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_config_readable_by_others_is_refused_rather_than_rewritten() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("lumberroom-cfg-loose-{}", uuid_like()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"oauth":{"refresh_token":"r"}}"#).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let refused = refuse_loose_permissions(&path).unwrap_err();
+        assert!(refused.to_string().contains("chmod 600"), "{refused}");
+
+        let mut cfg = FileConfig::load(path.clone());
+        let mut patch = Map::new();
+        patch.insert("oauth".into(), json!({ "access_token": "t" }));
+        assert!(cfg.save(patch).is_err(), "save must not repair a file that has been exposed");
+        let back = std::fs::read_to_string(&path).unwrap();
+        assert!(!back.contains("access_token"), "nothing new was written into a loose file");
+
+        assert!(refuse_loose_permissions(&dir.join("absent.json")).is_ok(), "no file, no leak");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_owner_only_leaves_an_already_existing_files_content_alone() {
+        let dir = std::env::temp_dir().join(format!("lumberroom-cfg-exists-{}", uuid_like()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, "existing content").unwrap();
+
+        create_owner_only(&path).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "existing content");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A unique scratch-directory suffix. The process id alone collides across two tests running
+    /// in the same binary, which is why the other tests in this module also nest a distinct
+    /// literal into their path; this one has none to nest.
+    fn uuid_like() -> u128 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
     }
 
     #[test]

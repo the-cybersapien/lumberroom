@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Wire this Mac (or any machine running Claude Code) to a deployed lumberroom.  [PRD §6]
 #
-#   ./client/wire-mac.sh --url https://memory.example.com --token <token>          # --token-mode
-#   ./client/wire-mac.sh --url https://memory.example.com --oauth-mode            # Logto/built-in OAuth
-#   ./client/wire-mac.sh --url ... --token ... --dry-run     # show every change, touch nothing
+#   LUMBERROOM_TOKEN=<token> ./client/wire-mac.sh --url https://memory.example.com   # --token-mode
+#   ./client/wire-mac.sh --url https://memory.example.com --oauth-mode              # Logto/built-in OAuth
+#   LUMBERROOM_TOKEN=<token> ./client/wire-mac.sh --url ... --dry-run   # show every change, touch nothing
 #
 # It does four things, each idempotent:
 #   1. writes ~/.config/lumberroom/config.json (mode 600) so lumberroom knows the endpoint
@@ -11,12 +11,14 @@
 #   3. registers the MCP server with Claude Code and adds the SessionStart hook to settings.json
 #   4. appends the memory rules to ~/.claude/CLAUDE.md between managed markers
 #
-# --token-mode (default) needs --token, the AUTH_TOKENS value for this client, and registers the
-# MCP server with a static Authorization header. --oauth-mode needs no token here: Claude Code
-# negotiates its own OAuth client against the server's discovery metadata when it connects, and
-# the lumberroom CLI on this machine gets its own separate credential by running `lumberroom login` after this
-# script finishes. The two modes are not a preference toggle, they hand out two different kinds of
-# credential to two different consumers of the same endpoint.
+# --token-mode (default) needs the AUTH_TOKENS value for this client, read from LUMBERROOM_TOKEN or,
+# with a terminal attached and no LUMBERROOM_TOKEN, prompted with echo off. Not a --token flag: every
+# argument of a running process is world-readable through `ps`, and a value on the command line also
+# lands in shell history. --oauth-mode needs no token here: Claude Code negotiates its own OAuth
+# client against the server's discovery metadata when it connects, and the lumberroom CLI on this
+# machine gets its own separate credential by running `lumberroom login` after this script finishes.
+# The two modes are not a preference toggle, they hand out two different kinds of credential to two
+# different consumers of the same endpoint.
 #
 # Every file it edits is backed up next to the original with a .lumberroom.bak suffix.
 
@@ -34,14 +36,14 @@ CONFIG_DIR="${LUMBERROOM_CONFIG_DIR:-$HOME/.config/lumberroom}"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
-  sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --url) URL="${2:?--url needs a value}"; shift 2 ;;
-    --token) TOKEN="${2:?--token needs a value}"; shift 2 ;;
+    --token) echo "--token is not accepted: it would sit in argv (readable through ps) and in shell history. Set LUMBERROOM_TOKEN instead, or pipe the token on stdin." >&2; exit 1 ;;
     --name) CLIENT_NAME="${2:?--name needs a value}"; shift 2 ;;
     --scope) SCOPE="${2:?--scope needs a value}"; shift 2 ;;
     --token-mode) MODE="token"; shift ;;
@@ -54,8 +56,18 @@ done
 
 [ -n "$URL" ] || { echo "--url is required (e.g. https://memory.example.com)" >&2; exit 1; }
 case "$MODE" in
-  token) [ -n "$TOKEN" ] || { echo "--token is required in --token-mode (the AUTH_TOKENS value for this client)" >&2; exit 1; } ;;
-  oauth) [ -z "$TOKEN" ] || echo "note: --token is ignored in --oauth-mode; Claude Code and lumberroom each get their own OAuth credential" >&2 ;;
+  token)
+    TOKEN="${LUMBERROOM_TOKEN:-}"
+    if [ -z "$TOKEN" ] && [ -t 0 ]; then
+      read -r -s -p "AUTH_TOKENS value for this client: " TOKEN
+      echo >&2
+    fi
+    if [ -z "$TOKEN" ] && [ ! -t 0 ]; then
+      TOKEN="$(head -n 1)"
+    fi
+    [ -n "$TOKEN" ] || { echo "no token: set LUMBERROOM_TOKEN, run in a terminal to be prompted, or pipe the token on stdin" >&2; exit 1; }
+    ;;
+  oauth) : ;;
 esac
 
 URL="${URL%/}"
@@ -69,8 +81,16 @@ if [ "$MODE" = "oauth" ]; then
 fi
 
 say() { printf '%s\n' "$*"; }
+# A dry run's whole purpose is to be safe to paste into a chat log or read back in a terminal
+# recording. Any of the four steps below can carry $TOKEN in their argv or file body; redact it
+# before it ever reaches a `say` or `run` line, not after, since the un-redacted string otherwise
+# has already been written to stdout by the time a later step could scrub it.
+redact() {
+  if [ -n "$TOKEN" ]; then printf '%s\n' "$1" | sed "s#$(printf '%s' "$TOKEN" | sed 's/[.[\*^$/]/\\&/g')#<token>#g"
+  else printf '%s\n' "$1"; fi
+}
 run() {
-  if [ "$DRY_RUN" = 1 ]; then say "  would run: $*"; else "$@"; fi
+  if [ "$DRY_RUN" = 1 ]; then say "  would run: $(redact "$*")"; else "$@"; fi
 }
 backup() {
   [ -f "$1" ] || return 0
@@ -82,11 +102,16 @@ write_file() {
   content="$(cat)"
   if [ "$DRY_RUN" = 1 ]; then
     say "  would write $path (mode $mode):"
-    printf '%s\n' "$content" | sed 's/^/    /'
+    redact "$content" | sed 's/^/    /'
     return 0
   fi
+  # The write runs under umask 077 so a file that does not exist yet is born owner-only. Without
+  # it the redirect created config.json at the caller's umask, usually 0644, with the token
+  # already inside, and a script interrupted before the chmod left it that way. The chmod still
+  # runs: the umask cannot loosen a file that already exists, and the mode asked for may be wider
+  # than 0600 for the files that are not credentials.
   mkdir -p "$(dirname "$path")"
-  printf '%s\n' "$content" > "$path"
+  ( umask 077; printf '%s\n' "$content" > "$path" )
   chmod "$mode" "$path"
 }
 

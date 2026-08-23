@@ -9,6 +9,21 @@ description: >
 Paste this whole file into OpenWebUI: Admin Panel -> Settings -> Functions -> + -> paste -> Save,
 then open the function's Valves and set lumberroom_url and lumberroom_token. Enable it globally or per model.
 
+SINGLE-OWNER ONLY. DO NOT ENABLE THIS ON A MULTI-ACCOUNT OPENWEBUI INSTANCE.
+----------------------------------------------------------------------------
+lumberroom_token is one valve, set once, shared by every OpenWebUI account this function is enabled
+for. OpenWebUI has no per-user credential valve to key it off instead. `_digest_for`'s cache is
+keyed per `__user__["id"]` purely to keep one fast conversation from calling lumberroom on every
+message; that keying is a cache-locality choice, not an access boundary, and it does not change
+which token fetches the digest or what the digest contains. The digest itself is
+`context_bootstrap`'s full render for whatever grant `lumberroom_token` carries: every readable
+registry key with its value, project summaries, everything that credential can see. Enabling this
+filter globally, or for any model a second account can reach, hands that owner's whole digest to
+every account with a chat open. This is exactly the deployment
+[decision 0002](../docs/decisions/0002-built-in-oauth-server.md) rules out: lumberroom assumes one
+owner. If OpenWebUI ever grows a per-account credential valve, wire this filter to it before
+enabling it anywhere the owner is not the only account.
+
 WHY THIS FILE MATTERS MORE THAN ITS SIZE SUGGESTS
 --------------------------------------------------
 Every other surface lumberroom connects to (Claude Code, Hermes, Claude.ai, ChatGPT) leaves recall to
@@ -49,7 +64,12 @@ class Filter:
         )
         lumberroom_token: str = Field(
             default="",
-            description="Bearer token for this OpenWebUI client's grant. Required.",
+            description=(
+                "Bearer token for this OpenWebUI client's grant. Required. Shared by every "
+                "account this function is enabled for, since OpenWebUI has no per-user "
+                "credential valve: single-owner OpenWebUI deployments only, see the module "
+                "docstring."
+            ),
         )
         cache_seconds: int = Field(
             default=30,

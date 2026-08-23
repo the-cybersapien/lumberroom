@@ -168,7 +168,16 @@ pub async fn run(c: &Client, args: &PlanArgs) -> Result<Worklist> {
         // `consumed`, not the stat ceiling. A trailing fragment with no newline is not a complete
         // entry, so the parser stops below the ceiling and those bytes belong to the next run.
         // Advancing to the ceiling instead would step over them and lose the entry they become.
-        let read_to = parsed.consumed.clamp(byte_start, ceiling);
+        //
+        // A fence still open at EOF holds the watermark at the byte it opened at instead of
+        // `consumed`: every entry from there on was excluded as fenced content and never turned
+        // into a span, so advancing past it anyway would drop those bytes for good the moment a
+        // real run closes the fence on a later line this walk never reached. Holding back costs
+        // one re-read of the fenced region; advancing costs the region.
+        let read_to = match parsed.fence_open_byte {
+            Some(open_at) if parsed.fence_open => open_at.clamp(byte_start, ceiling),
+            _ => parsed.consumed.clamp(byte_start, ceiling),
+        };
         files.push(PlannedFile {
             file_path,
             session_id,
@@ -179,6 +188,32 @@ pub async fn run(c: &Client, args: &PlanArgs) -> Result<Worklist> {
             entries_seen: parsed.entries_seen,
             prefix_mismatch,
         });
+    }
+
+    // The plan-time tripwire scan. Everything below this point leaves the machine: `extract`
+    // posts each chunk's span text to a provider (z.ai or OpenRouter for Mode B, a local subagent
+    // reading the same chunk file for Mode A). A span carrying a credential has to be caught and
+    // dropped here, before chunking, not later at `submit` where the scan runs on the facts a
+    // provider already handed back and the secret has already left the machine. Batched by bytes
+    // rather than in one request: the server caps a body at 1 MiB, and a week of transcripts at
+    // the default span size is several times that.
+    if !all_spans.is_empty() {
+        let texts: Vec<String> = all_spans.iter().map(|s| s.text.clone()).collect();
+        let mut rules = Vec::with_capacity(texts.len());
+        for batch in scan_batches(&texts, SCAN_BATCH_BYTES) {
+            let answered = api::scan(c, batch).await?;
+            if answered.len() != batch.len() {
+                return Err(err(format!(
+                    "the tripwire scan (POST /admin/ingest/scan) answered {} rules for {} spans. A \
+                     zip over that would let a span reach a provider unscanned, so nothing was \
+                     written for run {run_id}",
+                    answered.len(),
+                    batch.len(),
+                )));
+            }
+            rules.extend(answered);
+        }
+        all_spans = apply_tripwire(all_spans, rules, run_id, &mut counters)?;
     }
 
     counters.spans_cut = all_spans.len() as i32;
@@ -235,6 +270,58 @@ pub async fn run(c: &Client, args: &PlanArgs) -> Result<Worklist> {
     // second run the same growing files halfway through this one's reads.
     drop(lock);
     Ok(worklist)
+}
+
+/// Drop every span the tripwire named a rule for, counting each onto `counters` and refusing
+/// outright rather than guessing when the scan answered a different number of rules than spans.
+/// How much span text one scan request carries. Half the server's 1 MiB body cap, which leaves
+/// room for the JSON framing and escaping around the text.
+const SCAN_BATCH_BYTES: usize = 512 * 1024;
+
+/// Consecutive slices of `texts`, each under `max_bytes` of text unless a single span is larger
+/// than that on its own, in which case it travels alone and the server's cap is the one that
+/// refuses it. Slices rather than copies: the texts are already owned once.
+fn scan_batches(texts: &[String], max_bytes: usize) -> Vec<&[String]> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut bytes = 0;
+    for (i, t) in texts.iter().enumerate() {
+        if i > start && bytes + t.len() > max_bytes {
+            out.push(&texts[start..i]);
+            start = i;
+            bytes = 0;
+        }
+        bytes += t.len();
+    }
+    if start < texts.len() {
+        out.push(&texts[start..]);
+    }
+    out
+}
+
+fn apply_tripwire(
+    spans: Vec<Span>,
+    rules: Vec<Option<String>>,
+    run_id: uuid::Uuid,
+    counters: &mut PlanCounters,
+) -> Result<Vec<Span>> {
+    if rules.len() != spans.len() {
+        return Err(err(format!(
+            "the tripwire scan (POST /admin/ingest/scan) answered {} rules for {} spans. A zip \
+             over that would let a span reach a provider unscanned, so nothing was written for \
+             run {run_id}",
+            rules.len(),
+            spans.len(),
+        )));
+    }
+    let mut kept = Vec::with_capacity(spans.len());
+    for (span, rule) in spans.into_iter().zip(rules) {
+        match rule {
+            Some(name) => counters.tripwire(&name),
+            None => kept.push(span),
+        }
+    }
+    Ok(kept)
 }
 
 /// The table `plan` prints. Nothing on it is a total the reader has to compute.
@@ -311,6 +398,17 @@ fn render_table(w: &Worklist) -> String {
         "spans",
         &format!("{} cut into {} chunks", commas(c.spans_cut as i64), commas(c.chunks as i64)),
     );
+    let tripwire_dropped: i32 = c.spans_dropped_tripwire.values().copied().sum();
+    if tripwire_dropped > 0 {
+        row(
+            &mut out,
+            "tripwire",
+            &format!("{} spans refused before extraction", commas(tripwire_dropped as i64)),
+        );
+        for line in dotted(&sorted(&c.spans_dropped_tripwire), 3) {
+            cont(&mut out, &line);
+        }
+    }
     row(
         &mut out,
         "fences",
@@ -642,5 +740,87 @@ mod tests {
 
         assert_eq!(sweep_dir(&dir.join("absent"), 0).unwrap(), 0);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn span(id: &str, text: &str) -> Span {
+        Span {
+            id: id.to_string(),
+            file_path: "/tmp/t.jsonl".to_string(),
+            session_id: None,
+            is_sidechain: false,
+            source: Source::Claude,
+            entry_uuids: vec![],
+            byte_start: 0,
+            byte_end: text.len() as i64,
+            speaker: Speaker::OwnerTyped,
+            tool_name: None,
+            timestamp: None,
+            cwd: None,
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn scan_batches_stay_under_the_byte_ceiling_and_cover_every_span_in_order() {
+        let texts: Vec<String> = (0..10).map(|i| format!("{i}").repeat(300)).collect();
+        let batches = scan_batches(&texts, 1000);
+        assert!(batches.len() > 1, "ten spans of 300 bytes do not fit one 1000-byte batch");
+        for b in &batches {
+            assert!(b.iter().map(String::len).sum::<usize>() <= 1000, "a batch over the ceiling");
+        }
+        let joined: Vec<&String> = batches.iter().flat_map(|b| b.iter()).collect();
+        assert_eq!(joined.len(), texts.len());
+        assert!(joined.iter().zip(&texts).all(|(a, b)| *a == b), "order is what the zip relies on");
+    }
+
+    #[test]
+    fn a_span_larger_than_the_ceiling_travels_alone_rather_than_being_dropped() {
+        let texts = vec!["a".repeat(2000), "b".into(), "c".into()];
+        let batches = scan_batches(&texts, 1000);
+        assert_eq!(batches[0].len(), 1);
+        assert_eq!(batches.iter().map(|b| b.len()).sum::<usize>(), 3);
+        assert!(scan_batches(&[], 1000).is_empty());
+    }
+
+    #[test]
+    fn apply_tripwire_drops_a_flagged_span_and_counts_its_rule() {
+        let spans = vec![
+            span("s0", "the postgres password is hunter2"),
+            span("s1", "an ordinary sentence with no secret in it"),
+        ];
+        let rules = vec![Some("credential".to_string()), None];
+        let mut counters = PlanCounters::default();
+
+        let kept = apply_tripwire(spans, rules, uuid::Uuid::nil(), &mut counters).unwrap();
+
+        assert_eq!(kept.len(), 1, "the flagged span must not reach a chunk file");
+        assert_eq!(kept[0].id, "s1");
+        assert_eq!(counters.spans_dropped_tripwire.get("credential"), Some(&1));
+    }
+
+    #[test]
+    fn apply_tripwire_refuses_a_mismatched_rule_count_rather_than_zip_silently() {
+        let spans = vec![span("s0", "one span")];
+        let rules = vec![None, None];
+        let mut counters = PlanCounters::default();
+
+        let result = apply_tripwire(spans, rules, uuid::Uuid::nil(), &mut counters);
+
+        assert!(result.is_err(), "a length mismatch must refuse rather than guess an alignment");
+    }
+
+    #[test]
+    fn the_table_names_a_tripwire_drop_by_its_rule() {
+        let mut w = worklist();
+        w.counters.tripwire("credential");
+        w.counters.tripwire("credential");
+        let text = render_table(&w);
+        assert!(text.contains("2 spans refused before extraction"), "{text}");
+        assert!(text.contains("credential 2"), "{text}");
+    }
+
+    #[test]
+    fn a_clean_run_says_nothing_about_the_tripwire() {
+        assert!(!render_table(&worklist()).contains("tripwire"));
     }
 }

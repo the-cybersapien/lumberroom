@@ -4,8 +4,8 @@
 #   ./deploy/backup.sh                    # write backups/lumberroom-YYYY-MM-DD.sql.gz.age
 #   ./deploy/backup.sh --restore <file>   # decrypt (if needed) and restore that dump
 #
-# A plaintext dump exposes private content exactly as a stolen disk would — that is the whole
-# point of Phase 3's sensitivity axis, and a backup that undoes it silently is worse than no
+# A plaintext dump exposes private content exactly as a stolen disk would, and that is the whole
+# point of Phase 3's sensitivity axis: a backup that undoes it silently is worse than no
 # backup. This script refuses to write a plaintext dump: no `age` binary and no configured
 # recipient is a hard stop, not a fallback. Set BACKUP_ALLOW_PLAINTEXT=true to opt back in for a
 # local/dev box that holds no real data; it prints a warning every time it is used.
@@ -16,9 +16,13 @@
 # over instead of needing two separate compromises. Generate a dedicated pair:
 #   age-keygen -o backup-key.txt
 # Put the public line (age1...) in BACKUP_AGE_RECIPIENT on the box. Keep backup-key.txt off the
-# box entirely — it is only ever needed to restore, from wherever you keep it.
+# box entirely: it is only ever needed to restore, from wherever you keep it.
 
 set -euo pipefail
+# The dump streams through gzip and age into $OUT.partial before the chmod 600 below ever runs, and
+# mkdir -p "$BACKUP_DIR" creates the directory the same way. Both would otherwise land at whatever
+# the caller's umask allows; the cron entry install.sh installs carries no umask of its own.
+umask 077
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
@@ -28,7 +32,7 @@ RETAIN_DAYS="${BACKUP_RETAIN_DAYS:-14}"
 
 # Read only the two keys this script needs, rather than sourcing the whole file with `sh`.
 # .env holds values like AUTH_TOKENS and OWNER_PASSWORD_HASH that contain characters (`"`, `$`)
-# a full `. ./.env` would mangle or try to expand — see the AUTH_TOKENS comment in .env.example.
+# a full `. ./.env` would mangle or try to expand: see the AUTH_TOKENS comment in .env.example.
 # install.sh's env_set single-quotes everything it writes precisely to make sourcing safe, but
 # this script has no reason to depend on that discipline holding for a hand-edited .env too.
 env_get() {
@@ -62,7 +66,7 @@ can_encrypt() {
 if [ "${1:-}" = "--restore" ]; then
   FILE="${2:?usage: backup.sh --restore <file.sql.gz.age|file.sql.gz>}"
   [ -f "$FILE" ] || { echo "no such file: $FILE" >&2; exit 1; }
-  echo "restoring $FILE into $DB_NAME — this overwrites current data"
+  echo "restoring $FILE into $DB_NAME, which overwrites current data"
   read -r -p "type 'restore' to continue: " confirm
   [ "$confirm" = restore ] || { echo "aborted"; exit 1; }
 
@@ -71,7 +75,7 @@ if [ "${1:-}" = "--restore" ]; then
       IDENTITY="${BACKUP_AGE_IDENTITY:-}"
       [ -n "$IDENTITY" ] || {
         echo "BACKUP_AGE_IDENTITY is not set. This dump is encrypted and the private key never" >&2
-        echo "lives on this box by design — decrypt it wherever you keep backup-key.txt, or copy" >&2
+        echo "lives on this box by design: decrypt it wherever you keep backup-key.txt, or copy" >&2
         echo "that key here temporarily: BACKUP_AGE_IDENTITY=/path/to/backup-key.txt $0 --restore $FILE" >&2
         exit 1
       }
@@ -102,7 +106,7 @@ if can_encrypt; then
     | gzip -9 \
     | age -e "${ARGS[@]}" > "$OUT.partial"
 elif [ "$ALLOW_PLAINTEXT" = true ]; then
-  echo "warning: BACKUP_ALLOW_PLAINTEXT=true — writing an unencrypted dump. Private content, if any, is in the clear in this file." >&2
+  echo "warning: BACKUP_ALLOW_PLAINTEXT=true, writing an unencrypted dump. Private content, if any, is in the clear in this file." >&2
   OUT="$BACKUP_DIR/lumberroom-$STAMP.sql.gz"
   docker compose exec -T db pg_dump -U "$DB_USER" -d "$DB_NAME" --clean --if-exists \
     | gzip -9 > "$OUT.partial"

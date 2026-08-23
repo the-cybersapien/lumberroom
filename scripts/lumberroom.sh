@@ -25,15 +25,22 @@ sys.stdout.write(m[0]['token'] if m else '')
 
 mkdir -p "$HOME/.local/state/lumberroom"
 
+# `docker run -e KEY=VALUE` puts VALUE on this process's own argv, which `ps -axww` reads back for
+# any local account while the build (a few seconds) or a long ingest run is in flight. Exporting the
+# secrets first and passing `-e KEY` with no `=value` makes docker copy them out of this shell's
+# environment instead, so nothing sensitive ever appears as a command-line argument. LUMBERROOM_URL
+# and the base URL are not secrets and stay inline.
+export HOME LUMBERROOM_TOKEN="$TOKEN" ZAI_API_KEY="${ZAI_API_KEY:-}"
+
 exec docker run --rm -i --network "${LUMBERROOM_DOCKER_NETWORK:-lumberroom_default}" \
   -v "$PWD/target/release/lumberroom:/usr/local/bin/lumberroom:ro" \
   -v "$HOME/.claude:$HOME/.claude:ro" \
   -v "$HOME/.codex:$HOME/.codex:ro" \
   -v "$HOME/.local/state/lumberroom:$HOME/.local/state/lumberroom" \
-  -e "HOME=$HOME" \
+  -e HOME \
   -e "LUMBERROOM_URL=${LUMBERROOM_CLI_URL:-http://server:8787}" \
-  -e "LUMBERROOM_TOKEN=$TOKEN" \
-  -e "ZAI_API_KEY=${ZAI_API_KEY:-}" \
+  -e LUMBERROOM_TOKEN \
+  -e ZAI_API_KEY \
   -e "ZAI_BASE_URL=${ZAI_BASE_URL:-}" \
   -w "$PWD" \
   debian:trixie-slim lumberroom "$@"

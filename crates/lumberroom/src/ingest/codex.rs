@@ -20,9 +20,7 @@ use serde_json::Value;
 use crate::client::Result;
 use crate::ingest::claude::FileParse;
 use crate::ingest::spans::ClassifiedEntry;
-use crate::ingest::{
-    backstop_token, is_memory_tool, Limits, PlanCounters, Speaker, FENCE_BEGIN, FENCE_END, FENCE_RUN,
-};
+use crate::ingest::{backstop_token, is_memory_tool, FenceState, Limits, PlanCounters, Speaker};
 
 /// What a `function_call` or `custom_tool_call` told the join about itself, kept until its output
 /// arrives. Codex always writes the call before the matching output in one file, so one forward
@@ -55,7 +53,7 @@ pub fn parse_file(
 ) -> Result<FileParse> {
     let mut out = FileParse::default();
     let mut calls: HashMap<String, CallInfo> = HashMap::new();
-    let mut fence_open = false;
+    let mut fence = FenceState::default();
 
     let stats = crate::ingest::reader::for_each_line(
         path,
@@ -68,19 +66,10 @@ pub fn parse_file(
 
             // The fence runs on the raw line before anything reads its envelope type. The marker
             // can land inside a `function_call_output` string, and a scan sitting after the type
-            // switch would never meet it there.
-            let opens = line.contains(FENCE_BEGIN) || line.contains(FENCE_RUN);
-            let closes = line.contains(FENCE_END);
-            let fenced = fence_open || opens || closes;
-            if opens {
-                fence_open = true;
-            }
-            if closes {
-                fence_open = false;
-            }
-            if fenced {
-                counters.exclude("ingest_fence");
-                counters.fenced_entries += 1;
+            // switch would never meet it there. Bound to the run's own uuid, same as the Claude
+            // Code parser: an unrelated line quoting the marker text falls through instead of
+            // opening a fence with nothing to close it.
+            if fence.observe(line, byte_start, counters) {
                 return Ok(());
             }
 
@@ -111,8 +100,9 @@ pub fn parse_file(
     out.session_id = out.session_id.clone().or_else(|| session_id_from_filename(path));
     out.is_sidechain = false;
     out.consumed = stats.consumed;
-    out.fence_open = fence_open;
-    if fence_open {
+    out.fence_open = fence.is_open();
+    out.fence_open_byte = fence.open_since();
+    if out.fence_open {
         counters.fences_unclosed += 1;
     }
     Ok(out)
@@ -364,6 +354,7 @@ fn session_id_from_filename(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ingest::{FENCE_BEGIN, FENCE_END, FENCE_RUN};
     use serde_json::json;
 
     fn limits() -> Limits {
@@ -503,14 +494,14 @@ mod tests {
     }
 
     #[test]
-    fn fence_drops_everything_between_begin_and_end() {
+    fn fence_drops_everything_between_a_matching_begin_and_end() {
         let (p, c) = parse(
             "fence",
             &[
                 json!({"type":"event_msg","timestamp":"2026-07-04T13:00:00Z","payload":{"type":"user_message","message":"before"}}),
                 json!({"type":"response_item","timestamp":"2026-07-04T13:00:01Z","payload":{"type":"function_call_output","call_id":"x","output":format!("{FENCE_BEGIN}0199e5ef-9698-7cb3-8c23-3297e08d3c03")}}),
                 json!({"type":"event_msg","timestamp":"2026-07-04T13:00:02Z","payload":{"type":"user_message","message":"inside the fence, never seen"}}),
-                json!({"type":"response_item","timestamp":"2026-07-04T13:00:03Z","payload":{"type":"function_call_output","call_id":"y","output":FENCE_END}}),
+                json!({"type":"response_item","timestamp":"2026-07-04T13:00:03Z","payload":{"type":"function_call_output","call_id":"y","output":format!("{FENCE_END}0199e5ef-9698-7cb3-8c23-3297e08d3c03")}}),
                 json!({"type":"event_msg","timestamp":"2026-07-04T13:00:04Z","payload":{"type":"user_message","message":"after"}}),
             ],
         );
@@ -524,6 +515,24 @@ mod tests {
     }
 
     #[test]
+    fn a_close_with_no_matching_open_uuid_never_ends_the_fence() {
+        // The bare `FENCE_END` this used to accept (a `contains` match with no run id) closed
+        // every future run's fence just as well as its own; that is retired. A close carrying the
+        // wrong uuid, or none at all, must leave a genuinely open fence open.
+        let (p, c) = parse(
+            "fence-bare-close",
+            &[
+                json!({"type":"response_item","timestamp":"2026-07-04T13:00:01Z","payload":{"type":"function_call_output","call_id":"x","output":format!("{FENCE_BEGIN}0199e5ef-9698-7cb3-8c23-3297e08d3c03")}}),
+                json!({"type":"response_item","timestamp":"2026-07-04T13:00:02Z","payload":{"type":"function_call_output","call_id":"y","output":FENCE_END}}),
+                json!({"type":"event_msg","timestamp":"2026-07-04T13:00:03Z","payload":{"type":"user_message","message":"still fenced"}}),
+            ],
+        );
+        assert!(p.entries.is_empty());
+        assert!(p.fence_open);
+        assert_eq!(c.unknown_types.get("fence_marker:close_mismatch"), Some(&1));
+    }
+
+    #[test]
     fn fence_run_marker_also_opens_a_fence() {
         let (p, _) = parse(
             "fence-run",
@@ -533,14 +542,28 @@ mod tests {
     }
 
     #[test]
-    fn fence_left_open_at_ceiling_is_reported() {
+    fn a_bare_begin_marker_with_no_uuid_does_not_open_a_fence() {
+        // A line that merely quotes the marker text (a grep hit, a fetched page) must fall
+        // through to ordinary parsing rather than swallowing the rest of the file.
+        let (p, c) = parse(
+            "fence-no-uuid",
+            &[json!({"type":"event_msg","timestamp":"2026-07-04T13:00:00Z","payload":{"type":"user_message","message":FENCE_BEGIN}})],
+        );
+        assert_eq!(p.entries.len(), 1, "no fence, so the line is an ordinary entry");
+        assert!(!p.fence_open);
+        assert_eq!(c.unknown_types.get("fence_marker:begin_no_uuid"), Some(&1));
+    }
+
+    #[test]
+    fn fence_left_open_at_ceiling_is_reported_with_its_opening_offset() {
         let (p, c) = parse(
             "fence-open",
-            &[json!({"type":"event_msg","timestamp":"2026-07-04T13:00:00Z","payload":{"type":"user_message","message":FENCE_BEGIN}})],
+            &[json!({"type":"event_msg","timestamp":"2026-07-04T13:00:00Z","payload":{"type":"user_message","message":format!("{FENCE_BEGIN}0199e5ef-9698-7cb3-8c23-3297e08d3c03")}})],
         );
         assert!(p.entries.is_empty());
         assert!(p.fence_open);
         assert_eq!(c.fences_unclosed, 1);
+        assert_eq!(p.fence_open_byte, Some(0), "the offset of the line that opened it");
     }
 
     #[test]

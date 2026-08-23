@@ -24,6 +24,10 @@
 # pass --auth-mode or --kek-provider explicitly to change them.
 
 set -euo pipefail
+# Every secret this script writes (.env, secrets/lumberroom-kek, .env.bak while env_set holds it
+# open) lands under this umask before its own chmod runs, closing the window where a loose default
+# mode would otherwise apply for the moment between file creation and the explicit chmod below.
+umask 077
 
 DOMAIN=""
 EMAIL=""
@@ -145,6 +149,21 @@ say "2/9 configuration"
 if [ -f .env ]; then
   info ".env exists; keeping the secrets already in it"
   if [ "$DRY_RUN" != 1 ]; then
+    # Chmod first, whether or not anything below rotates: a .env carried over from `cp
+    # .env.example .env` by hand, or restored from somewhere that did not preserve mode, sits at
+    # the process umask until this runs, and every secret already in the file is exposed to that
+    # window otherwise. The mode is read before the chmod so a file that sat open is reported,
+    # the way src/crypto/kek.rs reports a loose KEK file: repairing it silently would make a
+    # token every local account could read for a week look clean. Placeholders are not secrets,
+    # so a fresh copy of .env.example at 0644 is tightened and nothing is said.
+    ENV_MODE="$(stat -c %a .env 2>/dev/null || stat -f %Lp .env 2>/dev/null || echo 600)"
+    chmod 600 .env
+    if [ $((0$ENV_MODE & 077)) -ne 0 ] && ! grep -q CHANGE_ME .env; then
+      warn ".env had mode 0$ENV_MODE and must not be readable by group or other. It has been set to 600,"
+      warn "but every secret already in it was readable by any local account while it sat that way."
+      warn "Treat them as exposed: rotate POSTGRES_PASSWORD and every token in AUTH_TOKENS and"
+      warn "LUMBERROOM_CLEANUP_TOKEN, and the KEK if it is in this file, then re-run wire-mac.sh."
+    fi
     ROTATED=()
     case "$(env_get POSTGRES_PASSWORD)" in
       *CHANGE_ME*)
@@ -156,7 +175,7 @@ if [ -f .env ]; then
       *CHANGE_ME*)
         CLIENT_TOKEN="$(secret 32)"
         CLEANUP_TOKEN="$(secret 32)"
-        env_set AUTH_TOKENS "[{\"client\":\"claude-code-mac\",\"token\":\"$CLIENT_TOKEN\",\"read\":[{\"namespace\":\"*\",\"max\":\"sealed\"}],\"write\":[{\"namespace\":\"*\",\"max\":\"sealed\"}],\"sealedCapable\":true,\"mayDelete\":false,\"registryWrite\":true},{\"client\":\"cleanup\",\"token\":\"$CLEANUP_TOKEN\",\"mayIngest\":true}]"
+        env_set AUTH_TOKENS "[{\"client\":\"claude-code-mac\",\"token\":\"$CLIENT_TOKEN\",\"read\":[{\"namespace\":\"*\",\"max\":\"sealed\"}],\"write\":[{\"namespace\":\"*\",\"max\":\"sealed\"}],\"sealedCapable\":true,\"mayDelete\":false,\"registryWrite\":true},{\"client\":\"cleanup\",\"token\":\"$CLEANUP_TOKEN\",\"read\":[{\"namespace\":\"*\",\"max\":\"open\"}],\"write\":[],\"mayIngest\":true}]"
         env_set LUMBERROOM_CLEANUP_TOKEN "$CLEANUP_TOKEN"
         ROTATED+=(AUTH_TOKENS)
         ;;
@@ -170,6 +189,10 @@ else
     info "would generate .env from .env.example with fresh secrets"
   else
     cp .env.example .env
+    # Before any secret is written, not after: env_set rewrites the file in place with sed -i.bak,
+    # so a secret would otherwise sit at the process umask for as long as the five env_set calls
+    # below take to run.
+    chmod 600 .env
     PG_PW="$(secret 24)"
     CLIENT_TOKEN="$(secret 32)"
     env_set POSTGRES_PASSWORD "$PG_PW"
@@ -182,11 +205,15 @@ else
     # unquoted JSON value here breaks the moment anything sources .env with `sh`.
     # The cleanup daemon's own client. Minted here rather than left to the owner, because the
     # daemon refuses without it and the failure would land the first time he turns the profile on.
-    # mayIngest and nothing else: it fills a queue and decides nothing.
+    # Scoped rather than omitted: an omitted read or write list means unrestricted (config.rs), so
+    # this grant is read at `open` on every namespace, no write at all, no sealedCapable, no
+    # registryWrite, no mayDelete. Read at open over what it cleans and mayIngest; every pair it
+    # is handed goes to a provider and the run withholds anything above open, so a higher ceiling
+    # buys it nothing. Private duplicates are grouped by the in-server pass, which runs
+    # unrestricted and sends nothing anywhere.
     CLEANUP_TOKEN="$(secret 32)"
-    env_set AUTH_TOKENS "[{\"client\":\"claude-code-mac\",\"token\":\"$CLIENT_TOKEN\",\"read\":[{\"namespace\":\"*\",\"max\":\"sealed\"}],\"write\":[{\"namespace\":\"*\",\"max\":\"sealed\"}],\"sealedCapable\":true,\"mayDelete\":false,\"registryWrite\":true},{\"client\":\"cleanup\",\"token\":\"$CLEANUP_TOKEN\",\"mayIngest\":true}]"
+    env_set AUTH_TOKENS "[{\"client\":\"claude-code-mac\",\"token\":\"$CLIENT_TOKEN\",\"read\":[{\"namespace\":\"*\",\"max\":\"sealed\"}],\"write\":[{\"namespace\":\"*\",\"max\":\"sealed\"}],\"sealedCapable\":true,\"mayDelete\":false,\"registryWrite\":true},{\"client\":\"cleanup\",\"token\":\"$CLEANUP_TOKEN\",\"read\":[{\"namespace\":\"*\",\"max\":\"open\"}],\"write\":[],\"mayIngest\":true}]"
     env_set LUMBERROOM_CLEANUP_TOKEN "$CLEANUP_TOKEN"
-    chmod 600 .env
     info "generated .env with a new Postgres password and two client tokens"
   fi
 fi
@@ -219,6 +246,9 @@ else
 fi
 if [ "$AUTH_MODE_NOW" = oidc ]; then
   PROFILES+=(--profile logto)
+  # This script writes no OIDC_* values; deploy/logto.md does that by hand. The server refuses to
+  # boot in oidc mode with OIDC_ALLOWED_SUBJECTS or OIDC_REQUIRED_SCOPES empty, so an oidc branch
+  # added here has to write both or the container stops at config validation.
 fi
 
 # ── key-encryption key ───────────────────────────────────────────────────────
@@ -307,6 +337,14 @@ esac
 
 # ── build ─────────────────────────────────────────────────────────────────────
 say "4/9 build (this bakes the embedding model into the image; first run takes a few minutes)"
+# What the built binary reports on /readyz. `docker restart` and `docker compose up -d` both reuse a
+# container's original image, so a rebuilt image can sit on disk while the old binary keeps serving.
+# Stamped here because compose cannot run git itself, and resolved against the repository this
+# script lives in rather than whatever directory the operator is standing in.
+export LUMBERROOM_BUILD_SHA="$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+export LUMBERROOM_BUILD_TAG="${LUMBERROOM_BUILD_TAG:-lumberroom-server:0.1.0}"
+export LUMBERROOM_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 run "${COMPOSE[@]}" build
 
 # ── oauth credentials ────────────────────────────────────────────────────────
@@ -448,12 +486,13 @@ elif [ "$AUTH_MODE_NOW" = oidc ]; then
 else
   say "on your Mac, from a clone of this repo:"
   if [ -n "$DOMAIN" ]; then
-    info "./client/wire-mac.sh --url https://$DOMAIN --token <token>"
+    info "LUMBERROOM_TOKEN=<token> ./client/wire-mac.sh --url https://$DOMAIN"
   else
     info "ssh -N -L 8787:127.0.0.1:8787 <this-host>   # in one terminal"
-    info "./client/wire-mac.sh --url http://127.0.0.1:8787 --token <token>"
+    info "LUMBERROOM_TOKEN=<token> ./client/wire-mac.sh --url http://127.0.0.1:8787"
   fi
   info "<token> is the first \"token\" field in $REPO_DIR/.env (mode 600), the claude-code-mac client."
   say ""
   info "keep that token out of shell history and chat logs; it is full read/write on your memory."
+  info "wire-mac.sh reads it from LUMBERROOM_TOKEN, or prompts with echo off if you leave that unset; it does not take a --token flag, since a command-line argument sits in both ps output and your shell history."
 fi
