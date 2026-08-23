@@ -29,8 +29,9 @@ const B64_LEN: usize = 44;
 
 /// The label [`fingerprint`] runs the HMAC over. Frozen: the fingerprint of a live key is stored in
 /// `kek_state` and compared at every boot, so changing this label would make every deployment look
-/// like it had rotated its key.
-const FINGERPRINT_LABEL: &[u8] = b"lumberroom/kek-fingerprint/v1";
+/// like it had rotated its key. It still carries the product's old name for that reason: the rename
+/// to lumberroom swept this constant once and the next boot refused every private write.
+const FINGERPRINT_LABEL: &[u8] = b"sutr/kek-fingerprint/v1";
 
 #[async_trait]
 pub trait KeyProvider: Send + Sync {
