@@ -70,10 +70,25 @@ trap 'cleanup' EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
+# target/ in a named volume rather than on the bind mount, and the same volume the `dev` compose
+# service uses. Two reasons. Rust build I/O through virtiofs dominates a rebuild on macOS, and
+# without this the repository carries two build directories for one checkout: this one on the host
+# and the dev loop's inside Docker.
+#
+# It does not halve anything. `check` and `test` build the dev profile and the dev loop builds
+# `dev-release`, and cargo keeps those in separate subdirectories, so the dependency tree still
+# compiles once for each. What is shared is the volume, the registry and the fingerprint database.
+#
+# The cost: a `test` run while the dev loop is up blocks on cargo's build-directory lock until the
+# dev loop's build finishes. That is cargo serialising two real builds rather than the stale
+# container problem above, and it clears on its own.
+#
+# target/ no longer appears on the host. `docker run --rm -v lumberroom-target:/t alpine ls /t` reads it.
 docker run --rm --name "$NAME" \
   --label "lumberroom.cargo.owner=$$" \
   --network "${LUMBERROOM_DOCKER_NETWORK:-lumberroom_default}" \
   -v "$PWD:/app" \
+  -v lumberroom-target:/app/target \
   -v lumberroom-cargo:/usr/local/cargo/registry \
   -e DATABASE_URL="postgres://${POSTGRES_USER:-lumberroom}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lumberroom}" \
   -e CARGO_TERM_COLOR=never \

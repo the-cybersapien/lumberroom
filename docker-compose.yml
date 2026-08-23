@@ -68,6 +68,14 @@ services:
       args:
         EMBED_PROVIDER: ${EMBED_PROVIDER:-local}
         EMBED_MODEL: ${EMBED_MODEL:-Xenova/bge-base-en-v1.5}
+        # What the binary reports on /readyz and what scripts/deploy-check.sh compares against, so
+        # a container serving an image older than the one on disk says so. Compose cannot run
+        # `git rev-parse` itself: whoever builds exports these first, and deploy/install.sh does.
+        # Unset leaves the stamp `unknown`, which still builds and which deploy-check calls a
+        # warning rather than a failure.
+        LUMBERROOM_BUILD_SHA: ${LUMBERROOM_BUILD_SHA:-unknown}
+        LUMBERROOM_BUILD_TAG: ${LUMBERROOM_BUILD_TAG:-unknown}
+        LUMBERROOM_BUILT_AT: ${LUMBERROOM_BUILT_AT:-unknown}
     image: lumberroom-server:0.1.0
     restart: unless-stopped
     depends_on:
@@ -102,6 +110,7 @@ services:
       OIDC_ISSUER: ${OIDC_ISSUER:-}
       OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
       OIDC_JWKS_URI: ${OIDC_JWKS_URI:-}
+      OIDC_ALLOWED_SUBJECTS: ${OIDC_ALLOWED_SUBJECTS:-}
       OIDC_REQUIRED_SCOPES: ${OIDC_REQUIRED_SCOPES:-}
       EMBED_PROVIDER: ${EMBED_PROVIDER:-local}
       EMBED_MODEL: ${EMBED_MODEL:-Xenova/bge-base-en-v1.5}
@@ -174,6 +183,12 @@ services:
     build:
       context: .
       target: cli-runtime
+      # The same stamp the server gets. It reaches the image labels; the client binary carries no
+      # build script, so `lumberroom` itself does not report a commit.
+      args:
+        LUMBERROOM_BUILD_SHA: ${LUMBERROOM_BUILD_SHA:-unknown}
+        LUMBERROOM_BUILD_TAG: ${LUMBERROOM_BUILD_TAG:-unknown}
+        LUMBERROOM_BUILT_AT: ${LUMBERROOM_BUILT_AT:-unknown}
     image: lumberroom:0.1.0
     restart: unless-stopped
     depends_on:
@@ -240,7 +255,121 @@ services:
       - "127.0.0.1:3001:3001"
       - "127.0.0.1:3002:3002"
 
+  # The local development loop: `docker compose --profile dev up dev`.
+  #
+  # Rust has no hot reload and cargo has no watch mode. A running server picks up an edit by being
+  # killed and started again, which is what watchexec does here. Nothing swaps code into the live
+  # process, so every edit costs a link and a boot; the volumes below exist to keep that cost down.
+  #
+  # Built from Dockerfile.builder, not Dockerfile. The production image does a release build, bakes
+  # 209MB of weights in and asserts the binary size, all of it in service of a shippable artifact
+  # and all of it the opposite of a fast edit-to-serving loop. This runs `cargo run` over the
+  # bind-mounted tree instead, and tags the image `lumberroom-builder` so scripts/cargo.sh and this
+  # service share one toolchain rather than drifting apart.
+  #
+  # `--profile dev-release`, the profile Cargo.toml already carries for exactly this. The default
+  # dev profile builds faster and produces a server slow enough to change what the console feels
+  # like; release cannot compile incrementally at all. dev-release is release with the three
+  # settings that make it slow to produce turned off.
+  #
+  # Its own database and its own port. `lumberroom_dev` so a dev-loop restart never writes into the real
+  # store, 8788 so it never fights the `server` service for 8787. Create the database once:
+  #
+  #   docker compose exec db psql -U lumberroom -c 'CREATE DATABASE lumberroom_dev'
+  #
+  # sqlx migrates it at boot from there. No KEK bind mount: this service is written for
+  # KEK_PROVIDER=env, and a missing bind-mount source is the trap at the top of this file, where
+  # Docker answers by creating a directory. KEK_PROVIDER=file needs the mount added by hand.
+  dev:
+    profiles: ["dev"]
+    build:
+      context: .
+      dockerfile: Dockerfile.builder
+    image: lumberroom-builder:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    working_dir: /app
+    environment:
+      PORT: 8787
+      HOST: 0.0.0.0
+      DATABASE_URL: postgres://${POSTGRES_USER:-lumberroom}:${POSTGRES_PASSWORD}@db:5432/${DEV_POSTGRES_DB:-lumberroom_dev}
+      TENANT_ID: ${TENANT_ID:-me}
+      LOG_LEVEL: ${DEV_LOG_LEVEL:-debug}
+      # The published port, not the container port, because PUBLIC_URL is also the Host the MCP
+      # transport will answer to. Point it at 8787 and every MCP request arrives with a Host the
+      # allowlist rejects, which a client reports as a connection failure.
+      PUBLIC_URL: http://127.0.0.1:${DEV_PORT:-8788}
+      AUTH_MODE: ${AUTH_MODE:-token}
+      AUTH_TOKENS: ${AUTH_TOKENS:-}
+      OWNER_PASSWORD_HASH: ${OWNER_PASSWORD_HASH:-}
+      OAUTH_COOKIE_SECRET: ${OAUTH_COOKIE_SECRET:-}
+      OAUTH_DCR_ENABLED: ${OAUTH_DCR_ENABLED:-}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
+      OIDC_JWKS_URI: ${OIDC_JWKS_URI:-}
+      OIDC_ALLOWED_SUBJECTS: ${OIDC_ALLOWED_SUBJECTS:-}
+      OIDC_REQUIRED_SCOPES: ${OIDC_REQUIRED_SCOPES:-}
+      # The real embedder, reading weights from a volume seeded once. A hash embedder would boot
+      # faster and would give this loop different vectors from the ones production returns, which
+      # is the wrong thing to be debugging against.
+      EMBED_PROVIDER: ${EMBED_PROVIDER:-local}
+      EMBED_MODEL: ${EMBED_MODEL:-Xenova/bge-base-en-v1.5}
+      EMBED_DIM: ${EMBED_DIM:-768}
+      EMBED_ALLOW_FALLBACK: ${EMBED_ALLOW_FALLBACK:-false}
+      MODEL_CACHE_DIR: /models
+      SENSITIVITY_DEFAULTS: ${SENSITIVITY_DEFAULTS:-}
+      SENSITIVITY_TRIPWIRE: ${SENSITIVITY_TRIPWIRE:-}
+      MAX_WRITE_SENSITIVITY: ${MAX_WRITE_SENSITIVITY:-}
+      KEK_PROVIDER: ${KEK_PROVIDER:-none}
+      KEK_ENV_VAR: ${KEK_ENV_VAR:-LUMBERROOM_KEK}
+      LUMBERROOM_KEK: ${LUMBERROOM_KEK:-}
+      KEK_ID: ${KEK_ID:-}
+      REQUIRE_VERIFIED_KEK: ${REQUIRE_VERIFIED_KEK:-}
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: 1
+    ports:
+      - "127.0.0.1:${DEV_PORT:-8788}:8787"
+    volumes:
+      - .:/app
+      # target/ off the bind mount, and the same volume scripts/cargo.sh uses, so one checkout has
+      # one build directory rather than one here and one on the host. Rust build I/O through
+      # virtiofs dominates a rebuild otherwise, and a named volume shadows the bind-mounted
+      # subdirectory cleanly.
+      - target:/app/target
+      # The same registry scripts/cargo.sh already uses, by its exact name rather than the
+      # project-prefixed one compose would invent.
+      - cargo_registry:/usr/local/cargo/registry
+      # Seed once from the image that already carries them, no download:
+      #   docker run --rm --user root -v lumberroom-dev-models:/dst lumberroom-server:0.1.0 cp -a /models/. /dst/
+      - dev_models:/models
+    # --poll is the escape hatch, not the default: file events from a macOS bind mount into a Linux
+    # container go missing often enough to be worth naming, and polling costs CPU the whole time it
+    # is on. Add `--poll 500ms` here when saves stop triggering rebuilds.
+    command:
+      - watchexec
+      - --restart
+      - --watch
+      - src
+      - --watch
+      - migrations
+      - --exts
+      - rs,sql
+      - --
+      - cargo
+      - run
+      - --profile
+      - dev-release
+      - --bin
+      - lumberroom-server
+
 volumes:
   pgdata:
   caddy_data:
   caddy_config:
+  target:
+    name: lumberroom-target
+  dev_models:
+    name: lumberroom-dev-models
+  cargo_registry:
+    name: lumberroom-cargo

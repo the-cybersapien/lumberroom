@@ -102,6 +102,12 @@ NO_INGEST_TOKEN="$(openssl rand -hex 32)"
 cleanup() {
   status=$?
   docker rm -f "$SERVER_NAME" >/dev/null 2>&1 || true
+  # Step 7 leaves a python listener on the host. `set -e` is on, so this is an if rather than a
+  # && list: a failed kill there would exit the trap before it reported the real status.
+  if [ -n "${STUB_PID:-}" ]; then
+    kill "$STUB_PID" >/dev/null 2>&1 || true
+    STUB_PID=""
+  fi
   if [ "$KEEP" -eq 1 ]; then
     echo ""
     echo "  left $WORK and database $TEST_DB in place. Drop the database with:"
@@ -192,6 +198,7 @@ cli_as() {
       LUMBERROOM_CLAUDE_ROOT="$FIXTURE_ROOT" "$HOST_CLI" "$@"
   else
     docker run --rm --network "$NETWORK" \
+      --add-host host.docker.internal:host-gateway \
       -v "$REPO_DIR:$REPO_DIR" -w "$REPO_DIR" \
       -e LUMBERROOM_URL="$CLI_URL" -e LUMBERROOM_TOKEN="$tok" \
       -e LUMBERROOM_CONFIG="$cfg" -e LUMBERROOM_STATE_DIR="$state" \
@@ -265,7 +272,7 @@ plan() {
   return 1
 }
 
-say "0/6 preflight"
+say "0/7 preflight"
 if cli doctor >"$WORK/doctor.txt" 2>&1; then
   pass "the scratch credential authenticates against $CLI_URL"
 else
@@ -278,7 +285,7 @@ if ! cli ingest list --json >"$WORK/routes.txt" 2>&1; then
   with \`docker compose build server\`. Detail: $(excerpt "$WORK/routes.txt")"
 fi
 
-say "1/6 a digest span produces zero proposals"
+say "1/7 a digest span produces zero proposals"
 new_fixture_dir
 python3 - "$DIR/session1.jsonl" "$NONCE" <<'PY'
 import json, sys
@@ -306,7 +313,7 @@ else
   fail "ingest plan failed: $(excerpt "$WORK/plan1.err")"
 fi
 
-say "2/6 an attachment entry is excluded and counted by subtype"
+say "2/7 an attachment entry is excluded and counted by subtype"
 new_fixture_dir
 python3 - "$DIR/session2.jsonl" "$NONCE" <<'PY'
 import json, sys
@@ -336,7 +343,7 @@ else
   fail "ingest plan failed: $(excerpt "$WORK/plan2.err")"
 fi
 
-say "3/6 a memory-tool result is excluded, a Read result is not"
+say "3/7 a memory-tool result is excluded, a Read result is not"
 new_fixture_dir
 python3 - "$DIR/session3.jsonl" "$NONCE" <<'PY'
 import json, sys
@@ -395,7 +402,7 @@ else
   fail "ingest plan failed: $(excerpt "$WORK/plan3.err")"
 fi
 
-say "4/6 a sensitive path is refused before the file is opened"
+say "4/7 a sensitive path is refused before the file is opened"
 new_fixture_dir
 mkdir -p "$DIR/.ssh"
 # Valid JSONL a plan would happily classify, so the only thing keeping it out is the path rule.
@@ -428,7 +435,7 @@ else
   fail "ingest plan failed: $(excerpt "$WORK/plan4.err")"
 fi
 
-say "5/6 a second plan over an unchanged fixture cuts zero spans"
+say "5/7 a second plan over an unchanged fixture cuts zero spans"
 new_fixture_dir
 python3 - "$DIR/session5.jsonl" "$NONCE" <<'PY'
 import json, sys
@@ -488,7 +495,7 @@ else
   fail "ingest plan failed: $(excerpt "$WORK/plan5a.err")"
 fi
 
-say "6/6 ingest list answers, and a client without may_ingest gets 403"
+say "6/7 ingest list answers, and a client without may_ingest gets 403"
 if cli ingest list --json >"$WORK/list6.txt" 2>&1; then
   pass "ingest list answered for the credential carrying mayIngest"
 else
@@ -505,6 +512,186 @@ else
   fail "the no-mayIngest credential was not cleanly refused (exit $DENIED_CODE): $(excerpt "$WORK/list6-denied.txt")"
 fi
 
+say "7/7 a batch submits, splits into out/, and its chunks reach submit"
+new_fixture_dir
+python3 - "$DIR/session7.jsonl" "$NONCE" <<'PY'
+import json, sys
+path, nonce = sys.argv[1], sys.argv[2]
+# One owner-typed span, so the run has exactly one chunk and one span id for the stub to answer
+# against. Nothing here tests extraction quality; the stub decides what comes back.
+line = {"type": "user", "uuid": f"u-{nonce}-batch", "timestamp": "2026-08-20T00:05:00Z",
+        "sessionId": f"fx-{nonce}", "cwd": "/tmp/lumberroom-ingest-test",
+        "message": {"role": "user", "content": f"the {nonce} batch fixture line, plain text"}}
+open(path, "w").write(json.dumps(line) + "\n")
+PY
+
+# A provider stub, not OpenRouter. It answers what batch.rs believes a batch endpoint answers:
+# a 202 carrying an id, then a completed job whose results array is keyed by the custom ids the
+# submission sent. What it cannot settle is whether OpenRouter agrees, which is why the module
+# comment in batch.rs says no batch has ever gone to a real provider.
+cat >"$WORK/batch-stub.py" <<'PY'
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+port_file, span_id, nonce = sys.argv[1], sys.argv[2], sys.argv[3]
+state = {"created": 0, "custom_ids": []}
+
+
+def fact(index):
+    return {"facts": [{
+        "content": f"the {nonce} batch fixture line is how step 7 proves Mode C reaches submit",
+        "namespace": "project:ingest-test",
+        "source_span_id": span_id,
+        "speaker": "owner_typed",
+        "confidence": "high",
+    }]}
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def _send(self, code, body):
+        raw = json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_POST(self):
+        n = int(self.headers.get("content-length", 0))
+        body = json.loads(self.rfile.read(n) or b"{}")
+        state["created"] += 1
+        state["custom_ids"] = [r.get("custom_id") for r in body.get("requests", [])]
+        self._send(202, {"id": "batch_stub_1", "status": "validating"})
+
+    def do_GET(self):
+        # The count is how the script asks whether a poll created a second batch.
+        if self.path == "/created":
+            return self._send(200, {"created": state["created"]})
+        results = []
+        for index, cid in enumerate(state["custom_ids"]):
+            content = json.dumps(fact(index))
+            results.append({"custom_id": cid, "error": None, "response": {
+                "status_code": 200, "request_id": f"r-{index}",
+                "body": {"choices": [{"message": {"content": content}}]}}})
+        self._send(200, {
+            "id": "batch_stub_1",
+            "status": "completed",
+            "request_counts": {"total": len(results), "completed": len(results), "failed": 0},
+            "usage": {"prompt_tokens": 111, "completion_tokens": 22},
+            "results": results,
+        })
+
+
+server = HTTPServer(("0.0.0.0", 0), Handler)
+with open(port_file, "w") as f:
+    f.write(str(server.server_address[1]))
+server.serve_forever()
+PY
+
+if plan plan7; then
+  RUN_ID="$(field "$WORK/plan7.json" run_id)"
+  WORKLIST="$(field "$WORK/plan7.json" worklist)"
+  if [ -z "$RUN_ID" ] || [ -z "$WORKLIST" ] || [ ! -f "$WORKLIST" ]; then
+    fail "plan named no worklist, so the batch step had nothing to send: $(excerpt "$WORK/plan7.json")"
+  else
+    RUN_DIR="$(dirname "$WORKLIST")"
+    SPAN_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["spans"][0]["id"])' "$WORKLIST")"
+    rm -f "$WORK/stub-port"
+    python3 "$WORK/batch-stub.py" "$WORK/stub-port" "$SPAN_ID" "$NONCE" >"$WORK/stub.log" 2>&1 &
+    STUB_PID=$!
+    i=0
+    while [ ! -s "$WORK/stub-port" ]; do
+      i=$((i + 1))
+      [ "$i" -ge 50 ] && break
+      sleep 0.1
+    done
+    STUB_PORT="$(cat "$WORK/stub-port" 2>/dev/null || true)"
+    # The CLI runs in a container by default and the stub listens on the host, so the endpoint it
+    # is given is not the one this script polls.
+    if [ -n "$HOST_CLI" ]; then
+      STUB_HOST="127.0.0.1"
+    else
+      STUB_HOST="host.docker.internal"
+    fi
+    if [ -z "$STUB_PORT" ]; then
+      fail "the batch stub did not report a port: $(excerpt "$WORK/stub.log")"
+    else
+      # A config file of its own, at 0600, because the CLI refuses to read one that group or other
+      # can. The endpoint key is the only way a provider other than OpenRouter gets a batch at all.
+      python3 - "$WORK/cfg-batch.json" "http://$STUB_HOST:$STUB_PORT/batches" <<'PY'
+import json, os, sys
+path, endpoint = sys.argv[1], sys.argv[2]
+json.dump({"ingest": {"providers": {"custom": {"batch": {"endpoint": endpoint}}}}}, open(path, "w"))
+os.chmod(path, 0o600)
+PY
+      batch_cli() {
+        cli_as "$TOKEN" "$WORK/cfg-batch.json" "$WORK/state" ingest extract --run "$RUN_ID" \
+          --provider custom --model stub-model --base-url "http://$STUB_HOST:$STUB_PORT/v1" \
+          --yes "$@"
+      }
+      STATE_JSON="$RUN_DIR/state.json"
+
+      if batch_cli --batch >"$WORK/batch-submit.txt" 2>&1; then
+        BATCH_ID="$(field "$STATE_JSON" batch.id)"
+        [ "$BATCH_ID" = "batch_stub_1" ] \
+          && pass "the batch id reached state.json, so the results survive a lost out/" \
+          || fail "state.json holds batch id '$BATCH_ID', wanted batch_stub_1: $(excerpt "$WORK/batch-submit.txt")"
+        # The consent block prints whatever --yes says: a cron log with no record of where a corpus
+        # went is not a log.
+        if grep -q "the spans go to $STUB_HOST" "$WORK/batch-submit.txt" \
+          && grep -q "30 days" "$WORK/batch-submit.txt"; then
+          pass "the submission named its destination and the retention it accepts"
+        else
+          fail "the batch went out without naming the host or the retention: $(excerpt "$WORK/batch-submit.txt")"
+        fi
+
+        # --batch-status prints and creates nothing. A second batch here is a second bill.
+        batch_cli --batch-status >"$WORK/batch-status.txt" 2>&1 || true
+        CREATED="$(curl -sf "http://127.0.0.1:$STUB_PORT/created" | python3 -c 'import json,sys; print(json.load(sys.stdin)["created"])' 2>/dev/null || echo -1)"
+        if [ "$CREATED" = "1" ] && [ ! -f "$RUN_DIR/out/chunk-00.json" ]; then
+          pass "--batch-status polled the job and neither resent it nor wrote a chunk"
+        else
+          fail "--batch-status left $CREATED batches created and out/chunk-00.json present: $(excerpt "$WORK/batch-status.txt")"
+        fi
+
+        if batch_cli --batch >"$WORK/batch-fetch.txt" 2>&1; then
+          MISSING=0
+          for f in $(python3 -c 'import json,sys; w=json.load(open(sys.argv[1])); print("\n".join("chunk-%02d.json" % c["index"] for c in w["chunks"]))' "$WORKLIST"); do
+            [ -f "$RUN_DIR/out/$f" ] || MISSING=$((MISSING + 1))
+          done
+          [ "$MISSING" = "0" ] \
+            && pass "the completed batch split into one out/ file per chunk" \
+            || fail "$MISSING chunks came back with no out/ file: $(excerpt "$WORK/batch-fetch.txt")"
+        else
+          fail "splitting the completed batch failed: $(excerpt "$WORK/batch-fetch.txt")"
+        fi
+
+        # The point of the whole mode: a batched chunk is indistinguishable to submit, and the
+        # proposal records which provider and model produced it.
+        if cli_as "$TOKEN" "$WORK/cfg-batch.json" "$WORK/state" ingest submit --run "$RUN_ID" \
+            --no-auto >"$WORK/batch-submit-stage.txt" 2>&1; then
+          if grep -q "extractor provider:custom/stub-model" "$WORK/batch-submit-stage.txt"; then
+            pass "submit read the batch's chunks and credited provider:custom/stub-model"
+          else
+            fail "submit did not credit the batch's provider: $(excerpt "$WORK/batch-submit-stage.txt")"
+          fi
+        else
+          fail "ingest submit failed on a batched run: $(excerpt "$WORK/batch-submit-stage.txt")"
+        fi
+      else
+        fail "the batch did not go out: $(excerpt "$WORK/batch-submit.txt")"
+      fi
+    fi
+    kill "$STUB_PID" >/dev/null 2>&1 || true
+    STUB_PID=""
+  fi
+else
+  fail "ingest plan failed: $(excerpt "$WORK/plan7.err")"
+fi
+
 say "what each step proved"
 cat <<SUMMARY
   1  a digest entry cuts nothing, and the text-level backstop counts the entry it dropped
@@ -515,6 +702,8 @@ cat <<SUMMARY
   4  a file under a sensitive directory is skipped by name, never opened, and never quoted
   5  a submit advances the watermark, and the plan after it re-reads none of the same bytes
   6  ingest list answers for a credential with mayIngest and refuses one without it
+  7  a batch reaches a provider stub, its id survives in state.json, a status poll resends nothing,
+     the completed job splits into out/, and submit credits the provider that produced it
 SUMMARY
 
 echo ""

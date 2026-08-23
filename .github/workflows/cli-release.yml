@@ -1,0 +1,86 @@
+# Builds the two lumberroom targets this repository's own machine cannot build: aarch64-apple-darwin
+# and x86_64-apple-darwin. There is no cross-compiler for darwin in the lumberroom-builder container (no
+# osxcross, no zig there), so this is the only piece of the release that has to run in CI.
+#
+# The linux musl legs are NOT built here. scripts/cli-release.sh already builds both from the
+# existing lumberroom-builder image with no new infrastructure, and rebuilding them again in a second CI
+# job would be paying for coverage this repo already has. See
+# docs/decisions/0012-cli-distribution.md for the split and why zigbuild is the fallback if the
+# cost below stops being worth it.
+#
+# Triggers on a tag push (`v*`), never on push to main: a release is a deliberate act.
+#
+# Cost: macos-14 runners bill at 10x the linux rate against the account's Actions
+# minutes. A five-minute darwin job here costs roughly fifty linux-equivalent minutes, every tag
+# pushed. There is no linux job in this file to offset it against; the whole cost of this workflow
+# is the darwin build.
+#
+# Order-independent by design: this job attaches its two binaries and a recomputed SHA256SUMS to
+# the release for the pushed tag, creating that release if it does not exist yet and downloading
+# whatever is already attached (typically the two linux binaries from a local
+# `cli-release.sh --build` run, uploaded with `gh release create`/`gh release upload` before or
+# after the tag lands) so the checksum file always covers every asset actually present.
+name: cli-release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  darwin:
+    runs-on: macos-14
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: rustup targets
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      # macos-14 runners are arm64, so aarch64-apple-darwin is the native build and
+      # x86_64-apple-darwin crosses to the Intel slice. Xcode's own toolchain, already on the
+      # runner, links both; nothing extra to install.
+      - name: build aarch64-apple-darwin
+        run: cargo build --release --locked -p lumberroom --target aarch64-apple-darwin
+
+      - name: build x86_64-apple-darwin
+        run: cargo build --release --locked -p lumberroom --target x86_64-apple-darwin
+
+      - name: stage the darwin binaries
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          cp target/aarch64-apple-darwin/release/lumberroom \
+            "dist/lumberroom-${version}-aarch64-apple-darwin"
+          cp target/x86_64-apple-darwin/release/lumberroom \
+            "dist/lumberroom-${version}-x86_64-apple-darwin"
+
+      - name: attach to the release, checksum everything present
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo="$GITHUB_REPOSITORY"
+          tag="$GITHUB_REF_NAME"
+
+          if ! gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "$repo" --title "lumberroom $tag" --generate-notes
+          fi
+
+          # Pull down only what this job did not just build: the linux legs, if a local
+          # `cli-release.sh --build` run has already uploaded them. Downloading this job's own
+          # pattern too would let a stale asset from a previous run of this same workflow
+          # overwrite the binary just built above. No `--clobber`: nothing in dist/ can collide
+          # with a linux-only pattern, and `gh release download` may not even support the flag.
+          gh release download "$tag" --repo "$repo" --dir dist \
+            --pattern 'lumberroom-*-unknown-linux-musl' || true
+
+          cd dist
+          rm -f SHA256SUMS
+          sha256sum lumberroom-* > SHA256SUMS
+          cat SHA256SUMS
+
+          gh release upload "$tag" --repo "$repo" --clobber lumberroom-* SHA256SUMS

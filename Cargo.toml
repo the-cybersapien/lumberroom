@@ -113,3 +113,7 @@ lto = false
 codegen-units = 16
 incremental = true
 strip = false
+# The console reads its stylesheet from disk behind `cfg(debug_assertions)`, which release turns
+# off and this profile would inherit. Without this line the dev loop serves the stylesheet that was
+# compiled in, and a CSS edit looks like it did nothing.
+debug-assertions = true

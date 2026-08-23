@@ -18,17 +18,6 @@ GRID = [0, 4, 8, 12, 16, 24, 32, 48, 64]
 def snap_space(px: int) -> int:
     return min(GRID, key=lambda s: abs(s - px))
 
-def style_span(src: str):
-    i = src.index('const STYLE: &str = "') + len('const STYLE: &str = "')
-    j = i
-    while j < len(src):
-        if src[j] == '\\':
-            j += 2; continue
-        if src[j] == '"':
-            break
-        j += 1
-    return i, j
-
 def retheme(style: str) -> tuple[str, dict]:
     moved = {"font": 0, "space": 0}
 
@@ -56,13 +45,13 @@ def retheme(style: str) -> tuple[str, dict]:
     style = re.sub(r'(?:padding|margin|gap|row-gap|column-gap)[^:]*:[^;}]+', in_space, style)
     return style, moved
 
+# The three sheets are plain .css files now rather than Rust string literals, so this reads each one
+# whole and no longer has to find where a literal ends by walking escapes.
 total = {"font": 0, "space": 0}
-for f in ["src/console/pages.rs", "src/console/aliases.rs", "src/console/cleanup.rs"]:
+for f in ["src/console/console.css", "src/console/aliases.css", "src/console/cleanup.css"]:
     p = pathlib.Path(f)
-    src = p.read_text()
-    i, j = style_span(src)
-    new, moved = retheme(src[i:j])
-    p.write_text(src[:i] + new + src[j:])
+    new, moved = retheme(p.read_text())
+    p.write_text(new)
     total["font"] += moved["font"]; total["space"] += moved["space"]
     print(f"  {f.split('/')[-1]:<14} {moved['font']:>3} type values snapped, {moved['space']:>3} spacing values snapped")
 print(f"\n  total: {total['font']} type, {total['space']} spacing")

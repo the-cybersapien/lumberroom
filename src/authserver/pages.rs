@@ -49,52 +49,29 @@ pub struct ClientView<'a> {
     pub current_profile: Option<&'a str>,
 }
 
-const STYLE: &str = "\
-:root{color-scheme:light dark}
-*{box-sizing:border-box}
-body{margin:0;padding:2.5rem 1.25rem;background:#f6f6f4;color:#17181a;
- font:16px/1.55 ui-sans-serif,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-main{max-width:34rem;margin:0 auto;background:#fff;border:1px solid #dcdcd6;border-radius:10px;
- padding:1.75rem}
-h1{margin:0 0 .35rem;font-size:1.3rem;letter-spacing:-.01em}
-p{margin:.5rem 0}
-.lede{color:#4a4d52;margin-bottom:1.25rem}
-.mark{font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:#83868c;margin:0 0 1rem}
-.glyph{display:block;width:32px;height:32px;margin:0 0 .6rem}
-dl{margin:0 0 1.25rem;padding:.85rem 1rem;background:#f6f6f4;border-radius:8px;font-size:.9rem}
-dt{color:#6a6d73;font-size:.78rem;text-transform:uppercase;letter-spacing:.06em}
-dd{margin:.1rem 0 .7rem;word-break:break-all;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-dd:last-of-type{margin-bottom:0}
-fieldset{border:1px solid #dcdcd6;border-radius:8px;padding:.85rem 1rem;margin:0 0 1.25rem}
-legend{padding:0 .35rem;font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:#6a6d73}
-.choice{display:block;padding:.6rem 0;border-bottom:1px solid #ececE6}
-.choice:last-child{border-bottom:0}
-.choice input{margin-right:.5rem}
-.choice b{font-weight:600}
-.choice span{display:block;margin:.15rem 0 0 1.4rem;color:#4a4d52;font-size:.88rem}
-label.field{display:block;margin:0 0 .35rem;font-weight:600;font-size:.9rem}
-input[type=password]{width:100%;padding:.6rem .7rem;font-size:1rem;border:1px solid #b9bbc0;
- border-radius:7px;background:#fff;color:inherit}
-.actions{display:flex;gap:.6rem;flex-wrap:wrap}
-button{font:inherit;font-weight:600;padding:.62rem 1.15rem;border-radius:7px;border:1px solid #17181a;
- background:#17181a;color:#fff;cursor:pointer}
-button.secondary{background:#fff;color:#17181a;border-color:#b9bbc0}
-.warn{padding:.7rem .9rem;border-radius:8px;background:#fdf1e7;border:1px solid #eccfae;
- font-size:.9rem;margin:0 0 1.1rem}
-.error{padding:.7rem .9rem;border-radius:8px;background:#fdeaea;border:1px solid #e9b7b7;
- font-size:.9rem;margin:0 0 1.1rem}
-.foot{margin:1.25rem 0 0;color:#83868c;font-size:.82rem}
-@media (prefers-color-scheme:dark){
- body{background:#111214;color:#eceded}
- main{background:#191b1e;border-color:#2c2f34}
- dl,fieldset{background:#15171a;border-color:#2c2f34}
- .lede,.choice span{color:#a9acb2}
- input[type=password]{background:#111214;border-color:#3a3e44;color:inherit}
- button{background:#eceded;color:#111214;border-color:#eceded}
- button.secondary{background:transparent;color:#eceded;border-color:#3a3e44}
- .warn{background:#2a2013;border-color:#5c4520}
- .error{background:#2a1414;border-color:#5c2020}
-}";
+/// The stylesheet. `include_str!` in a release build, read from disk on every render in a
+/// development one, so an edit to `auth.css` shows up on a browser refresh instead of a recompile
+/// and a restart. `CARGO_MANIFEST_DIR` is baked in at compile time and the dev container
+/// bind-mounts the repository at that same path, so the file the running server reads is the file
+/// being edited. A read that fails falls back to the compiled-in copy rather than serving an
+/// unstyled page.
+///
+/// `[profile.dev-release]` sets `debug-assertions = true` to keep this arm switched on; it
+/// inherits from release, where the flag is off.
+const STYLE: &str = include_str!("auth.css");
+
+#[cfg(debug_assertions)]
+fn style() -> std::borrow::Cow<'static, str> {
+    match std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/authserver/auth.css")) {
+        Ok(css) => std::borrow::Cow::Owned(css),
+        Err(_) => std::borrow::Cow::Borrowed(STYLE),
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn style() -> std::borrow::Cow<'static, str> {
+    std::borrow::Cow::Borrowed(STYLE)
+}
 
 /// HTML-escape for both text and attribute contexts.
 ///
@@ -121,8 +98,9 @@ fn shell(title: &str, body: &str) -> String {
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
 <meta name=\"robots\" content=\"noindex,nofollow\">{FAVICON}\
-<title>{}</title><style>{STYLE}</style></head>\n<body><main>{body}</main></body></html>\n",
-        escape(title)
+<title>{}</title><style>{style}</style></head>\n<body><main>{body}</main></body></html>\n",
+        escape(title),
+        style = style()
     )
 }
 

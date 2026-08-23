@@ -28,8 +28,27 @@ RUN mkdir -p src/bin \
  && echo 'fn main() {}' > src/main.rs \
  && echo 'fn main() {}' > src/bin/prefetch.rs \
  && echo '' > src/lib.rs
+
+# The build stamp. `:-unknown` covers `--build-arg LUMBERROOM_BUILD_SHA=`, which passes an empty
+# string through and would otherwise stamp a binary with "".
+#
+# A changed sha re-runs this RUN, which weakens the cache split the comment above describes. Leave
+# it: the sources under the cache mount have not changed, so cargo relinks at most and the stage
+# costs seconds. What it buys is a label naming the commit on the client image too, which is the
+# image the cleanup daemon runs.
+#
+# The client binary itself carries no stamp today. build.rs belongs to the root package and
+# crates/lumberroom has no build script and no path dependency on the root crate, so nothing in
+# the client reads these. The environment is here so a build script added later needs no Dockerfile
+# change to be stamped.
+ARG LUMBERROOM_BUILD_SHA=unknown
+ARG LUMBERROOM_BUILD_TAG=unknown
+ARG LUMBERROOM_BUILT_AT=unknown
 RUN --mount=type=cache,target=/build/target,id=lumberroom-target,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/registry,id=lumberroom-registry,sharing=locked \
+    LUMBERROOM_BUILD_SHA="${LUMBERROOM_BUILD_SHA:-unknown}" \
+    LUMBERROOM_BUILD_TAG="${LUMBERROOM_BUILD_TAG:-unknown}" \
+    LUMBERROOM_BUILT_AT="${LUMBERROOM_BUILT_AT:-unknown}" \
     cargo build --release --locked -p lumberroom \
  && test "$(stat -c%s target/release/lumberroom)" -gt 5000000 \
  && mkdir -p /out && cp target/release/lumberroom /out/
@@ -38,7 +57,12 @@ FROM base AS builder
 
 # Everything the build reads, in one layer. COPY of a directory is recursive by construction, so
 # nothing here has to enumerate src/'s subdirectories.
-COPY Cargo.toml Cargo.lock ./
+#
+# build.rs has to be here. Cargo detects a build script by its presence, so leaving it out gives a
+# build with no script at all: the stamp still reaches `option_env!` through rustc's environment,
+# and cargo never learns the environment is an input, so the next build reuses yesterday's stamp out
+# of the cache mount and the binary claims a commit it was not built from.
+COPY Cargo.toml Cargo.lock build.rs ./
 COPY crates ./crates
 COPY src ./src
 COPY migrations ./migrations
@@ -67,8 +91,20 @@ COPY migrations ./migrations
 # --workspace, because the root is a package and a bare `cargo build` at a workspace root builds
 # only that one. Without it the client is never built and the size assertion passes on the binary that
 # did get built.
+#
+# The stamp goes in as environment on the build command, and build.rs declares it as an input so a
+# changed sha recompiles the crate that reads it. `/readyz` reports the three values back, which is
+# how you tell a container running the image you just built from one `docker restart` brought back
+# on the old one. Unset means `unknown`, and so does empty: `--build-arg LUMBERROOM_BUILD_SHA=` passes
+# an empty string that the ARG default does not catch.
+ARG LUMBERROOM_BUILD_SHA=unknown
+ARG LUMBERROOM_BUILD_TAG=unknown
+ARG LUMBERROOM_BUILT_AT=unknown
 RUN --mount=type=cache,target=/build/target,id=lumberroom-server-target,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/registry,id=lumberroom-registry,sharing=locked \
+    LUMBERROOM_BUILD_SHA="${LUMBERROOM_BUILD_SHA:-unknown}" \
+    LUMBERROOM_BUILD_TAG="${LUMBERROOM_BUILD_TAG:-unknown}" \
+    LUMBERROOM_BUILT_AT="${LUMBERROOM_BUILT_AT:-unknown}" \
     cargo build --release --locked -p lumberroom-server \
  && test "$(stat -c%s target/release/lumberroom-server)" -gt 5000000 \
  && mkdir -p /out \
@@ -117,6 +153,18 @@ COPY --from=builder /models /models
 COPY LICENSE NOTICE THIRD-PARTY-NOTICES.md /usr/share/doc/lumberroom-server/
 RUN chown -R lumberroom:lumberroom /models
 
+# What this image was built from, readable with `docker inspect` without starting anything. The
+# binary reports the same three values on /readyz, and those are the ones that answer the question
+# that matters: what the running container is serving, rather than what is on disk.
+ARG LUMBERROOM_BUILD_SHA=unknown
+ARG LUMBERROOM_BUILD_TAG=unknown
+ARG LUMBERROOM_BUILT_AT=unknown
+LABEL org.opencontainers.image.title="lumberroom-server" \
+      org.opencontainers.image.source="https://github.com/the-cybersapien/lumberroom" \
+      org.opencontainers.image.revision="${LUMBERROOM_BUILD_SHA:-unknown}" \
+      org.opencontainers.image.version="${LUMBERROOM_BUILD_TAG:-unknown}" \
+      org.opencontainers.image.created="${LUMBERROOM_BUILT_AT:-unknown}"
+
 USER lumberroom
 ENV MODEL_CACHE_DIR=/models \
     HOST=0.0.0.0 \
@@ -152,6 +200,17 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=cli /out/lumberroom /usr/local/bin/lumberroom
 COPY LICENSE NOTICE THIRD-PARTY-NOTICES.md /usr/share/doc/lumberroom/
+
+# The client has no /readyz to report from, so the label is the only place its commit is written
+# down. `docker inspect lumberroom:0.1.0` reads it.
+ARG LUMBERROOM_BUILD_SHA=unknown
+ARG LUMBERROOM_BUILD_TAG=unknown
+ARG LUMBERROOM_BUILT_AT=unknown
+LABEL org.opencontainers.image.title="lumberroom" \
+      org.opencontainers.image.source="https://github.com/the-cybersapien/lumberroom" \
+      org.opencontainers.image.revision="${LUMBERROOM_BUILD_SHA:-unknown}" \
+      org.opencontainers.image.version="${LUMBERROOM_BUILD_TAG:-unknown}" \
+      org.opencontainers.image.created="${LUMBERROOM_BUILT_AT:-unknown}"
 
 USER lumberroom
 ENV RUST_BACKTRACE=1

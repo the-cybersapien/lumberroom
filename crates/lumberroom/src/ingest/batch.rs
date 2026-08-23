@@ -316,7 +316,7 @@ pub async fn run(args: &BatchArgs) -> Result<RunState> {
         // The same prompt Mode A and Mode B send. Two modes that extract differently are two
         // products, so this calls `prompt::provider_system` rather than restating it.
         let system = crate::ingest::prompt::provider_system(idx + 1, total);
-        items.push(request_item(*idx, &system, &user, &provider.extra_body));
+        items.push(request_item(*idx, &system, &user, &provider));
     }
 
     let body = batch_body(BATCH_TARGET_PATH, &provider.model, items);
@@ -387,16 +387,30 @@ pub fn chunk_index(custom_id: &str) -> Option<usize> {
 /// One `{"custom_id": ..., "body": ...}` item. The body is the §10.3 request the synchronous path
 /// would have sent for this chunk, minus `model`: the batch names the model once at the top level
 /// and OpenRouter's own example omits it per request.
-pub fn request_item(index: usize, system: &str, user: &str, extra_body: &Value) -> Value {
+///
+/// Field for field with `provider.rs::chat_completions_request`, and the two drifting apart is the
+/// trap. This sent `response_format` unconditionally while `json_mode` defaulted off for
+/// OpenRouter, the one provider with a built-in batch endpoint, because qwen3.7-flash answers HTTP
+/// 400 to that field. A batch built that way fails every request a day after it goes out. Leaving
+/// `reasoning` unsent is the other half: reasoning bills as output on every chunk of the corpus,
+/// measured at 205 wasted tokens out of 215 on one call, which is more than the batch discount
+/// buys back.
+pub fn request_item(index: usize, system: &str, user: &str, p: &Provider) -> Value {
     let mut body = json!({
         "messages": [
             { "role": "system", "content": system },
             { "role": "user", "content": user },
         ],
         "temperature": 0,
-        "response_format": { "type": "json_object" },
     });
-    merge_top_level(&mut body, extra_body);
+    if p.json_mode {
+        body["response_format"] = json!({ "type": "json_object" });
+    }
+    if !p.reasoning {
+        body["reasoning"] = json!({ "enabled": false });
+    }
+    // Last, so a config-file `body` still wins over both of the decisions above.
+    merge_top_level(&mut body, &p.extra_body);
     json!({ "custom_id": custom_id(index), "body": body })
 }
 
@@ -675,33 +689,26 @@ fn fact_summary(output: &ChunkOutput) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// state.json, and the key Mode B does not know about
+// state.json, and the key Mode B carries for this driver
 // ---------------------------------------------------------------------------
 
-/// `RunState` has no `batch` field yet, so this reads the raw document. Serde drops unknown keys
-/// on deserialise, which is why the writer below rebuilds the file from a `Value` rather than
-/// handing `RunState` to `write_state`.
+/// `RunState.batch` holds the record as an untyped `Value`, so `mod.rs` carries the key without
+/// carrying this driver's types. Mode B rewrites `state.json` after every chunk and preserves the
+/// key on the way through, which is what stops a `--retry-failed` from erasing the id while the
+/// results sit on a provider for another thirty days.
 fn read_batch(paths: &RunPaths) -> Option<BatchState> {
-    let raw = std::fs::read_to_string(paths.state()).ok()?;
-    let value: Value = serde_json::from_str(&raw).ok()?;
-    serde_json::from_value(value.get("batch")?.clone()).ok()
+    serde_json::from_value(paths.read_state().batch?).ok()
 }
 
-/// Serialise `RunState`, then put the `batch` key back.
-///
-/// The trap this leaves open: `extract` on the synchronous path calls `RunPaths::write_state`,
-/// which knows nothing about this key and drops it. A Mode B `--retry-failed` after an expired
-/// batch therefore erases the batch id. The fix is a `batch` field on `RunState` itself, and it
-/// belongs to whoever owns `mod.rs`.
 fn write_run_state(paths: &RunPaths, state: &RunState, batch: Option<&BatchState>) -> Result<()> {
-    let mut value = serde_json::to_value(state)
-        .map_err(|e| err(format!("could not serialise state.json: {e}")))?;
-    if let (Some(obj), Some(batch)) = (value.as_object_mut(), batch) {
-        let encoded = serde_json::to_value(batch)
-            .map_err(|e| err(format!("could not serialise the batch record: {e}")))?;
-        obj.insert("batch".to_string(), encoded);
+    let mut state = state.clone();
+    if let Some(batch) = batch {
+        state.batch = Some(
+            serde_json::to_value(batch)
+                .map_err(|e| err(format!("could not serialise the batch record: {e}")))?,
+        );
     }
-    write_json(&paths.state(), &value)
+    paths.write_state(&state)
 }
 
 // ---------------------------------------------------------------------------
@@ -792,8 +799,23 @@ fn host_of(url: &str) -> String {
 mod tests {
     use super::*;
 
+    /// A resolved provider without touching the filesystem. `resolve` is tested in `provider.rs`;
+    /// what these tests ask is what this driver does with the answer.
+    fn provider_like(name: &str, json_mode: bool, reasoning: bool, extra_body: Value) -> Provider {
+        Provider {
+            name: name.to_string(),
+            base_url: "http://127.0.0.1:1/v1".to_string(),
+            model: "test-model".to_string(),
+            key: None,
+            extra_body,
+            shape: Shape::ChatCompletions,
+            reasoning,
+            json_mode,
+        }
+    }
+
     fn item_body(index: usize) -> Value {
-        request_item(index, "system prompt", "user chunk", &json!({}))
+        request_item(index, "system prompt", "user chunk", &provider_like("openai", true, false, json!({})))
     }
 
     #[test]
@@ -832,9 +854,60 @@ mod tests {
 
     #[test]
     fn the_config_body_reaches_a_batched_request() {
-        let item = request_item(0, "s", "u", &json!({ "thinking": { "type": "disabled" } }));
+        let zai = provider_like("zai", true, false, json!({ "thinking": { "type": "disabled" } }));
+        let item = request_item(0, "s", "u", &zai);
         assert_eq!(item["body"]["thinking"]["type"], "disabled");
         assert_eq!(item["body"]["temperature"], 0);
+        assert_eq!(item["body"]["response_format"]["type"], "json_object");
+    }
+
+    /// The one that matters on the one provider Mode C can reach without a config entry.
+    /// OpenRouter's default is `json_mode: false`, because qwen3.7-flash answers HTTP 400 to
+    /// `response_format`, and a batch that sends it anyway fails every request a day later.
+    #[test]
+    fn a_batched_request_carries_response_format_on_exactly_the_providers_the_sync_path_does() {
+        let openrouter = provider_like("openrouter", false, false, json!({}));
+        let item = request_item(3, "s", "u", &openrouter);
+        assert!(
+            item["body"].get("response_format").is_none(),
+            "json_mode is off, so response_format must not go out: {}",
+            item["body"]
+        );
+
+        let openai = provider_like("openai", true, false, json!({}));
+        let item = request_item(3, "s", "u", &openai);
+        assert_eq!(item["body"]["response_format"]["type"], "json_object");
+    }
+
+    /// Reasoning bills as output on every chunk of the corpus, which is more than the batch
+    /// discount buys back. Off unless the config asks for it, matching the synchronous path.
+    #[test]
+    fn reasoning_is_disabled_unless_the_provider_asks_for_it() {
+        let quiet = provider_like("openrouter", false, false, json!({}));
+        assert_eq!(request_item(0, "s", "u", &quiet)["body"]["reasoning"]["enabled"], json!(false));
+
+        let thinking = provider_like("openrouter", false, true, json!({}));
+        let item = request_item(0, "s", "u", &thinking);
+        assert!(
+            item["body"].get("reasoning").is_none(),
+            "a provider that asked to reason must not be told not to: {}",
+            item["body"]
+        );
+    }
+
+    /// `body` in the config file is the owner's way past both decisions above without editing this
+    /// file, so it merges last on this path exactly as it does on the synchronous one.
+    #[test]
+    fn the_config_body_overrides_the_fields_this_driver_sets() {
+        let p = provider_like(
+            "custom",
+            false,
+            false,
+            json!({ "reasoning": { "enabled": true }, "response_format": { "type": "text" } }),
+        );
+        let item = request_item(0, "s", "u", &p);
+        assert_eq!(item["body"]["reasoning"]["enabled"], json!(true));
+        assert_eq!(item["body"]["response_format"]["type"], "text");
     }
 
     #[test]

@@ -5,6 +5,7 @@
 
 pub mod adapters;
 pub mod authserver;
+pub mod build_info;
 pub mod config;
 pub mod console;
 pub mod crypto;

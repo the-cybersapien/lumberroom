@@ -3,11 +3,22 @@
 # loopback listener: the authorization code arrives in a `Location` header this script reads
 # directly, never in a request a browser would have made.
 #
-#   LUMBERROOM_URL=https://memory.example.com LUMBERROOM_OWNER_PASSWORD=... ./scripts/oauth-flow-test.sh
+#   ./scripts/oauth-flow-test.sh                    its own server, its own database
+#   ./scripts/oauth-flow-test.sh --port 8888 --keep
 #
-# Follows the house pattern in scripts/done-when-test.sh: bash, set -euo pipefail, curl and node
-# only, a nonce per run, coloured PASS/FAIL lines, non-zero exit on any failure, a summary at the
-# end.
+# Stands up a scratch server on --port (default 8793, never 8787) in AUTH_MODE=oauth, against a
+# database named lumberroom_oauth_flow_test, with an owner password minted fresh for this run, and drops
+# both when it exits. This gate has no --live mode: step 4 self-registers a client on every run, and
+# there is no HTTP route that deletes one, only scripts/purge-oauth-flow-test-clients.sh reading rows
+# straight out of the database. A run against 127.0.0.1:8787 on 19 August 2026 left three
+# oauth-flow-test-* rows in the owner's live oauth_client table this way, permanently, because the
+# earlier version of this script had no store of its own. A gate with no API-level teardown needs its
+# own store unconditionally, not an opt-in one.
+#
+# Follows the house pattern in scripts/done-when-test.sh and the scratch-server shape in
+# scripts/policy-test.sh, scripts/correction-test.sh and scripts/cleanup-test.sh: bash, set -euo
+# pipefail, curl and node only, a nonce per run, coloured PASS/FAIL lines, non-zero exit on any
+# failure, a summary at the end.
 #
 # What this does NOT prove: that Claude.ai's or ChatGPT's actual client code completes this flow.
 # Phase 2 spec is explicit that Claude Code's own fallback probing masks a whole class of bug that
@@ -16,21 +27,114 @@
 
 set -euo pipefail
 
-URL="${1:-${LUMBERROOM_URL:-http://127.0.0.1:8787}}"
-URL="${URL%/}"
-PASSWORD="${LUMBERROOM_OWNER_PASSWORD:-}"
-MCP_URL="$URL/mcp"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRATCH_PORT=8793
+SCRATCH_KEEP=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --port) SCRATCH_PORT="$2"; shift 2 ;;
+    --keep) SCRATCH_KEEP=1; shift ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    *) echo "unknown argument: $1. This gate takes no positional URL; it never runs against a \
+store you name. See --help." >&2; exit 1 ;;
+  esac
+done
 
 command -v curl >/dev/null 2>&1 || { echo "curl is required" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "node is required" >&2; exit 1; }
-[ -n "$PASSWORD" ] || {
-  echo "set LUMBERROOM_OWNER_PASSWORD to the owner password this server's OWNER_PASSWORD_HASH was" >&2
-  echo "generated from ('lumberroom hash-password' prints the command that made the hash)." >&2
-  exit 1
-}
+command -v docker >/dev/null 2>&1 || { echo "docker is required" >&2; exit 1; }
+command -v openssl >/dev/null 2>&1 || { echo "openssl is required" >&2; exit 1; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+
+SCRATCH_DB=lumberroom_oauth_flow_test
+SCRATCH_NAME="${LUMBERROOM_OAUTH_FLOW_TEST_SERVER:-lumberroom-oauth-flow-test-server}"
+# AUTH_MODE=oauth needs no static bearer grant. scratch_require only checks this is non-empty; an
+# empty array is never sent to the container, since this run's whole point is exercising the
+# built-in authorization server instead.
+SCRATCH_TOKENS='[]'
+export SCRATCH_DB SCRATCH_NAME SCRATCH_TOKENS SCRATCH_PORT SCRATCH_KEEP
+# shellcheck source=lib/scratch-server.sh
+. "$REPO_DIR/scripts/lib/scratch-server.sh"
+
+# A fresh owner password every run, hashed inside the already-built image rather than here: argon2
+# is not in Node's built-ins, which is the whole reason `lumberroom hash-password` exists (bin/lumberroom.mjs's
+# own hash-password command just prints this same docker command instead of computing a weaker hash
+# itself). Held only in $PASSWORD and the container's own environment, never written to disk.
+PASSWORD="$(openssl rand -hex 20)"
+
+# scratch_start (scratch-server.sh) pins PUBLIC_URL to the container name for rmcp's Host allowlist,
+# which AUTH_MODE=oauth's own boot check (src/config.rs) refuses: it accepts only https or
+# 127.0.0.1/localhost, because a browser MCP client needs https and an owner password must not cross
+# the network in the clear. This script's curl runs from the host either way, so 127.0.0.1 satisfies
+# both checks at once. Everything else about bring-up matches scratch_start; this is a copy with
+# that one substitution and the oauth-specific environment, not a reimplementation.
+scratch_start_oauth() {
+  SCRATCH_REPO_DIR="${SCRATCH_REPO_DIR:-$REPO_DIR}"
+  SCRATCH_NETWORK="${LUMBERROOM_DOCKER_NETWORK:-lumberroom_default}"
+  SCRATCH_PG_USER="${POSTGRES_USER:-lumberroom}"
+  scratch_require || return 1
+
+  echo "bringing up the compose database (reusing it if already running)..."
+  scratch_compose up -d db >/dev/null
+  local i=0
+  until scratch_compose exec -T db pg_isready -U "$SCRATCH_PG_USER" >/dev/null 2>&1; do
+    i=$((i + 1))
+    [ "$i" -ge 60 ] && { echo "postgres did not become ready within 60s" >&2; return 1; }
+    sleep 1
+  done
+
+  # Dropped and recreated, so a run never inherits the oauth_client rows the run before it left.
+  scratch_compose exec -T -e PGOPTIONS="-c client_min_messages=warning" db \
+    psql -U "$SCRATCH_PG_USER" -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH_DB" >/dev/null
+  scratch_compose exec -T db \
+    psql -U "$SCRATCH_PG_USER" -d postgres -c "CREATE DATABASE $SCRATCH_DB" >/dev/null
+
+  local owner_password_hash
+  owner_password_hash="$(printf '%s\n' "$PASSWORD" | docker run --rm -i lumberroom-server:0.1.0 lumberroom-server hash-password \
+    2>"$WORK/hash-password.err")" || {
+    echo "could not hash the scratch owner password: $(cat "$WORK/hash-password.err")" >&2
+    return 1
+  }
+  local oauth_cookie_secret
+  oauth_cookie_secret="$(openssl rand -hex 32)"
+
+  docker rm -f "$SCRATCH_NAME" >/dev/null 2>&1 || true
+  echo "starting the scratch oauth server on port $SCRATCH_PORT against database $SCRATCH_DB..."
+  docker run -d --name "$SCRATCH_NAME" --network "$SCRATCH_NETWORK" \
+    -p "127.0.0.1:${SCRATCH_PORT}:${SCRATCH_PORT}" \
+    -e PORT="$SCRATCH_PORT" \
+    -e HOST=0.0.0.0 \
+    -e TENANT_ID=scratch \
+    -e DATABASE_URL="postgres://${SCRATCH_PG_USER}:${POSTGRES_PASSWORD}@db:5432/${SCRATCH_DB}" \
+    -e PUBLIC_URL="http://127.0.0.1:${SCRATCH_PORT}" \
+    -e AUTH_MODE=oauth \
+    -e OWNER_PASSWORD_HASH="$owner_password_hash" \
+    -e OAUTH_COOKIE_SECRET="$oauth_cookie_secret" \
+    -e EMBED_PROVIDER=hash -e EMBED_DIM=768 \
+    -e KEK_PROVIDER=none \
+    lumberroom-server:0.1.0 >/dev/null
+
+  i=0
+  until curl -sf "http://127.0.0.1:${SCRATCH_PORT}/readyz" >/dev/null 2>&1; do
+    i=$((i + 1))
+    if [ "$i" -ge 90 ]; then
+      echo "the scratch oauth server did not become ready within 180s. Last log lines:" >&2
+      docker logs --tail 40 "$SCRATCH_NAME" >&2 || true
+      return 1
+    fi
+    sleep 2
+  done
+
+  SCRATCH_URL="http://127.0.0.1:${SCRATCH_PORT}"
+  export SCRATCH_URL
+}
+
+trap 'status=$?; scratch_stop; rm -rf "$WORK"; exit $status' EXIT INT TERM
+scratch_start_oauth || exit 1
+URL="$SCRATCH_URL"
+MCP_URL="$URL/mcp"
 
 NONCE="$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 
@@ -489,6 +593,8 @@ cat <<SUMMARY
   11 the refresh grant rotates in a new access token
   12 the rotated-in token is itself live
   13 the token it rotated out is refused if presented again
+
+  every row this ran wrote lived in $SCRATCH_DB, dropped when this script exited.
 SUMMARY
 
 if [ "$FAILED" = 1 ]; then
