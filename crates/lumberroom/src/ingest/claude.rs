@@ -92,13 +92,11 @@ pub fn parse_file(
     limits: &Limits,
     counters: &mut PlanCounters,
 ) -> Result<FileParse> {
-    let from_agent_file = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| n.starts_with("agent-"))
-        .unwrap_or(false);
+    let from_agent_file =
+        path.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with("agent-")).unwrap_or(false);
 
-    let mut out = FileParse { is_sidechain: from_agent_file, consumed: start, ..FileParse::default() };
+    let mut out =
+        FileParse { is_sidechain: from_agent_file, consumed: start, ..FileParse::default() };
     let mut tool_names: HashMap<String, String> = HashMap::new();
     let mut fence = FenceState::default();
 
@@ -217,7 +215,8 @@ fn classify_entry(
                 if item.get("type").and_then(|x| x.as_str()) != Some("tool_use") {
                     continue;
                 }
-                let (Some(id), Some(name)) = (str_field(item, "id"), str_field(item, "name")) else {
+                let (Some(id), Some(name)) = (str_field(item, "id"), str_field(item, "name"))
+                else {
                     continue;
                 };
                 if is_memory_tool(&name) {
@@ -491,8 +490,11 @@ mod tests {
     }
 
     fn parse_named(file: &str, entries: &[Value]) -> (FileParse, PlanCounters) {
-        let dir = std::env::temp_dir()
-            .join(format!("lumberroom-claude-{}-{}", std::process::id(), file.replace('/', "-")));
+        let dir = std::env::temp_dir().join(format!(
+            "lumberroom-claude-{}-{}",
+            std::process::id(),
+            file.replace('/', "-")
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(file);
         let body: String =
@@ -500,8 +502,7 @@ mod tests {
         std::fs::write(&path, body.as_bytes()).unwrap();
         let l = limits();
         let mut counters = PlanCounters::default();
-        let parsed =
-            parse_file(&path, 0, body.len() as i64, &l, &mut counters).unwrap();
+        let parsed = parse_file(&path, 0, body.len() as i64, &l, &mut counters).unwrap();
         (parsed, counters)
     }
 
@@ -724,7 +725,9 @@ mod tests {
     fn the_entry_flag_makes_a_subagent_provable_in_a_main_thread_file() {
         let (p, _) = parse(
             "inline",
-            &[json!({"type":"assistant","uuid":"a1","isSidechain":true,"message":{"content":[{"type":"text","text":"sub says"}]}})],
+            &[
+                json!({"type":"assistant","uuid":"a1","isSidechain":true,"message":{"content":[{"type":"text","text":"sub says"}]}}),
+            ],
         );
         assert_eq!(p.entries[0].speaker, Speaker::Subagent);
         assert!(p.is_sidechain);
@@ -749,7 +752,8 @@ mod tests {
 
     #[test]
     fn an_unparseable_line_is_counted_not_fatal() {
-        let dir = std::env::temp_dir().join(format!("lumberroom-claude-bad-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("lumberroom-claude-bad-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("s.jsonl");
         let body = "{not json\n{\"type\":\"user\",\"message\":{\"content\":\"real\"}}\n";

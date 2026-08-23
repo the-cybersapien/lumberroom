@@ -108,10 +108,7 @@ pub async fn measure(ctx: &Ctx, sample: i64, k: i64) -> Result<RecallReport> {
                 top_one_misses += 1;
             }
         }
-        scores.push(WorstCase {
-            query: probe.chars().take(60).collect(),
-            recall,
-        });
+        scores.push(WorstCase { query: probe.chars().take(60).collect(), recall });
     }
 
     let mean = scores.iter().map(|s| s.recall).sum::<f64>() / scores.len() as f64;

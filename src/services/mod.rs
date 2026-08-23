@@ -150,11 +150,7 @@ impl Ctx {
 /// fail in. No new grant flag, so no deployment has to edit `AUTH_TOKENS` and the owner's own client
 /// keeps the reports it already had.
 pub(crate) fn reads_whole_store(principal: &Principal) -> bool {
-    crate::domain::policy::admits(
-        &principal.read,
-        "*",
-        crate::domain::types::Sensitivity::Sealed,
-    )
+    crate::domain::policy::admits(&principal.read, "*", crate::domain::types::Sensitivity::Sealed)
 }
 
 /// The `sealed` level: blobs this server cannot read, by construction.

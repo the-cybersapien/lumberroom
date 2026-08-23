@@ -93,7 +93,9 @@ pub fn sessions_in_rank_order(
 /// Drop a leading `role: ` written by the chunker, leaving the words somebody actually said.
 fn strip_role_prefix(text: &str) -> &str {
     match text.split_once(": ") {
-        Some((role, rest)) if !role.is_empty() && role.chars().all(|c| c.is_ascii_lowercase()) => rest,
+        Some((role, rest)) if !role.is_empty() && role.chars().all(|c| c.is_ascii_lowercase()) => {
+            rest
+        }
         _ => text,
     }
 }
@@ -123,7 +125,8 @@ pub fn owners_from_content(q: &Question, hits: &[wire::Hit]) -> HashMap<String, 
                 .iter()
                 .filter(|(_, text)| {
                     !hit.content.is_empty()
-                        && (text.contains(&hit.content) || (!body.is_empty() && text.contains(body)))
+                        && (text.contains(&hit.content)
+                            || (!body.is_empty() && text.contains(body)))
                 })
                 .map(|(id, _)| id.clone())
                 .collect()
@@ -205,7 +208,9 @@ pub async fn run_question(
     let (owners, mut failures, rows_written, missing) = if resumed {
         (owners_from_content(q, &probe), Vec::new(), 0usize, Vec::new())
     } else {
-        let built = corpus::build(c, q, &namespace, args.protocol, args.chunk_chars, args.dates_in_text).await?;
+        let built =
+            corpus::build(c, q, &namespace, args.protocol, args.chunk_chars, args.dates_in_text)
+                .await?;
         (built.owners, built.failures, built.rows_written, built.missing_sessions)
     };
 
@@ -245,14 +250,12 @@ pub async fn run_question(
     // test, so it is off unless somebody asks for the comparable number.
     if args.isolate {
         for id in owners.keys() {
-            let (status, body) =
-                c.http_request(reqwest::Method::DELETE, &format!("/admin/memory/{id}"), None).await?;
+            let (status, body) = c
+                .http_request(reqwest::Method::DELETE, &format!("/admin/memory/{id}"), None)
+                .await?;
             if status != 200 {
-                let detail = body
-                    .get("detail")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("no detail")
-                    .to_string();
+                let detail =
+                    body.get("detail").and_then(|v| v.as_str()).unwrap_or("no detail").to_string();
                 return Err(err(format!(
                     "isolation needs delete and the server refused it: HTTP {status}, {detail}.                      The eval credential needs mayDelete."
                 )));
@@ -347,10 +350,8 @@ pub async fn run(c: &Client, args: &EvalArgs) -> Result<RunReport> {
         per_type.insert(ty, crate::eval::aggregate(&of_type));
     }
 
-    let questions_with_write_failures = results
-        .iter()
-        .filter(|r| r.write_failures.iter().any(|f| is_write_failure(f)))
-        .count();
+    let questions_with_write_failures =
+        results.iter().filter(|r| r.write_failures.iter().any(|f| is_write_failure(f))).count();
     let sessions_never_stored = results
         .iter()
         .flat_map(|r| r.write_failures.iter())
@@ -492,11 +493,8 @@ mod tests {
         assert!((overall.recall_any_at_10 - 2.0 / 3.0).abs() < 1e-12);
         assert!((overall.mrr - (1.0 + 1.0 / 6.0) / 3.0).abs() < 1e-12);
 
-        let single: Vec<QuestionResult> = results
-            .iter()
-            .filter(|r| r.question_type == "single-session-user")
-            .cloned()
-            .collect();
+        let single: Vec<QuestionResult> =
+            results.iter().filter(|r| r.question_type == "single-session-user").cloned().collect();
         let agg = crate::eval::aggregate(&single);
         assert_eq!(agg.questions, 2);
         assert!((agg.recall_any_at_5 - 0.5).abs() < 1e-12);
@@ -513,12 +511,15 @@ mod tests {
             out: None,
             json: false,
             resume: false,
-                    isolate: false,
+            isolate: false,
             scoped: true,
-                    dates_in_text: false,
+            dates_in_text: false,
             only_type: None,
         };
-        assert_eq!(default_report_path(&args).unwrap(), PathBuf::from("/data/lumberroom-lme-chunked.json"));
+        assert_eq!(
+            default_report_path(&args).unwrap(),
+            PathBuf::from("/data/lumberroom-lme-chunked.json")
+        );
     }
 }
 

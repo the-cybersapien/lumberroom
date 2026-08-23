@@ -212,9 +212,7 @@ fn parse_origin(raw: Option<&str>) -> Result<String> {
     if ORIGINS.contains(&o.as_str()) {
         Ok(o)
     } else {
-        Err(DomainError::validation(format!(
-            "origin {o:?} is not one of manual, derived"
-        )))
+        Err(DomainError::validation(format!("origin {o:?} is not one of manual, derived")))
     }
 }
 
@@ -252,10 +250,7 @@ fn expand(rows: &[Alias], query: &str) -> Expansion {
         }
     }
 
-    Expansion {
-        matched: matched.into_iter().collect(),
-        names: names.into_iter().collect(),
-    }
+    Expansion { matched: matched.into_iter().collect(), names: names.into_iter().collect() }
 }
 
 /// Lowercase runs of alphanumerics. Splitting on everything else is what makes "Warden's" and
@@ -369,12 +364,8 @@ mod tests {
     #[test]
     fn a_client_without_the_registry_capability_cannot_record_an_alias() {
         // `Principal::empty` has registry_write false, which is the default every client starts at.
-        let refused = gate(
-            &Principal::empty("chatgpt"),
-            "user:me",
-            Sensitivity::Open,
-            Sensitivity::Private,
-        );
+        let refused =
+            gate(&Principal::empty("chatgpt"), "user:me", Sensitivity::Open, Sensitivity::Private);
         assert!(refused.is_err());
         assert!(refused.unwrap_err().client_message().contains("may not record an alias"));
     }

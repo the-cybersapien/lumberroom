@@ -66,7 +66,13 @@ where
             }
             match available.iter().position(|&b| b == b'\n') {
                 Some(i) => {
-                    take_bytes(&available[..i], &mut buf, &mut raw_len, &mut oversized, max_line_bytes);
+                    take_bytes(
+                        &available[..i],
+                        &mut buf,
+                        &mut raw_len,
+                        &mut oversized,
+                        max_line_bytes,
+                    );
                     (i + 1, true)
                 }
                 None => {
@@ -101,7 +107,13 @@ where
 
 /// Append while the line still fits. Past the bound the bytes are dropped on the floor and the
 /// buffer released: a single 96MB line held in memory is the failure this bound exists to stop.
-fn take_bytes(part: &[u8], buf: &mut Vec<u8>, raw_len: &mut usize, oversized: &mut bool, max: usize) {
+fn take_bytes(
+    part: &[u8],
+    buf: &mut Vec<u8>,
+    raw_len: &mut usize,
+    oversized: &mut bool,
+    max: usize,
+) {
     if !*oversized {
         if *raw_len + part.len() > max {
             *oversized = true;
@@ -119,14 +131,20 @@ mod tests {
     use super::*;
 
     fn fixture(name: &str, body: &[u8]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("lumberroom-reader-{}-{}", std::process::id(), name));
+        let dir =
+            std::env::temp_dir().join(format!("lumberroom-reader-{}-{}", std::process::id(), name));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.jsonl");
         std::fs::write(&path, body).unwrap();
         path
     }
 
-    fn collect(path: &Path, start: u64, end: u64, max: usize) -> (Vec<(String, i64, i64)>, LineStats) {
+    fn collect(
+        path: &Path,
+        start: u64,
+        end: u64,
+        max: usize,
+    ) -> (Vec<(String, i64, i64)>, LineStats) {
         let mut seen = vec![];
         let stats = for_each_line(path, start, end, max, |line, s, e| {
             seen.push((line.to_string(), s, e));

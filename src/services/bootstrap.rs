@@ -112,12 +112,7 @@ pub async fn run(ctx: &Ctx, project: Option<&str>) -> Result<Digest> {
     let readable = filter_readable(&ctx.principal, &all);
 
     let budget = ctx.cfg.bootstrap.budget_for(&ctx.principal.client);
-    let cache_key = cache_key(
-        &ctx.principal.client,
-        project_ns.as_deref(),
-        &readable,
-        budget,
-    );
+    let cache_key = cache_key(&ctx.principal.client, project_ns.as_deref(), &readable, budget);
     if let Ok(c) = cache().lock() {
         if let Some(entry) = c.get(&cache_key) {
             if entry.at.elapsed().as_millis() < ctx.cfg.bootstrap.cache_ms as u128 {
@@ -236,11 +231,8 @@ fn cache_key(
     readable: &[NamespaceCeiling],
     budget: usize,
 ) -> String {
-    let grant = readable
-        .iter()
-        .map(|c| format!("{}@{}", c.namespace, c.max))
-        .collect::<Vec<_>>()
-        .join(",");
+    let grant =
+        readable.iter().map(|c| format!("{}@{}", c.namespace, c.max)).collect::<Vec<_>>().join(",");
     format!("{client}|{}|{budget}|{grant}", project.unwrap_or("-"))
 }
 
@@ -409,7 +401,13 @@ pub fn render(d: &Digest, max_chars: usize) -> String {
         &mut shown,
     );
     if let Some(p) = &d.project {
-        push_section(&format!("Project {p}"), &d.project_context, &mut lines, &mut seen, &mut shown);
+        push_section(
+            &format!("Project {p}"),
+            &d.project_context,
+            &mut lines,
+            &mut seen,
+            &mut shown,
+        );
     }
     push_section("Recently learned", &d.recent, &mut lines, &mut seen, &mut shown);
 
@@ -459,8 +457,9 @@ pub fn render(d: &Digest, max_chars: usize) -> String {
 
     if d.counts.memories == 0 && d.counts.registry == 0 {
         lines.push(String::new());
-        lines
-            .push("The store is empty. Write the first durable fact with memory_write.".to_string());
+        lines.push(
+            "The store is empty. Write the first durable fact with memory_write.".to_string(),
+        );
     }
 
     let text = lines.join("\n");
@@ -468,7 +467,9 @@ pub fn render(d: &Digest, max_chars: usize) -> String {
         return text;
     }
     let truncated: String = text.chars().take(max_chars).collect();
-    format!("{truncated}\n\n_(digest truncated at {max_chars} chars; use memory_search for the rest)_")
+    format!(
+        "{truncated}\n\n_(digest truncated at {max_chars} chars; use memory_search for the rest)_"
+    )
 }
 
 #[cfg(test)]

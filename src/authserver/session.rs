@@ -135,10 +135,7 @@ impl Sessions {
         code_challenge: &str,
         state: &str,
     ) -> String {
-        self.sign(
-            "csrf",
-            &[&session.signature, client_id, redirect_uri, code_challenge, state],
-        )
+        self.sign("csrf", &[&session.signature, client_id, redirect_uri, code_challenge, state])
     }
 
     pub fn csrf_ok(
@@ -150,10 +147,7 @@ impl Sessions {
         state: &str,
         presented: &str,
     ) -> bool {
-        hashes_match(
-            &self.csrf(session, client_id, redirect_uri, code_challenge, state),
-            presented,
-        )
+        hashes_match(&self.csrf(session, client_id, redirect_uri, code_challenge, state), presented)
     }
 
     /// A CSRF token for one console action on one row, bound to this session.
@@ -207,10 +201,8 @@ mod tests {
 
     fn cookies(value: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::COOKIE,
-            axum::http::HeaderValue::from_str(value).unwrap(),
-        );
+        headers
+            .insert(axum::http::header::COOKIE, axum::http::HeaderValue::from_str(value).unwrap());
         headers
     }
 

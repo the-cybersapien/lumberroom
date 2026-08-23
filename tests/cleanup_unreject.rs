@@ -19,7 +19,6 @@
 
 use std::sync::Arc;
 
-use sqlx::PgPool;
 use lumberroom_server::adapters::embedding::HashEmbedder;
 use lumberroom_server::adapters::postgres::{self, PgCleanupRepository};
 use lumberroom_server::config::{self, Config};
@@ -29,6 +28,7 @@ use lumberroom_server::domain::policy::NamespaceGrant;
 use lumberroom_server::domain::types::{Invocation, Principal};
 use lumberroom_server::ports::cleanup::{CleanupRepository, NewMember, NewProposal, QueueOutcome};
 use lumberroom_server::services::{cleanup, Ctx, Repos};
+use sqlx::PgPool;
 
 mod common;
 

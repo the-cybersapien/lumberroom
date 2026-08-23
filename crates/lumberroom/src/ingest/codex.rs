@@ -211,7 +211,8 @@ fn classify_response_item(
         "function_call" | "custom_tool_call" => {
             let name = payload.get("name").and_then(Value::as_str).unwrap_or("").to_string();
             let namespace = payload.get("namespace").and_then(Value::as_str);
-            let is_memory = namespace.map(namespace_is_memory).unwrap_or(false) || is_memory_tool(&name);
+            let is_memory =
+                namespace.map(namespace_is_memory).unwrap_or(false) || is_memory_tool(&name);
             if let Some(cid) = payload.get("call_id").and_then(Value::as_str) {
                 calls.insert(cid.to_string(), CallInfo { name, is_memory });
             }
@@ -370,9 +371,11 @@ mod tests {
     }
 
     fn parse(name: &str, lines: &[Value]) -> (FileParse, PlanCounters) {
-        let dir = std::env::temp_dir().join(format!("lumberroom-codex-{}-{}", std::process::id(), name));
+        let dir =
+            std::env::temp_dir().join(format!("lumberroom-codex-{}-{}", std::process::id(), name));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("rollout-2026-07-04T18-55-31-019f2d4e-42f0-71d1-bc07-a5e595f48656.jsonl");
+        let path =
+            dir.join("rollout-2026-07-04T18-55-31-019f2d4e-42f0-71d1-bc07-a5e595f48656.jsonl");
         let body: String =
             lines.iter().map(|v| format!("{}\n", serde_json::to_string(v).unwrap())).collect();
         std::fs::write(&path, &body).unwrap();
@@ -404,7 +407,9 @@ mod tests {
     fn developer_role_is_excluded_with_no_speaker_counted() {
         let (p, c) = parse(
             "dev",
-            &[json!({"type":"response_item","timestamp":"2026-07-04T13:00:00Z","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>..."}]}})],
+            &[
+                json!({"type":"response_item","timestamp":"2026-07-04T13:00:00Z","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>..."}]}}),
+            ],
         );
         assert!(p.entries.is_empty());
         assert_eq!(c.speakers.get("hook_injected"), None);
@@ -457,7 +462,9 @@ mod tests {
     fn unjoined_output_is_dropped_and_counted() {
         let (p, c) = parse(
             "unjoined",
-            &[json!({"type":"response_item","timestamp":"2026-07-04T13:00:00Z","payload":{"type":"function_call_output","call_id":"call_missing","output":"orphan"}})],
+            &[
+                json!({"type":"response_item","timestamp":"2026-07-04T13:00:00Z","payload":{"type":"function_call_output","call_id":"call_missing","output":"orphan"}}),
+            ],
         );
         assert!(p.entries.is_empty());
         assert_eq!(excluded(&c, "tool_result_unjoined"), 1);
@@ -486,7 +493,9 @@ mod tests {
     fn unknown_entry_type_is_counted_not_dropped_silently() {
         let (p, c) = parse(
             "unknown",
-            &[json!({"type":"world_state","timestamp":"2026-07-04T13:00:00Z","payload":{"full":true}})],
+            &[
+                json!({"type":"world_state","timestamp":"2026-07-04T13:00:00Z","payload":{"full":true}}),
+            ],
         );
         assert!(p.entries.is_empty());
         assert_eq!(*c.unknown_types.get("entry_type:world_state").unwrap(), 1);
@@ -536,7 +545,9 @@ mod tests {
     fn fence_run_marker_also_opens_a_fence() {
         let (p, _) = parse(
             "fence-run",
-            &[json!({"type":"event_msg","timestamp":"2026-07-04T13:00:00Z","payload":{"type":"user_message","message":format!("{FENCE_RUN}0199e5ef-9698-7cb3-8c23-3297e08d3c03")}})],
+            &[
+                json!({"type":"event_msg","timestamp":"2026-07-04T13:00:00Z","payload":{"type":"user_message","message":format!("{FENCE_RUN}0199e5ef-9698-7cb3-8c23-3297e08d3c03")}}),
+            ],
         );
         assert!(p.entries.is_empty());
     }
@@ -547,7 +558,9 @@ mod tests {
         // through to ordinary parsing rather than swallowing the rest of the file.
         let (p, c) = parse(
             "fence-no-uuid",
-            &[json!({"type":"event_msg","timestamp":"2026-07-04T13:00:00Z","payload":{"type":"user_message","message":FENCE_BEGIN}})],
+            &[
+                json!({"type":"event_msg","timestamp":"2026-07-04T13:00:00Z","payload":{"type":"user_message","message":FENCE_BEGIN}}),
+            ],
         );
         assert_eq!(p.entries.len(), 1, "no fence, so the line is an ordinary entry");
         assert!(!p.fence_open);
@@ -558,7 +571,9 @@ mod tests {
     fn fence_left_open_at_ceiling_is_reported_with_its_opening_offset() {
         let (p, c) = parse(
             "fence-open",
-            &[json!({"type":"event_msg","timestamp":"2026-07-04T13:00:00Z","payload":{"type":"user_message","message":format!("{FENCE_BEGIN}0199e5ef-9698-7cb3-8c23-3297e08d3c03")}})],
+            &[
+                json!({"type":"event_msg","timestamp":"2026-07-04T13:00:00Z","payload":{"type":"user_message","message":format!("{FENCE_BEGIN}0199e5ef-9698-7cb3-8c23-3297e08d3c03")}}),
+            ],
         );
         assert!(p.entries.is_empty());
         assert!(p.fence_open);
@@ -570,7 +585,9 @@ mod tests {
     fn backstop_fires_against_the_historical_preamble_text() {
         let (p, c) = parse(
             "backstop",
-            &[json!({"type":"event_msg","timestamp":"2026-07-04T13:00:00Z","payload":{"type":"user_message","message":"Durable memory for this user, retrieved automatically at session start, follows."}})],
+            &[
+                json!({"type":"event_msg","timestamp":"2026-07-04T13:00:00Z","payload":{"type":"user_message","message":"Durable memory for this user, retrieved automatically at session start, follows."}}),
+            ],
         );
         assert!(p.entries.is_empty());
         assert_eq!(*c.backstop.get("digest_preamble").unwrap(), 1);
@@ -586,7 +603,8 @@ mod tests {
 
     #[test]
     fn session_id_falls_back_to_the_filename() {
-        let path = Path::new("/x/rollout-2026-07-04T18-55-31-019f2d4e-42f0-71d1-bc07-a5e595f48656.jsonl");
+        let path =
+            Path::new("/x/rollout-2026-07-04T18-55-31-019f2d4e-42f0-71d1-bc07-a5e595f48656.jsonl");
         assert_eq!(
             session_id_from_filename(path).as_deref(),
             Some("019f2d4e-42f0-71d1-bc07-a5e595f48656")

@@ -330,7 +330,9 @@ impl Lumberroom {
     ) -> Result<CallToolResult, McpError>
     where
         F: FnOnce(Ctx) -> Fut,
-        Fut: std::future::Future<Output = crate::domain::errors::Result<(String, serde_json::Value)>>,
+        Fut: std::future::Future<
+            Output = crate::domain::errors::Result<(String, serde_json::Value)>,
+        >,
     {
         let started = std::time::Instant::now();
 
@@ -341,7 +343,9 @@ impl Lumberroom {
             None => {
                 return Ok(tool_error(
                     tool,
-                    &DomainError::forbidden("request reached a tool without an authenticated client"),
+                    &DomainError::forbidden(
+                        "request reached a tool without an authenticated client",
+                    ),
                 ))
             }
         };
@@ -350,7 +354,8 @@ impl Lumberroom {
             .and_then(|p| p.extensions.get::<Invocation>())
             .copied()
             .unwrap_or(Invocation::Model);
-        let session_id = parts.and_then(|p| p.extensions.get::<SessionId>()).and_then(|s| s.0.clone());
+        let session_id =
+            parts.and_then(|p| p.extensions.get::<SessionId>()).and_then(|s| s.0.clone());
 
         let ctx = Ctx {
             cfg: Arc::clone(&self.state.cfg),
@@ -457,9 +462,8 @@ impl ServerHandler for Lumberroom {
         // Cache hints landed in the 2026-07-28 revision. This list depends on the credential, so it
         // is Private with a zero TTL: a public cache entry would hand one client's tool list, delete
         // tool included, to the next client through the same proxy.
-        let hints = rc
-            .protocol_version()
-            .is_some_and(|version| version >= ProtocolVersion::V_2026_07_28);
+        let hints =
+            rc.protocol_version().is_some_and(|version| version >= ProtocolVersion::V_2026_07_28);
         Ok(ListToolsResult {
             result_type: Some(ResultType::COMPLETE),
             tools,

@@ -99,8 +99,7 @@ pub fn hold_back_plan(w: &Worklist, unextracted_chunks: &BTreeSet<usize>) -> Vec
     w.files
         .iter()
         .map(|f| {
-            let unextracted_from =
-                pending.get(f.file_path.as_str()).cloned().unwrap_or_default();
+            let unextracted_from = pending.get(f.file_path.as_str()).cloned().unwrap_or_default();
             let earliest = unextracted_from.iter().copied().filter(|b| *b >= 0).min();
             let effective_offset = match earliest {
                 Some(byte) => byte.min(f.plan_ceiling),
@@ -263,7 +262,8 @@ pub async fn run(c: &Client, args: &SubmitArgs) -> Result<SubmitReport> {
                 observed_at: span.timestamp,
             })
             .collect();
-        emission_hits = api::check_emissions(c, &probes).await?.iter().filter(|e| **e).count() as i32;
+        emission_hits =
+            api::check_emissions(c, &probes).await?.iter().filter(|e| **e).count() as i32;
     }
 
     let requests: Vec<api::FactReq> = survivors
@@ -441,8 +441,9 @@ pub async fn run(c: &Client, args: &SubmitArgs) -> Result<SubmitReport> {
                         deduplicated += 1;
                     }
                 }
-                (None, None) => approval_refusals
-                    .push((id, "approved and named no memory".to_string())),
+                (None, None) => {
+                    approval_refusals.push((id, "approved and named no memory".to_string()))
+                }
             }
         }
     }
@@ -462,7 +463,10 @@ pub async fn run(c: &Client, args: &SubmitArgs) -> Result<SubmitReport> {
         println!("refused {}", report.refused);
         println!("blocked {}", report.blocked);
         println!("unknown span ids {}", report.unknown_span_ids);
-        println!("chunks missing {}, chunks failed {}", report.chunks_missing, report.chunks_failed);
+        println!(
+            "chunks missing {}, chunks failed {}",
+            report.chunks_missing, report.chunks_failed
+        );
         println!("files held back {}", report.files_held_back);
         for h in &watermarks.held_back {
             println!(
@@ -493,7 +497,9 @@ pub async fn run(c: &Client, args: &SubmitArgs) -> Result<SubmitReport> {
             );
         }
         if !approval_refusals.is_empty() {
-            println!("those rows stay queued. `lumberroom ingest list --state proposed` shows them");
+            println!(
+                "those rows stay queued. `lumberroom ingest list --state proposed` shows them"
+            );
         }
     }
 

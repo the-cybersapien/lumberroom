@@ -131,22 +131,38 @@ macro_rules! select_memory {
         concat!(
             $pre,
             "SELECT ",
-            $prefix, "id, ",
-            $prefix, "namespace, ",
-            $prefix, "content, ",
-            $prefix, "tags, ",
-            $prefix, "source_client, ",
-            $prefix, "embedding_model, ",
-            $prefix, "sensitivity, ",
-            $prefix, "supersedes, ",
-            $prefix, "superseded_by, ",
-            $prefix, "superseded_at, ",
-            $prefix, "access_count, ",
-            $prefix, "last_accessed_at, ",
-            $prefix, "last_confirmed_at, ",
-            $prefix, "created_at, ",
-            $prefix, "occurred_at, ",
-            $prefix, "occurred_until ",
+            $prefix,
+            "id, ",
+            $prefix,
+            "namespace, ",
+            $prefix,
+            "content, ",
+            $prefix,
+            "tags, ",
+            $prefix,
+            "source_client, ",
+            $prefix,
+            "embedding_model, ",
+            $prefix,
+            "sensitivity, ",
+            $prefix,
+            "supersedes, ",
+            $prefix,
+            "superseded_by, ",
+            $prefix,
+            "superseded_at, ",
+            $prefix,
+            "access_count, ",
+            $prefix,
+            "last_accessed_at, ",
+            $prefix,
+            "last_confirmed_at, ",
+            $prefix,
+            "created_at, ",
+            $prefix,
+            "occurred_at, ",
+            $prefix,
+            "occurred_until ",
             $rest
         )
     };
@@ -1151,17 +1167,15 @@ impl MemoryRepository for PgMemoryRepository {
             // date cannot move between the decision and the write. Reading it here rather than
             // deriving the end in SQL keeps one spelling of the rule: `supersession_until` decides
             // for both this path and `supersede`, and a refusal can name both dates.
-            let predecessor_occurred_at: Option<DateTime<Utc>> = sqlx::query_scalar::<
-                _,
-                Option<DateTime<Utc>>,
-            >(
-                "SELECT occurred_at FROM memory WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
-            )
-            .bind(&m.tenant_id)
-            .bind(old)
-            .fetch_optional(&mut *tx)
-            .await?
-            .flatten();
+            let predecessor_occurred_at: Option<DateTime<Utc>> =
+                sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+                    "SELECT occurred_at FROM memory WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+                )
+                .bind(&m.tenant_id)
+                .bind(old)
+                .fetch_optional(&mut *tx)
+                .await?
+                .flatten();
 
             // Dropping the transaction on this `?` rolls it back, which is what the refusal wants
             // and what every other early return in this file relies on.
@@ -1478,14 +1492,16 @@ impl MemoryRepository for PgMemoryRepository {
         // The two valid-time columns ride along on the lock query. The dates have to be read under
         // the same lock as the cycle check, and reading them here costs nothing a second statement
         // would not.
-        let locked = sqlx::query("SELECT id, superseded_by, occurred_at, created_at FROM memory
+        let locked = sqlx::query(
+            "SELECT id, superseded_by, occurred_at, created_at FROM memory
                                   WHERE tenant_id = $1 AND id IN ($2, $3)
-                                  ORDER BY id FOR UPDATE")
-            .bind(tenant)
-            .bind(first)
-            .bind(second)
-            .fetch_all(&mut *tx)
-            .await?;
+                                  ORDER BY id FOR UPDATE",
+        )
+        .bind(tenant)
+        .bind(first)
+        .bind(second)
+        .fetch_all(&mut *tx)
+        .await?;
         if locked.len() < 2 {
             return Err(DomainError::not_found("memory not found"));
         }
@@ -2167,7 +2183,11 @@ mod tests {
     #[test]
     fn both_search_arms_filter_on_the_callers_ceiling() {
         for sql in EVERY_SEARCH_SQL {
-            assert_eq!(sql.matches("<= rg.max_rank").count(), 2, "the vector arm and the lexical arm");
+            assert_eq!(
+                sql.matches("<= rg.max_rank").count(),
+                2,
+                "the vector arm and the lexical arm"
+            );
         }
     }
 
@@ -2271,8 +2291,9 @@ mod tests {
     #[test]
     fn rank_fusion_zeroes_a_missing_arm_rather_than_letting_null_eat_the_score() {
         for sql in [SEARCH_RRF_LIVE, SEARCH_RRF_ALL] {
-            assert!(sql
-                .contains("COALESCE($9::float8 / ($14::float8 + g.rank_vec::float8), 0.0::float8)"));
+            assert!(sql.contains(
+                "COALESCE($9::float8 / ($14::float8 + g.rank_vec::float8), 0.0::float8)"
+            ));
             assert!(sql.contains(
                 "COALESCE($10::float8 / ($14::float8 + g.rank_lex::float8), 0.0::float8)"
             ));
@@ -2306,8 +2327,8 @@ mod tests {
         primary: bool,
         penalty: f64,
     ) -> f64 {
-        let base = rank_vec.map_or(0.0, |r| w_vec / (k + r))
-            + rank_lex.map_or(0.0, |r| w_lex / (k + r));
+        let base =
+            rank_vec.map_or(0.0, |r| w_vec / (k + r)) + rank_lex.map_or(0.0, |r| w_lex / (k + r));
         let use_term = ((1.0 + access_count).ln() / 11.0f64.ln()).min(1.0);
         base * (1.0 + usage_weight * use_term) * if primary { 1.0 } else { penalty }
     }
@@ -2354,7 +2375,10 @@ mod tests {
         assert!(hammered > unused);
 
         // Five ranks is already out of its reach.
-        assert!(rrf_score(Some(6.0), None, 60.0, 1.0, 0.35, 0.05, 1e9, true, 0.85) < plain(Some(1.0), None));
+        assert!(
+            rrf_score(Some(6.0), None, 60.0, 1.0, 0.35, 0.05, 1e9, true, 0.85)
+                < plain(Some(1.0), None)
+        );
     }
 
     #[test]
@@ -2527,8 +2551,15 @@ mod tests {
     /// caller reading a namespace their grant never named.
     #[test]
     fn the_sql_grant_match_agrees_with_the_namespace_rule() {
-        let patterns =
-            ["*", "**", "project:*", "project:lumberroom", "credentials:*", "global", " Project:* "];
+        let patterns = [
+            "*",
+            "**",
+            "project:*",
+            "project:lumberroom",
+            "credentials:*",
+            "global",
+            " Project:* ",
+        ];
         let namespaces = [
             "global",
             "user:me",
@@ -2637,9 +2668,12 @@ mod tests {
 
     #[test]
     fn a_dated_successor_ends_its_predecessor_at_its_own_start() {
-        let until =
-            supersession_until(Some(at("2026-03-01T00:00:00Z")), Some(at("2026-07-04T09:00:00Z")), at("2026-08-20T12:00:00Z"))
-                .unwrap();
+        let until = supersession_until(
+            Some(at("2026-03-01T00:00:00Z")),
+            Some(at("2026-07-04T09:00:00Z")),
+            at("2026-08-20T12:00:00Z"),
+        )
+        .unwrap();
         assert_eq!(until, Some(at("2026-07-04T09:00:00Z")));
     }
 
@@ -2647,15 +2681,17 @@ mod tests {
     /// of ignorance rather than a measurement, and ingestion is what keeps it rare.
     #[test]
     fn an_undated_successor_falls_back_to_when_the_store_learned_it() {
-        let until = supersession_until(Some(at("2026-03-01T00:00:00Z")), None, at("2026-08-20T12:00:00Z"))
-            .unwrap();
+        let until =
+            supersession_until(Some(at("2026-03-01T00:00:00Z")), None, at("2026-08-20T12:00:00Z"))
+                .unwrap();
         assert_eq!(until, Some(at("2026-08-20T12:00:00Z")));
     }
 
     #[test]
     fn an_undated_predecessor_gains_an_end_and_keeps_its_unknown_start() {
-        let until = supersession_until(None, Some(at("2026-07-04T09:00:00Z")), at("2026-08-20T12:00:00Z"))
-            .unwrap();
+        let until =
+            supersession_until(None, Some(at("2026-07-04T09:00:00Z")), at("2026-08-20T12:00:00Z"))
+                .unwrap();
         assert_eq!(until, Some(at("2026-07-04T09:00:00Z")));
     }
 
@@ -2721,8 +2757,8 @@ mod tests {
         /// lives as long as the test that holds it.
         static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-        async fn setup() -> Option<(PgMemoryRepository, PgPool, tokio::sync::MutexGuard<'static, ()>)>
-        {
+        async fn setup(
+        ) -> Option<(PgMemoryRepository, PgPool, tokio::sync::MutexGuard<'static, ()>)> {
             let guard = SERIAL.lock().await;
             let admin_url = std::env::var("DATABASE_URL").ok()?;
             let base = admin_url.rsplit_once('/')?.0.to_string();
@@ -2744,7 +2780,8 @@ mod tests {
             }
             admin.close().await;
 
-            let pool = crate::adapters::postgres::connect(&format!("{base}/{TEST_DB}")).await.ok()?;
+            let pool =
+                crate::adapters::postgres::connect(&format!("{base}/{TEST_DB}")).await.ok()?;
             crate::adapters::postgres::migrate(&pool).await.ok()?;
             sqlx::query("DELETE FROM memory WHERE tenant_id = $1")
                 .bind(TENANT)
@@ -2756,7 +2793,13 @@ mod tests {
 
         /// One plaintext row. `minute` spaces the rows in creation order, so the ordering tiebreak
         /// is fixed rather than whatever `now()` returned twice in the same microsecond.
-        async fn insert(pool: &PgPool, namespace: &str, level: &str, content: &str, minute: i32) -> uuid::Uuid {
+        async fn insert(
+            pool: &PgPool,
+            namespace: &str,
+            level: &str,
+            content: &str,
+            minute: i32,
+        ) -> uuid::Uuid {
             let id = uuid::Uuid::new_v4();
             sqlx::query(
                 "INSERT INTO memory

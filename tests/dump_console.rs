@@ -71,7 +71,14 @@ fn dump_clients_page() {
     std::fs::write("design/current/clients-issued.html", &after).unwrap();
     println!("wrote design/current/clients-issued.html ({} bytes)", after.len());
 
-    let empty = clients::html(&[], &health(), &token, None, Some("that is not one of the shapes on this form"), None);
+    let empty = clients::html(
+        &[],
+        &health(),
+        &token,
+        None,
+        Some("that is not one of the shapes on this form"),
+        None,
+    );
     std::fs::write("design/current/clients-empty.html", &empty).unwrap();
     println!("wrote design/current/clients-empty.html ({} bytes)", empty.len());
 }

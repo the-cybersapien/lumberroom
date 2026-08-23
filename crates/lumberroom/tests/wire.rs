@@ -12,8 +12,8 @@
 //! test in the server crate that serializes the real types into these same files and diffs; that
 //! file is in `tests/`, which this work does not own, and it is in the return's not_done.
 
-use std::collections::BTreeSet;
 use lumberroom::wire::*;
+use std::collections::BTreeSet;
 
 fn fixture(name: &str) -> serde_json::Value {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name);

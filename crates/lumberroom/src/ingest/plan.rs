@@ -238,8 +238,7 @@ pub async fn run(c: &Client, args: &PlanArgs) -> Result<Worklist> {
     paths.create()?;
     write_json(&paths.worklist(), &worklist)?;
 
-    let by_id: BTreeMap<&str, &Span> =
-        worklist.spans.iter().map(|s| (s.id.as_str(), s)).collect();
+    let by_id: BTreeMap<&str, &Span> = worklist.spans.iter().map(|s| (s.id.as_str(), s)).collect();
     for chunk in &worklist.chunks {
         let projected: Vec<ChunkSpan> = chunk
             .span_ids
@@ -349,7 +348,15 @@ fn render_table(w: &Worklist) -> String {
             named.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", ")
         )
     };
-    row(&mut out, "files", &format!("{} seen, {} skipped{detail}", commas(c.files_seen as i64), commas(skipped as i64)));
+    row(
+        &mut out,
+        "files",
+        &format!(
+            "{} seen, {} skipped{detail}",
+            commas(c.files_seen as i64),
+            commas(skipped as i64)
+        ),
+    );
     // Held back is `submit`'s number and it is always zero here, which is the point: this command
     // reads files and moves no watermark.
     let plural = if artifacts == 1 { "artifact" } else { "artifacts" };
@@ -424,7 +431,11 @@ fn render_table(w: &Worklist) -> String {
     row(
         &mut out,
         "unknown",
-        &format!("entry types: {}   attachment subtypes: {}", listing(&entry_types), listing(&subtypes)),
+        &format!(
+            "entry types: {}   attachment subtypes: {}",
+            listing(&entry_types),
+            listing(&subtypes)
+        ),
     );
 
     // E1 should have caught every one of these, so a line here is a parser bug rather than a
@@ -436,8 +447,12 @@ fn render_table(w: &Worklist) -> String {
 
     if c.traversal_capped {
         out.push('\n');
-        out.push_str("COVERAGE IS PARTIAL. INGEST_MAX_FILES or INGEST_MAX_ENTRIES fired, so this\n");
-        out.push_str("run read part of the corpus. Raise the limit and re-plan to read the rest.\n");
+        out.push_str(
+            "COVERAGE IS PARTIAL. INGEST_MAX_FILES or INGEST_MAX_ENTRIES fired, so this\n",
+        );
+        out.push_str(
+            "run read part of the corpus. Raise the limit and re-plan to read the rest.\n",
+        );
     }
     out
 }
@@ -572,7 +587,11 @@ fn listing(pairs: &[(String, i32)]) -> String {
     if pairs.is_empty() {
         return "0".to_string();
     }
-    pairs.iter().map(|(k, n)| format!("{k} {}", commas(*n as i64))).collect::<Vec<_>>().join(" \u{00b7} ")
+    pairs
+        .iter()
+        .map(|(k, n)| format!("{k} {}", commas(*n as i64)))
+        .collect::<Vec<_>>()
+        .join(" \u{00b7} ")
 }
 
 /// 91204 reads as 91,204. The owner reads these numbers against each other.

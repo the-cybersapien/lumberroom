@@ -62,7 +62,9 @@ impl OidcAuthenticator {
             .map_err(|e| DomainError::unavailable("cannot reach the JWKS endpoint").with_source(e))?
             .json()
             .await
-            .map_err(|e| DomainError::unavailable("JWKS response was not valid JSON").with_source(e))?;
+            .map_err(|e| {
+                DomainError::unavailable("JWKS response was not valid JSON").with_source(e)
+            })?;
         *self.cache.write().await = Some((set.clone(), Instant::now()));
         Ok(set)
     }
@@ -107,9 +109,7 @@ impl Authenticator for OidcAuthenticator {
         let token = bearer(authorization)?;
         let header = decode_header(token)
             .map_err(|e| DomainError::forbidden(format!("token rejected: {e}")))?;
-        let kid = header
-            .kid
-            .ok_or_else(|| DomainError::forbidden("token rejected: no key id"))?;
+        let kid = header.kid.ok_or_else(|| DomainError::forbidden("token rejected: no key id"))?;
 
         let jwks = self.jwks().await?;
         let jwk = jwks
@@ -147,11 +147,8 @@ impl Authenticator for OidcAuthenticator {
             .map(str::to_string)
             .collect();
 
-        let missing: Vec<&String> = self
-            .required_scopes
-            .iter()
-            .filter(|s| !scopes.contains(s))
-            .collect();
+        let missing: Vec<&String> =
+            self.required_scopes.iter().filter(|s| !scopes.contains(s)).collect();
         if !missing.is_empty() {
             return Err(DomainError::forbidden(format!(
                 "token missing required scope(s): {}",
@@ -202,7 +199,8 @@ mod tests {
     #[test]
     fn prefers_the_first_claim_present_in_order() {
         let claims = serde_json::json!({"azp": "a", "client_id": "c", "sub": "s"});
-        let order: Vec<String> = ["client_id", "azp", "sub"].iter().map(|s| s.to_string()).collect();
+        let order: Vec<String> =
+            ["client_id", "azp", "sub"].iter().map(|s| s.to_string()).collect();
         assert_eq!(client_from_claims(&claims, &order), "c");
 
         let claims = serde_json::json!({"azp": "a", "sub": "s"});

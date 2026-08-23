@@ -127,7 +127,10 @@ mod tests {
     fn a_keyed_digest_is_not_the_plain_hash_of_the_text() {
         let plain = Digester::unkeyed().digest("the port is 8787");
         let keyed = keyed(1).digest("the port is 8787");
-        assert_ne!(plain, keyed, "a dump holder must not be able to verify a guess without the KEK");
+        assert_ne!(
+            plain, keyed,
+            "a dump holder must not be able to verify a guess without the KEK"
+        );
         assert_eq!(plain, hex::encode(Sha256::digest(b"the port is 8787")));
     }
 

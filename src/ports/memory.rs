@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use crate::domain::errors::Result;
 use crate::domain::policy::{NamespaceCeiling, NamespaceGrant};
-use crate::domain::types::{ConflictCandidate, Memory, Sensitivity, SearchHit};
+use crate::domain::types::{ConflictCandidate, Memory, SearchHit, Sensitivity};
 
 /// One subject's versions, oldest first, with what the caller was not shown.
 ///

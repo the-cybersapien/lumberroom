@@ -200,10 +200,7 @@ pub fn ndcg(retrieved: &[String], gold: &[String], k: usize) -> f64 {
 
 /// Reciprocal rank of the first gold session, over the whole retrieved list.
 pub fn mrr(retrieved: &[String], gold: &[String]) -> f64 {
-    retrieved
-        .iter()
-        .position(|s| gold.contains(s))
-        .map_or(0.0, |i| 1.0 / (i + 1) as f64)
+    retrieved.iter().position(|s| gold.contains(s)).map_or(0.0, |i| 1.0 / (i + 1) as f64)
 }
 
 pub fn aggregate(results: &[QuestionResult]) -> Aggregate {
@@ -278,7 +275,10 @@ mod tests {
     fn a_namespace_per_question_is_a_shape_the_store_accepts() {
         let ns = question_namespace(7);
         assert_eq!(ns, "project:lme-q0007");
-        assert!(ns.strip_prefix("project:").unwrap().starts_with(|c: char| c.is_ascii_alphanumeric()));
+        assert!(ns
+            .strip_prefix("project:")
+            .unwrap()
+            .starts_with(|c: char| c.is_ascii_alphanumeric()));
     }
 
     #[test]
@@ -303,7 +303,10 @@ mod tests {
 /// A separate command from `lumberroom eval`, which measures a curated fixture the owner wrote. That one
 /// asks whether the store answers the owner's own questions. This one asks how the ranking places
 /// against a public haystack, and the two answer different things.
-pub async fn dispatch(c: &crate::client::Client, args: &crate::args::Args) -> crate::client::Result<()> {
+pub async fn dispatch(
+    c: &crate::client::Client,
+    args: &crate::args::Args,
+) -> crate::client::Result<()> {
     let protocol = match args.value("protocol").unwrap_or("session-as-document") {
         "session-as-document" | "session" => Protocol::SessionAsDocument,
         "chunked" | "chunk" => Protocol::Chunked,

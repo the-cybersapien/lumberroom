@@ -330,8 +330,12 @@ pub trait IngestRepository: Send + Sync {
 
     /// One proposal under the same rule. `None` for an id outside the grant as much as for one
     /// that does not exist.
-    async fn proposal(&self, tenant: &str, id: Uuid, reader: &ReadGrant)
-        -> Result<Option<Proposal>>;
+    async fn proposal(
+        &self,
+        tenant: &str,
+        id: Uuid,
+        reader: &ReadGrant,
+    ) -> Result<Option<Proposal>>;
 
     /// Every source that stated this fact, oldest first. This is the answer to "have I already
     /// counted this", and it is an exact one rather than a similarity guess.

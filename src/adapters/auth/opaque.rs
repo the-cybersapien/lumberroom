@@ -78,9 +78,7 @@ impl Authenticator for OpaqueTokenAuthenticator {
         // admitting it would produce a principal that authenticates and then fails every
         // operation with a confusing 403 instead of a clear one here.
         if client.read.is_empty() && client.write.is_empty() && !client.may_ingest {
-            return Err(DomainError::forbidden(
-                "this client holds no namespace grant",
-            ));
+            return Err(DomainError::forbidden("this client holds no namespace grant"));
         }
 
         // Fire and forget: last_used_at is an observability field, and a failed UPDATE must not
@@ -337,7 +335,8 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_a_request_with_no_authorization_header() {
-        let err = auth(store(token("c1"), Some(client("c1")))).authenticate(None).await.unwrap_err();
+        let err =
+            auth(store(token("c1"), Some(client("c1")))).authenticate(None).await.unwrap_err();
         assert!(err.client_message().contains("missing Authorization header"));
     }
 }

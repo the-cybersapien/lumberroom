@@ -91,7 +91,8 @@ async fn run() -> Result<()> {
     // holds, the same shape as the KEK check below, and the reason it is not on a request path.
     // Precedence and the reason an empty rule set can never win are in
     // `config::resolve_sensitivity_defaults`.
-    let source = cfg.apply_sensitivity_defaults(pg::sensitivity_defaults(&pool, &cfg.tenant_id).await?);
+    let source =
+        cfg.apply_sensitivity_defaults(pg::sensitivity_defaults(&pool, &cfg.tenant_id).await?);
     config::log_effective_policy(&cfg, source);
     let cfg = Arc::new(cfg);
 
@@ -110,8 +111,7 @@ async fn run() -> Result<()> {
     // The adapter is handed the search settings rather than reading the environment, so this call
     // is what makes SEARCH_FUSION real. Without it the variable parses, validates, boots clean and
     // ranks linearly, which is the worst shape a setting can have.
-    let memories =
-        Arc::new(pg::PgMemoryRepository::new(pool.clone()).with_search(&cfg.search));
+    let memories = Arc::new(pg::PgMemoryRepository::new(pool.clone()).with_search(&cfg.search));
     let oauth: Arc<dyn ports::OauthStore> = Arc::new(pg::PgOauthStore::new(pool.clone()));
     let ingest: Arc<dyn ports::IngestRepository> =
         Arc::new(pg::PgIngestRepository::new(pool.clone()));
@@ -159,13 +159,10 @@ async fn run() -> Result<()> {
 
     // Connect info, so the login limiter can key on a peer address. Without it the limiter degrades
     // to its global window, which throttles the owner's own retry alongside an attacker's.
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .map_err(|e| DomainError::internal("server error").with_source(e))?;
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .map_err(|e| DomainError::internal("server error").with_source(e))?;
 
     tracing::info!("shut down cleanly");
     Ok(())
@@ -418,13 +415,16 @@ async fn verify_kek_command() -> Result<()> {
 
     let pool = pg::connect(&cfg.database_url).await?;
     let check =
-        pg::verify_kek(&pool, &cfg.tenant_id, &keys.kek_id(), &fingerprint, keys.provider()).await?;
+        pg::verify_kek(&pool, &cfg.tenant_id, &keys.kek_id(), &fingerprint, keys.provider())
+            .await?;
     pool.close().await;
 
     match check {
         KekCheck::Recorded => {
-            println!("verified:     yes (nothing was recorded before, so this key is now the one \
-                      this store is sealed with)");
+            println!(
+                "verified:     yes (nothing was recorded before, so this key is now the one \
+                      this store is sealed with)"
+            );
             Ok(())
         }
         KekCheck::Matches => {
@@ -491,7 +491,9 @@ async fn shutdown_signal() {
     };
     #[cfg(unix)]
     let terminate = async {
-        if let Ok(mut sig) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        if let Ok(mut sig) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
             sig.recv().await;
         }
     };

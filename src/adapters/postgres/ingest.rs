@@ -44,8 +44,10 @@ use crate::ports::ingest::{
 /// `WITH ORDINALITY` in the query keeps that order so the first match wins, as `for_namespace`
 /// does.
 fn level_arrays(levels: &[(String, Sensitivity)]) -> (Vec<String>, Vec<bool>, Vec<String>) {
-    let as_grants: Vec<NamespaceGrant> =
-        levels.iter().map(|(pattern, level)| NamespaceGrant::new(pattern.clone(), *level)).collect();
+    let as_grants: Vec<NamespaceGrant> = levels
+        .iter()
+        .map(|(pattern, level)| NamespaceGrant::new(pattern.clone(), *level))
+        .collect();
     grant_arrays(&as_grants)
 }
 

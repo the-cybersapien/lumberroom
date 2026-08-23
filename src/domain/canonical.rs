@@ -352,9 +352,8 @@ fn edit_distance(a: &str, b: &str) -> usize {
     for i in 1..=a.len() {
         for j in 1..=b.len() {
             let substitution = usize::from(a[i - 1] != b[j - 1]);
-            let mut best = (grid[i - 1][j] + 1)
-                .min(grid[i][j - 1] + 1)
-                .min(grid[i - 1][j - 1] + substitution);
+            let mut best =
+                (grid[i - 1][j] + 1).min(grid[i][j - 1] + 1).min(grid[i - 1][j - 1] + substitution);
             if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
                 best = best.min(grid[i - 2][j - 2] + 1);
             }
@@ -470,7 +469,10 @@ mod tests {
     fn a_domain_outside_the_vocabulary_is_refused_and_mapped() {
         assert!(validate_key("hardware.desktop.gpu").is_err());
         assert_eq!(suggest_key("hardware.desktop.gpu").as_deref(), Some("machines.desktop.gpu"));
-        assert_eq!(suggest_key("hosts.desktop.location").as_deref(), Some("machines.desktop.location"));
+        assert_eq!(
+            suggest_key("hosts.desktop.location").as_deref(),
+            Some("machines.desktop.location")
+        );
         assert_eq!(
             suggest_key("data.vowframes.location").as_deref(),
             Some("datasets.vowframes.location")
@@ -593,7 +595,11 @@ mod tests {
         ] {
             let first = validate_key(input).unwrap();
             assert!(is_canonical(&first), "{first} accepted but not canonical");
-            assert_eq!(validate_key(&first).unwrap(), first, "{first} did not survive a second pass");
+            assert_eq!(
+                validate_key(&first).unwrap(),
+                first,
+                "{first} did not survive a second pass"
+            );
         }
     }
 

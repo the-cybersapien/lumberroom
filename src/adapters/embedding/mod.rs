@@ -15,11 +15,9 @@ use crate::ports::Embedder;
 
 pub fn create(cfg: &Config) -> Result<Arc<dyn Embedder>> {
     match cfg.embed.provider {
-        EmbedProvider::Local => Ok(Arc::new(LocalEmbedder::new(
-            &cfg.embed.model,
-            cfg.embed.dim,
-            &cfg.embed.cache_dir,
-        )?)),
+        EmbedProvider::Local => {
+            Ok(Arc::new(LocalEmbedder::new(&cfg.embed.model, cfg.embed.dim, &cfg.embed.cache_dir)?))
+        }
         EmbedProvider::Hash => Ok(Arc::new(HashEmbedder::new(cfg.embed.dim))),
         EmbedProvider::Openai => Err(DomainError::validation(
             "the openai embedder is not implemented in this build; use local or hash",

@@ -75,7 +75,11 @@ pub struct ExportResult {
 ///
 /// `max_sensitivity` may narrow the configured ceiling and never widens it, so turning the export on
 /// for private content is a deployment decision rather than a per-call argument.
-pub async fn run(ctx: &Ctx, max_sensitivity: Option<&str>, limit: Option<i64>) -> Result<ExportResult> {
+pub async fn run(
+    ctx: &Ctx,
+    max_sensitivity: Option<&str>,
+    limit: Option<i64>,
+) -> Result<ExportResult> {
     let configured = ctx.cfg.quality.export_max_sensitivity;
     let ceiling = match max_sensitivity.map(str::trim).filter(|s| !s.is_empty()) {
         Some(raw) => {
@@ -229,12 +233,7 @@ fn memory_stem(m: &Memory) -> String {
 /// key existing in `global` and in `project:x` at once. Without it the two collapse onto one file and
 /// whichever sorts last silently wins.
 fn registry_path(e: &RegistryEntry) -> String {
-    format!(
-        "{ROOT}/registry/{}/{}/{}.md",
-        slug(&e.kind),
-        slug(&e.namespace),
-        slug(&e.key)
-    )
+    format!("{ROOT}/registry/{}/{}/{}.md", slug(&e.kind), slug(&e.namespace), slug(&e.key))
 }
 
 fn short_id(id: &str) -> String {
@@ -451,7 +450,10 @@ mod tests {
     fn a_note_path_is_deterministic_and_lives_under_one_folder() {
         let m = memory("0f4a1b2c-dead-beef-0000-111122223333", "Dana prefers TypeScript");
         let path = memory_path(&m);
-        assert_eq!(path, "lumberroom/memory/user-me/2026-08-19-dana-prefers-typescript-0f4a1b2c.md");
+        assert_eq!(
+            path,
+            "lumberroom/memory/user-me/2026-08-19-dana-prefers-typescript-0f4a1b2c.md"
+        );
         assert_eq!(path, memory_path(&m), "two runs must agree");
         assert!(path.starts_with("lumberroom/"));
     }
@@ -485,8 +487,11 @@ mod tests {
     fn supersedes_renders_as_a_wikilink_when_the_target_is_in_the_export() {
         let mut m = memory("bbb", "The port is 8787");
         m.supersedes = Some("aaa".into());
-        let names = HashMap::from([("aaa".to_string(), "2026-03-02-the-port-is-8080-aaa".to_string())]);
-        assert!(memory_note(&m, &names).contains("supersedes: \"[[2026-03-02-the-port-is-8080-aaa]]\""));
+        let names =
+            HashMap::from([("aaa".to_string(), "2026-03-02-the-port-is-8080-aaa".to_string())]);
+        assert!(
+            memory_note(&m, &names).contains("supersedes: \"[[2026-03-02-the-port-is-8080-aaa]]\"")
+        );
     }
 
     #[test]

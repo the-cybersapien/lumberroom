@@ -356,7 +356,12 @@ pub async fn revoke(
             let health = app.health();
             page(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                pages::notice("that client was not revoked", &e.client_message(), None, Some(&health)),
+                pages::notice(
+                    "that client was not revoked",
+                    &e.client_message(),
+                    None,
+                    Some(&health),
+                ),
             )
         }
     }

@@ -528,11 +528,7 @@ async fn namespace(
     page(StatusCode::OK, pages::reading(&contents, &listing, Some(&ns), &health))
 }
 
-async fn fact(
-    State(app): State<Console>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Response {
+async fn fact(State(app): State<Console>, headers: HeaderMap, Path(id): Path<String>) -> Response {
     let wanted = format!("/console/fact/{id}");
     let session = match app.guard(&headers, &wanted) {
         Ok(s) => s,
@@ -559,10 +555,7 @@ async fn fact(
             // Minted against the id the store returned rather than the one in the address, so the
             // token and the form's hidden target are the same string by construction.
             let csrf = sessions.console_csrf(&session, WRITE_ACTION, &leaf.entry.id);
-            page(
-                StatusCode::OK,
-                pages::fact(&leaf, &contents, &health, &csrf, app.fence_secs()),
-            )
+            page(StatusCode::OK, pages::fact(&leaf, &contents, &health, &csrf, app.fence_secs()))
         }
         Ok(None) => page(
             StatusCode::NOT_FOUND,
@@ -690,18 +683,16 @@ async fn compose(
                 Some(filled) => draft = filled,
                 None => return unreplaceable(&app),
             },
-            Ok(None) => {
-                return page(
-                    StatusCode::NOT_FOUND,
-                    pages::notice(
-                        "no such entry",
-                        "Nothing in this store carries the id in that link, so there is nothing to \
+            Ok(None) => return page(
+                StatusCode::NOT_FOUND,
+                pages::notice(
+                    "no such entry",
+                    "Nothing in this store carries the id in that link, so there is nothing to \
                          replace.",
-                        None,
-                        None,
-                    ),
-                )
-            }
+                    None,
+                    None,
+                ),
+            ),
             Err(e) => return failed(&app, "the entry did not load", &e),
         }
     }
@@ -1034,7 +1025,8 @@ async fn queue_approve(
         Ok(u) => u,
         Err(response) => return response,
     };
-    match crate::services::ingest::approve(&app.ctx_writing(), app.state.ingest.as_ref(), uuid).await
+    match crate::services::ingest::approve(&app.ctx_writing(), app.state.ingest.as_ref(), uuid)
+        .await
     {
         Ok(outcome) if outcome.refused.is_some() => done("refused"),
         Ok(outcome) if outcome.deduplicated => done("deduplicated"),
@@ -1119,7 +1111,12 @@ fn redirect(location: &str) -> Response {
         Ok(value) => (StatusCode::SEE_OTHER, [(header::LOCATION, value)]).into_response(),
         Err(_) => page(
             StatusCode::INTERNAL_SERVER_ERROR,
-            pages::notice("that link cannot be followed", "The address held a character a redirect cannot carry.", None, None),
+            pages::notice(
+                "that link cannot be followed",
+                "The address held a character a redirect cannot carry.",
+                None,
+                None,
+            ),
         ),
     }
 }
@@ -1206,9 +1203,8 @@ fn encode_query(value: &str) -> String {
 /// The path is the one difference. `Path=/oauth` keeps the consent cookie off `/mcp`; `Path=/console`
 /// does the same for this one, and neither is sent to a tool call.
 fn set_cookie(public_url: &str, ttl_secs: i64, value: &str) -> String {
-    let mut cookie = format!(
-        "{COOKIE_NAME}={value}; Path=/console; HttpOnly; SameSite=Lax; Max-Age={ttl_secs}"
-    );
+    let mut cookie =
+        format!("{COOKIE_NAME}={value}; Path=/console; HttpOnly; SameSite=Lax; Max-Age={ttl_secs}");
     if !is_loopback(public_url) {
         cookie.push_str("; Secure");
     }
@@ -1402,7 +1398,8 @@ mod tests {
 
     #[test]
     fn a_return_path_inside_the_console_survives() {
-        for good in ["/console/reading", "/console/fact/3f9c1d2a", "/console/namespace?ns=user:me"] {
+        for good in ["/console/reading", "/console/fact/3f9c1d2a", "/console/namespace?ns=user:me"]
+        {
             assert_eq!(safe_next(Some(good)), good);
         }
     }

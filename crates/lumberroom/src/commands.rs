@@ -27,8 +27,9 @@ pub(crate) fn compact(v: &Value) -> String {
 }
 
 fn typed<T: serde::de::DeserializeOwned>(body: &Value, what: &str) -> Result<T> {
-    serde_json::from_value(body.clone())
-        .map_err(|e| err(format!("{what} response is not the expected shape ({e}): {}", compact(body))))
+    serde_json::from_value(body.clone()).map_err(|e| {
+        err(format!("{what} response is not the expected shape ({e}): {}", compact(body)))
+    })
 }
 
 /// The two accepted forms for a valid-time argument: `2026-03-01` read as midnight UTC, or a full
@@ -43,7 +44,10 @@ fn parse_two_date_forms(field: &str, raw: &str) -> std::result::Result<DateTime<
         return Ok(instant.with_timezone(&Utc));
     }
     if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
-        return Ok(date.and_hms_opt(0, 0, 0).expect("midnight exists on every calendar date").and_utc());
+        return Ok(date
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight exists on every calendar date")
+            .and_utc());
     }
     Err(date_refusal(field, value))
 }
@@ -166,7 +170,12 @@ pub async fn whoami(c: &Client, args: &Args) -> Result<()> {
     Ok(())
 }
 
-pub async fn bootstrap(c: &Client, args: &Args, cwd: &str, project_env: Option<String>) -> Result<()> {
+pub async fn bootstrap(
+    c: &Client,
+    args: &Args,
+    cwd: &str,
+    project_env: Option<String>,
+) -> Result<()> {
     require_token(c, &c.file.borrow().path.display().to_string())?;
     let project = args
         .value("project")
@@ -302,7 +311,9 @@ pub async fn registry(c: &Client, args: &Args) -> Result<()> {
     match args.positional_at(1) {
         Some("get") => {
             let (Some(kind), Some(key)) = (args.positional_at(2), args.positional_at(3)) else {
-                return Err(err("usage: lumberroom registry get <kind> <key> [--namespace ns] [--project p]"));
+                return Err(err(
+                    "usage: lumberroom registry get <kind> <key> [--namespace ns] [--project p]",
+                ));
             };
             let req = wire::RegistryArgsRequest {
                 kind: kind.to_string(),
@@ -318,7 +329,9 @@ pub async fn registry(c: &Client, args: &Args) -> Result<()> {
             let (Some(kind), Some(key), Some(raw)) =
                 (args.positional_at(2), args.positional_at(3), args.positional_at(4))
             else {
-                return Err(err("usage: lumberroom registry set <kind> <key> <json-value> --namespace ns"));
+                return Err(err(
+                    "usage: lumberroom registry set <kind> <key> <json-value> --namespace ns",
+                ));
             };
             let Some(namespace) = args.value_any(&["namespace", "ns"]) else {
                 return Err(err("--namespace is required"));
@@ -327,7 +340,11 @@ pub async fn registry(c: &Client, args: &Args) -> Result<()> {
             let value: Value = serde_json::from_str(raw).unwrap_or_else(|_| json!(raw));
             let req = wire::RegistryWriteRequest { namespace, kind, key, value };
             let (status, body) = c
-                .http_request(reqwest::Method::POST, "/admin/registry", Some(serde_json::to_value(req).unwrap()))
+                .http_request(
+                    reqwest::Method::POST,
+                    "/admin/registry",
+                    Some(serde_json::to_value(req).unwrap()),
+                )
                 .await?;
             if status != 200 {
                 return Err(err(format!("registry set failed ({status}): {}", compact(&body))));
@@ -401,7 +418,11 @@ pub fn selection(args: &Args, len: usize) -> Result<Selection> {
     Ok(Selection::None)
 }
 
-pub async fn forget(c: &Client, args: &Args, confirm: impl FnOnce() -> std::io::Result<String>) -> Result<()> {
+pub async fn forget(
+    c: &Client,
+    args: &Args,
+    confirm: impl FnOnce() -> std::io::Result<String>,
+) -> Result<()> {
     require_token(c, &c.file.borrow().path.display().to_string())?;
     let id_arg = args.positional_at(1);
     let query = args.value("query");
@@ -538,7 +559,8 @@ pub async fn review(c: &Client, args: &Args) -> Result<()> {
 
     if all || do_stale {
         let days = args.int("days", 90);
-        let (status, body) = c.http_get(&format!("/admin/review/stale?days={days}&limit={limit}")).await?;
+        let (status, body) =
+            c.http_get(&format!("/admin/review/stale?days={days}&limit={limit}")).await?;
         if status != 200 {
             return Err(err(format!("stale review failed ({status}): {}", compact(&body))));
         }
@@ -681,7 +703,11 @@ async fn alias_set(c: &Client, args: &Args) -> Result<()> {
     let until = optional_date_flag(args, "until", "until")?;
     let req = wire::AliasSetRequest { namespace, alias: name, canonical, since, until };
     let (status, body) = c
-        .http_request(reqwest::Method::POST, "/admin/alias", Some(serde_json::to_value(req).unwrap()))
+        .http_request(
+            reqwest::Method::POST,
+            "/admin/alias",
+            Some(serde_json::to_value(req).unwrap()),
+        )
         .await?;
     if status != 200 {
         return Err(err(format!("alias set failed ({status}): {}", compact(&body))));
@@ -767,7 +793,8 @@ pub async fn export(c: &Client, args: &Args) -> Result<()> {
 
 fn write_note(root: &std::path::Path, m: &wire::Memory) -> Result<()> {
     let dir = root.join(format::obsidian_dir(&m.namespace));
-    std::fs::create_dir_all(&dir).map_err(|e| err(format!("cannot create {}: {e}", dir.display())))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| err(format!("cannot create {}: {e}", dir.display())))?;
     let path = dir.join(format!("{}.md", m.id));
     std::fs::write(&path, format::obsidian_note(m))
         .map_err(|e| err(format!("cannot write {}: {e}", path.display())))
@@ -947,9 +974,7 @@ holds this row and the other says it holds nothing for the question.",
                 )))
             }
             (true, None) => EvalCase { question, expect_id: None, origin: origin_of(&v) },
-            (false, Some(id)) => {
-                EvalCase { question, expect_id: Some(id), origin: origin_of(&v) }
-            }
+            (false, Some(id)) => EvalCase { question, expect_id: Some(id), origin: origin_of(&v) },
             (false, None) => {
                 return Err(err(format!(
                     "fixture line {} names neither expect_id nor expect: \"none\", so there is \
@@ -1120,8 +1145,7 @@ fn to_fixed(x: f64, f: usize) -> String {
 /// server: the alignment in `MRR:      ` and the percent formatting are the parity surface.
 fn eval_lines(s: &EvalScore) -> Vec<String> {
     let total = s.normal + s.anti;
-    let mut lines =
-        vec![format!("cases: {total} ({} normal, {} anti-case)", s.normal, s.anti)];
+    let mut lines = vec![format!("cases: {total} ({} normal, {} anti-case)", s.normal, s.anti)];
     match (eval_recall_at(&s.ranks, 1), eval_recall_at(&s.ranks, 5), eval_mrr(&s.ranks)) {
         (Some(r1), Some(r5), Some(mrr)) => {
             lines.push(format!("recall@1: {}%", to_fixed(r1 * 100.0, 1)));
@@ -1148,8 +1172,18 @@ fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'~' | b'*'
-            | b'\'' | b'(' | b')' => out.push(b as char),
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => out.push(b as char),
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
@@ -1195,7 +1229,10 @@ mod tests {
 
     #[test]
     fn all_is_a_flag_the_caller_types_rather_than_a_default() {
-        assert_eq!(selection(&args(&["forget", "--query", "ports", "--all"]), 20).unwrap(), Selection::All);
+        assert_eq!(
+            selection(&args(&["forget", "--query", "ports", "--all"]), 20).unwrap(),
+            Selection::All
+        );
     }
 
     #[test]
@@ -1270,19 +1307,11 @@ month or year cannot be represented, so omit occurred_at rather than choosing a 
     }
 
     fn normal(question: &str, expect_id: &str) -> EvalCase {
-        EvalCase {
-            question: question.into(),
-            expect_id: Some(expect_id.into()),
-            origin: None,
-        }
+        EvalCase { question: question.into(), expect_id: Some(expect_id.into()), origin: None }
     }
 
     fn anti(question: &str, origin: Option<&str>) -> EvalCase {
-        EvalCase {
-            question: question.into(),
-            expect_id: None,
-            origin: origin.map(str::to_string),
-        }
+        EvalCase { question: question.into(), expect_id: None, origin: origin.map(str::to_string) }
     }
 
     #[test]

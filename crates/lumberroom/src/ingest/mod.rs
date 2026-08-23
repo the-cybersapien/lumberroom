@@ -354,7 +354,10 @@ impl RunPaths {
 
     pub fn read_worklist(&self) -> Result<Worklist> {
         let raw = std::fs::read_to_string(self.worklist()).map_err(|e| {
-            err(format!("no worklist for run {}: {e}. Run `lumberroom ingest plan` first", self.run_id))
+            err(format!(
+                "no worklist for run {}: {e}. Run `lumberroom ingest plan` first",
+                self.run_id
+            ))
         })?;
         serde_json::from_str(&raw).map_err(|e| err(format!("worklist.json is unreadable: {e}")))
     }
@@ -378,7 +381,8 @@ pub fn state_dir() -> Result<PathBuf> {
             return Ok(PathBuf::from(dir));
         }
     }
-    let home = std::env::var("HOME").map_err(|_| err("HOME is not set, so there is no state directory"))?;
+    let home = std::env::var("HOME")
+        .map_err(|_| err("HOME is not set, so there is no state directory"))?;
     Ok(PathBuf::from(home).join(".local/state/lumberroom"))
 }
 
@@ -416,7 +420,8 @@ pub fn create_dir_owner_only(path: &Path) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
-        std::fs::create_dir_all(path).map_err(|e| err(format!("could not create {}: {e}", path.display())))
+        std::fs::create_dir_all(path)
+            .map_err(|e| err(format!("could not create {}: {e}", path.display())))
     }
 }
 
@@ -439,7 +444,8 @@ pub fn write_owner_only(path: &Path, body: &[u8]) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
-        std::fs::write(path, body).map_err(|e| err(format!("could not write {}: {e}", path.display())))
+        std::fs::write(path, body)
+            .map_err(|e| err(format!("could not write {}: {e}", path.display())))
     }
 }
 
@@ -634,7 +640,8 @@ mod fence_state_tests {
     fn a_bare_prefix_with_no_uuid_never_opens_a_fence() {
         let mut state = FenceState::default();
         let mut c = counters();
-        let excluded = state.observe("saw the string lumberroom-ingest-begin: in a grep hit", 0, &mut c);
+        let excluded =
+            state.observe("saw the string lumberroom-ingest-begin: in a grep hit", 0, &mut c);
         assert!(!excluded, "no valid uuid after the prefix must not open a fence");
         assert!(!state.is_open());
         assert_eq!(c.unknown_types.get("fence_marker:begin_no_uuid"), Some(&1));
@@ -897,13 +904,18 @@ mod run_dir_permission_tests {
 
     #[test]
     fn run_paths_create_makes_spans_and_out_owner_only() {
-        let dir = std::env::temp_dir().join(format!("lumberroom-run-perm-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("lumberroom-run-perm-{}", uuid::Uuid::new_v4()));
         let run_id = uuid::Uuid::new_v4();
         let paths = RunPaths { root: dir.clone(), run_id };
 
         paths.create().expect("creating the run directory succeeds");
 
-        assert_eq!(mode_of(&paths.spans_dir()), 0o700, "spans/ must not be group- or world-readable");
+        assert_eq!(
+            mode_of(&paths.spans_dir()),
+            0o700,
+            "spans/ must not be group- or world-readable"
+        );
         assert_eq!(mode_of(&paths.out_dir()), 0o700, "out/ must not be group- or world-readable");
 
         std::fs::remove_dir_all(&dir).ok();
@@ -911,7 +923,8 @@ mod run_dir_permission_tests {
 
     #[test]
     fn write_json_creates_the_file_at_0600_and_its_parent_at_0700() {
-        let dir = std::env::temp_dir().join(format!("lumberroom-run-perm-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("lumberroom-run-perm-{}", uuid::Uuid::new_v4()));
         let nested = dir.join("nested");
         let path = nested.join("worklist.json");
 
@@ -929,7 +942,8 @@ mod run_dir_permission_tests {
         // A file that already exists at some other mode (e.g. restored from a backup) keeps that
         // mode: `open` with `create(true)` does not chmod an existing inode. The property this
         // guards is the create path, not a repair of files write_owner_only did not create.
-        let dir = std::env::temp_dir().join(format!("lumberroom-run-perm-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("lumberroom-run-perm-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("run.log");
         std::fs::write(&path, b"first").unwrap();

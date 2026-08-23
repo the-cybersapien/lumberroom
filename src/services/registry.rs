@@ -22,8 +22,8 @@ use super::Ctx;
 use crate::adapters::auth::{assert_writable, filter_readable};
 use crate::domain::errors::{DomainError, Result};
 use crate::domain::types::{Principal, Provenance, Sensitivity};
-use crate::ports::registry::{RegistryUpsert, RegistryVersion};
 use crate::domain::{canonical, namespaces, policy, tripwire};
+use crate::ports::registry::{RegistryUpsert, RegistryVersion};
 
 /// How long a fact of each kind stays trustworthy without being looked at.
 ///
@@ -129,9 +129,10 @@ pub async fn get(
             // Two ways the answer can come from a different key than the one asked for: the
             // repository followed an alias, or normalisation rewrote the key before the lookup.
             // Both are redirects and both are reported.
-            let resolved_from = entry.resolved_from.clone().or_else(|| {
-                (lookup != asked_key).then(|| asked_key.to_string())
-            });
+            let resolved_from = entry
+                .resolved_from
+                .clone()
+                .or_else(|| (lookup != asked_key).then(|| asked_key.to_string()));
             return Ok(RegistryGetResult {
                 found: true,
                 kind,
@@ -216,9 +217,10 @@ pub async fn history(
         // The first namespace holding versions answers, so precedence works the same here as it
         // does for a value: a project override's history beats a global default's.
         if !entries.is_empty() {
-            let resolved_from = entries[0].resolved_from.clone().or_else(|| {
-                (lookup != asked_key).then(|| asked_key.to_string())
-            });
+            let resolved_from = entries[0]
+                .resolved_from
+                .clone()
+                .or_else(|| (lookup != asked_key).then(|| asked_key.to_string()));
             return Ok(RegistryHistoryResult {
                 kind,
                 key: entries[0].key.clone(),
@@ -417,9 +419,9 @@ fn assert_may_read_history(principal: &Principal) -> Result<()> {
 fn resolve_limit(requested: Option<i64>) -> Result<i64> {
     match requested {
         None => Ok(DEFAULT_HISTORY_LIMIT),
-        Some(n) if n < 1 => Err(DomainError::validation(format!(
-            "limit {n} asks for no rows; ask for at least 1"
-        ))),
+        Some(n) if n < 1 => {
+            Err(DomainError::validation(format!("limit {n} asks for no rows; ask for at least 1")))
+        }
         Some(n) => Ok(n.min(MAX_HISTORY_LIMIT)),
     }
 }

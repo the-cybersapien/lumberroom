@@ -117,9 +117,14 @@ pub struct NewRefreshToken {
 #[derive(Debug, Clone)]
 pub enum RefreshOutcome {
     /// Consumed successfully. Issue a successor in the same family.
-    Rotated { client_id: String, family_id: uuid::Uuid },
+    Rotated {
+        client_id: String,
+        family_id: uuid::Uuid,
+    },
     /// Presented after it was already spent, which means it leaked. The caller must kill the family.
-    Replayed { family_id: uuid::Uuid },
+    Replayed {
+        family_id: uuid::Uuid,
+    },
     Expired,
     Revoked,
     Unknown,

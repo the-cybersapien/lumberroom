@@ -189,7 +189,10 @@ mod tests {
     #[test]
     fn a_holder_note_carrying_a_run_id_gives_that_id_back() {
         let id = "0199e5ef-9698-7cb3-8c23-3297e08d3c03";
-        assert_eq!(run_id_in_holder(&format!("plan run {id} pid 42")), uuid::Uuid::parse_str(id).ok());
+        assert_eq!(
+            run_id_in_holder(&format!("plan run {id} pid 42")),
+            uuid::Uuid::parse_str(id).ok()
+        );
     }
 
     #[test]

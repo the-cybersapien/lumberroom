@@ -79,10 +79,7 @@ pub fn www_authenticate(cfg: &Config, error: &str) -> String {
         params.push(format!("error=\"{code}\""));
     }
     if cfg.auth.mode.is_oauth_protected() {
-        params.push(format!(
-            "resource_metadata=\"{}\"",
-            cfg.protected_resource_metadata_url()
-        ));
+        params.push(format!("resource_metadata=\"{}\"", cfg.protected_resource_metadata_url()));
     }
 
     if params.is_empty() {
@@ -121,11 +118,7 @@ mod tests {
     fn cfg(mode: AuthMode) -> Config {
         use crate::config::*;
         Config {
-            cleanup: crate::config::CleanupConfig {
-                interval_secs: 0,
-                namespace: None,
-                limit: 500,
-            },
+            cleanup: crate::config::CleanupConfig { interval_secs: 0, namespace: None, limit: 500 },
             port: 8787,
             host: "0.0.0.0".into(),
             tenant_id: "me".into(),
@@ -189,7 +182,7 @@ mod tests {
                 defaults_from_env: false,
                 tripwire: true,
                 max_write_sensitivity: crate::domain::types::Sensitivity::Private,
-                            max_content_chars: 8000,
+                max_content_chars: 8000,
                 write_min_occurred_age_secs: crate::config::DEFAULT_MIN_OCCURRED_AGE_SECS,
             },
             crypto: CryptoConfig {
@@ -283,7 +276,10 @@ mod tests {
     #[test]
     fn the_challenge_omits_the_pointer_in_token_mode() {
         assert_eq!(www_authenticate(&cfg(AuthMode::Token), ""), "Bearer");
-        assert_eq!(www_authenticate(&cfg(AuthMode::Token), "invalid_token"), "Bearer error=\"invalid_token\"");
+        assert_eq!(
+            www_authenticate(&cfg(AuthMode::Token), "invalid_token"),
+            "Bearer error=\"invalid_token\""
+        );
     }
 
     #[test]

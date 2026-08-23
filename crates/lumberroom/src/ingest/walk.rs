@@ -205,8 +205,8 @@ pub fn peek_header(
                     .map(|t| t.with_timezone(&chrono::Utc));
             }
         }
-        let done = seen >= HEAD_LINES
-            || (session_id.is_some() && cwd.is_some() && first_ts.is_some());
+        let done =
+            seen >= HEAD_LINES || (session_id.is_some() && cwd.is_some() && first_ts.is_some());
         if done {
             Err(err("peek complete"))
         } else {
@@ -249,10 +249,7 @@ fn slug(s: &str) -> String {
 }
 
 fn is_sidechain_path(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| n.starts_with("agent-"))
-        .unwrap_or(false)
+    path.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with("agent-")).unwrap_or(false)
 }
 
 /// A last resort when the first entry carries no `sessionId`. For a subagent file the parent
@@ -294,8 +291,12 @@ mod tests {
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("lumberroom-walk-{}-{}-{}", std::process::id(), name, line!()));
+        let dir = std::env::temp_dir().join(format!(
+            "lumberroom-walk-{}-{}-{}",
+            std::process::id(),
+            name,
+            line!()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -336,7 +337,8 @@ mod tests {
         std::os::unix::fs::symlink(&real, dir.join("link.jsonl")).unwrap();
 
         let mut counters = PlanCounters::default();
-        let found = walk(&[dir.clone()], Source::Claude, &opts(), &limits(), &mut counters).unwrap();
+        let found =
+            walk(&[dir.clone()], Source::Claude, &opts(), &limits(), &mut counters).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].path, real);
         assert_eq!(counters.files_skipped.get("symlink").copied(), Some(1));
@@ -406,7 +408,10 @@ mod tests {
     #[test]
     fn the_root_override_wins() {
         std::env::set_var("LUMBERROOM_CLAUDE_ROOT", "/tmp/lumberroom-fixture-root");
-        assert_eq!(roots(Source::Claude).unwrap(), vec![PathBuf::from("/tmp/lumberroom-fixture-root")]);
+        assert_eq!(
+            roots(Source::Claude).unwrap(),
+            vec![PathBuf::from("/tmp/lumberroom-fixture-root")]
+        );
         std::env::remove_var("LUMBERROOM_CLAUDE_ROOT");
     }
 

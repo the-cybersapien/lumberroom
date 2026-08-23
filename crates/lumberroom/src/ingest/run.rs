@@ -162,11 +162,7 @@ pub fn exit_code(o: &RunOutcome) -> i32 {
     if o.chunks_planned > 0 && o.chunks_failed == o.chunks_planned {
         return EXIT_PROVIDER;
     }
-    if o.chunks_failed > 0
-        || o.chunks_missing > 0
-        || o.files_held_back > 0
-        || o.traversal_capped
-    {
+    if o.chunks_failed > 0 || o.chunks_missing > 0 || o.files_held_back > 0 || o.traversal_capped {
         return EXIT_PARTIAL;
     }
     if o.chunks_planned == 0 {
@@ -452,12 +448,8 @@ async fn execute(c: &Client, args: &RunArgs, log: &mut Log) -> Finished {
     }
 
     log.stage("submit starting");
-    let submit_args = submit::SubmitArgs {
-        run_id,
-        dry_run: false,
-        no_auto: args.no_auto,
-        json: false,
-    };
+    let submit_args =
+        submit::SubmitArgs { run_id, dry_run: false, no_auto: args.no_auto, json: false };
     let report = match submit::run(c, &submit_args).await {
         Ok(r) => r,
         Err(e) => {
@@ -625,10 +617,7 @@ fn classify(e: &CliError, default: Failure) -> Failure {
 /// otherwise walk the corpus, open a run record and then fail.
 fn precheck(args: &RunArgs) -> Result<()> {
     if !matches!(args.source.as_str(), "claude" | "codex" | "all") {
-        return Err(err(format!(
-            "unknown source `{}`. Use claude, codex or all",
-            args.source
-        )));
+        return Err(err(format!("unknown source `{}`. Use claude, codex or all", args.source)));
     }
     if let Some(since) = args.since.as_deref() {
         plan::parse_since(since)?;
@@ -642,12 +631,7 @@ fn precheck(args: &RunArgs) -> Result<()> {
     // an outage.
     let env = crate::config::ProcessEnv;
     let file = crate::config::FileConfig::load(crate::config::config_path(&env));
-    provider::resolve(
-        &args.provider,
-        &file,
-        args.model.as_deref(),
-        args.base_url.as_deref(),
-    )?;
+    provider::resolve(&args.provider, &file, args.model.as_deref(), args.base_url.as_deref())?;
 
     // `extract` refuses to send without `--yes` when nothing can answer a prompt, and it refuses
     // after the walk. Refusing here costs the walk nothing. A dry run sends no chunk, so it is

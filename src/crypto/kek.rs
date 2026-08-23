@@ -114,8 +114,8 @@ impl KeyProvider for EnvKeyProvider {
 /// hex, truncated to 32 characters.
 pub fn fingerprint(kek: &Kek) -> String {
     // HMAC accepts a key of any length, so this construction cannot fail for a 32-byte key.
-    let mut mac = Hmac::<Sha256>::new_from_slice(&kek[..])
-        .expect("HMAC-SHA256 takes a key of any length");
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(&kek[..]).expect("HMAC-SHA256 takes a key of any length");
     mac.update(FINGERPRINT_LABEL);
     // 128 bits of the tag. Enough to notice a swapped key, and truncation costs nothing here
     // because the value is compared for equality and never used as a secret.

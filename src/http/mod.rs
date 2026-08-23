@@ -24,10 +24,12 @@ use crate::adapters::auth::{
 use crate::config::AuthMode;
 use crate::domain::errors::DomainError;
 use crate::domain::types::{Invocation, Memory, Principal, Sensitivity};
-use crate::mcp::{AppState, SessionId, Lumberroom, SERVER_NAME, SERVER_VERSION};
+use crate::mcp::{AppState, Lumberroom, SessionId, SERVER_NAME, SERVER_VERSION};
 use crate::ports::ingest::{EmissionProbe, ProposalFilter, ProposalSource, RunTotals};
 use crate::ports::{AliasOrigin, ClientStats, Staleness, ToolCallStats};
-use crate::services::{alias, cleanup, forget, history, ingest, recall, registry, review, sealed, Ctx};
+use crate::services::{
+    alias, cleanup, forget, history, ingest, recall, registry, review, sealed, Ctx,
+};
 
 pub const INVOCATION_HEADER: &str = "x-memory-invocation";
 
@@ -96,7 +98,10 @@ pub fn router(state: Arc<AppState>, auth: Arc<dyn Authenticator>) -> Router {
         // reaches either, because a model guessing a date range or inventing a rename is the
         // pattern this system refuses everywhere.
         .route("/admin/memory/{id}/history", get(admin_memory_history))
-        .route("/admin/alias", post(admin_alias_put).get(admin_alias_list).delete(admin_alias_forget))
+        .route(
+            "/admin/alias",
+            post(admin_alias_put).get(admin_alias_list).delete(admin_alias_forget),
+        )
         .route("/admin/memory/{id}", get(admin_memory_get).delete(admin_memory_delete))
         .route("/admin/memory/{id}/supersede", post(admin_memory_supersede))
         .route("/admin/review/stale", get(admin_review_stale))
@@ -115,10 +120,7 @@ pub fn router(state: Arc<AppState>, auth: Arc<dyn Authenticator>) -> Router {
         .route("/admin/ingest/runs/{id}/close", post(admin_ingest_run_close))
         .route("/admin/ingest/scan", post(admin_ingest_scan))
         .route("/admin/ingest/emissions/check", post(admin_ingest_emissions_check))
-        .route(
-            "/admin/ingest/proposals",
-            post(admin_ingest_post).get(admin_ingest_list),
-        )
+        .route("/admin/ingest/proposals", post(admin_ingest_post).get(admin_ingest_list))
         .route("/admin/ingest/proposals/{id}", get(admin_ingest_show))
         .route("/admin/ingest/proposals/{id}/approve", post(admin_ingest_approve))
         .route("/admin/ingest/proposals/{id}/reject", post(admin_ingest_reject))
@@ -193,8 +195,7 @@ pub fn router(state: Arc<AppState>, auth: Arc<dyn Authenticator>) -> Router {
 /// own health check all reach the server that way. An entry with no port matches any port, which is
 /// what keeps this working behind a proxy that terminates on 443 and forwards to 8787.
 fn allowed_hosts(public_url: &str) -> Vec<String> {
-    let mut hosts: Vec<String> =
-        vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
+    let mut hosts: Vec<String> = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
 
     match url::Url::parse(public_url).ok().and_then(|u| u.host_str().map(str::to_string)) {
         Some(host) if !hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) => hosts.push(host),
@@ -217,9 +218,8 @@ async fn authenticate_mcp(
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    let invocation = Invocation::parse(
-        req.headers().get(INVOCATION_HEADER).and_then(|v| v.to_str().ok()),
-    );
+    let invocation =
+        Invocation::parse(req.headers().get(INVOCATION_HEADER).and_then(|v| v.to_str().ok()));
     let session = session_id(req.headers());
 
     match http.auth.authenticate(header.as_deref()).await {
@@ -247,10 +247,7 @@ fn unauthorized(http: &Http, header: Option<&str>, e: &DomainError) -> Response 
     let error = if presented { "invalid_token" } else { "" };
     (
         StatusCode::UNAUTHORIZED,
-        [(
-            axum::http::header::WWW_AUTHENTICATE,
-            www_authenticate(&http.state.cfg, error),
-        )],
+        [(axum::http::header::WWW_AUTHENTICATE, www_authenticate(&http.state.cfg, error))],
         Json(serde_json::json!({ "error": "unauthorized", "detail": e.client_message() })),
     )
         .into_response()
@@ -268,9 +265,7 @@ fn session_id(headers: &HeaderMap) -> SessionId {
 }
 
 async fn resolve(http: &Http, headers: &HeaderMap) -> Result<Principal, Response> {
-    let header = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
+    let header = headers.get(axum::http::header::AUTHORIZATION).and_then(|v| v.to_str().ok());
     http.auth.authenticate(header).await.map_err(|e| unauthorized(http, header, &e))
 }
 
@@ -442,8 +437,13 @@ fn tool_stats_body(
     let calls: i64 = rows.iter().map(|r| r.calls).sum();
     let failures: i64 = rows.iter().map(|r| r.failures).sum();
     let unprompted: i64 = rows.iter().map(|r| r.unprompted).sum();
-    let rate =
-        |n: i64| if calls > 0 { Some((n as f64 / calls as f64 * 1000.0).round() / 1000.0) } else { None };
+    let rate = |n: i64| {
+        if calls > 0 {
+            Some((n as f64 / calls as f64 * 1000.0).round() / 1000.0)
+        } else {
+            None
+        }
+    };
     serde_json::json!({
         "window_hours": hours,
         "scope": scope,
@@ -1043,7 +1043,8 @@ async fn admin_export(
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
     let offset = q.offset.unwrap_or(0).max(0);
 
-    let rows = match ctx.repos.memories.list_for_export(ctx.tenant(), ceiling, limit, offset).await {
+    let rows = match ctx.repos.memories.list_for_export(ctx.tenant(), ceiling, limit, offset).await
+    {
         Ok(r) => r,
         Err(e) => return domain_error(&e, "export_failed"),
     };
@@ -1131,8 +1132,14 @@ async fn admin_sealed_delete(
         Ok(c) => c,
         Err(r) => return r,
     };
-    match forget::sealed_item(&ctx, &q.namespace, &q.key_hmac, Some("deleted through lumberroom"), false)
-        .await
+    match forget::sealed_item(
+        &ctx,
+        &q.namespace,
+        &q.key_hmac,
+        Some("deleted through lumberroom"),
+        false,
+    )
+    .await
     {
         Ok(outcome) => {
             Json(serde_json::json!({ "deleted": outcome.count > 0, "count": outcome.count }))
@@ -1452,14 +1459,10 @@ struct PostProposals {
 
 fn fact_input(f: FactBody) -> ingest::FactInput {
     let source = ProposalSource {
-        source_key: f
-            .source
-            .source_key
-            .clone()
-            .unwrap_or_else(|| match &f.source.entry_uuid {
-                Some(entry) => format!("{}#{entry}", f.source.file_path),
-                None => f.source.file_path.clone(),
-            }),
+        source_key: f.source.source_key.clone().unwrap_or_else(|| match &f.source.entry_uuid {
+            Some(entry) => format!("{}#{entry}", f.source.file_path),
+            None => f.source.file_path.clone(),
+        }),
         file_path: f.source.file_path,
         session_id: f.source.session_id,
         is_sidechain: f.source.is_sidechain,
@@ -1775,7 +1778,8 @@ fn conflict_side(m: &Memory) -> serde_json::Value {
 
 async fn not_found(req: Request) -> Response {
     let path = req.uri().path().to_string();
-    (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "not_found", "path": path }))).into_response()
+    (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "not_found", "path": path })))
+        .into_response()
 }
 
 fn forbidden(e: &DomainError) -> Response {
@@ -1867,7 +1871,8 @@ mod tests {
     #[test]
     fn a_narrow_token_never_learns_that_another_client_exists() {
         let rows = vec![tool_row("browser", 3, 1), tool_row("claude-code-mac", 40, 7)];
-        let body = tool_stats_body(rows, 24, &caller("browser", vec![NamespaceGrant::open("user:me")]));
+        let body =
+            tool_stats_body(rows, 24, &caller("browser", vec![NamespaceGrant::open("user:me")]));
         assert_eq!(body["scope"], "self");
         let printed = body["by_tool"].as_array().expect("by_tool is a list");
         assert_eq!(printed.len(), 1);

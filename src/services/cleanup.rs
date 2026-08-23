@@ -338,25 +338,25 @@ async fn pass(
             })
             .collect();
         let outcome = queue_checked(
-                tenant,
-                repo,
-                NewProposal {
-                    kind: CleanupKind::Exact,
-                    namespace: keep.namespace.clone(),
-                    keep_id: Some(keep.id.clone()),
-                    rationale: format!(
-                        "{} rows hold the same text once case and spacing are normalised. The \
+            tenant,
+            repo,
+            NewProposal {
+                kind: CleanupKind::Exact,
+                namespace: keep.namespace.clone(),
+                keep_id: Some(keep.id.clone()),
+                rationale: format!(
+                    "{} rows hold the same text once case and spacing are normalised. The \
                          oldest survives, because it carries the reads and the date anything else \
                          refers to.",
-                        group.len()
-                    ),
-                    produced_by: "exact".to_string(),
-                    similarity: Some(1.0),
-                    posted_by: posted_by.clone(),
-                    members,
-                },
-            )
-            .await?;
+                    group.len()
+                ),
+                produced_by: "exact".to_string(),
+                similarity: Some(1.0),
+                posted_by: posted_by.clone(),
+                members,
+            },
+        )
+        .await?;
         tally(&outcome.0, &mut report);
     }
 
@@ -374,35 +374,35 @@ async fn pass(
         if pair.similarity >= NEAR_CERTAIN {
             report.near_certain_pairs += 1;
             let outcome = queue_checked(
-                    tenant,
-                    repo,
-                    NewProposal {
-                        kind: CleanupKind::Paraphrase,
-                        namespace: pair.older.namespace.clone(),
-                        keep_id: Some(pair.newer.id.clone()),
-                        rationale: format!(
-                            "these two say the same thing at a cosine of {:.3}. The newer one \
+                tenant,
+                repo,
+                NewProposal {
+                    kind: CleanupKind::Paraphrase,
+                    namespace: pair.older.namespace.clone(),
+                    keep_id: Some(pair.newer.id.clone()),
+                    rationale: format!(
+                        "these two say the same thing at a cosine of {:.3}. The newer one \
                              survives, because a restatement is usually a correction.",
-                            pair.similarity
-                        ),
-                        produced_by: "cosine".to_string(),
-                        similarity: Some(pair.similarity),
-                        posted_by: posted_by.clone(),
-                        members: vec![
-                            NewMember {
-                                memory_id: pair.newer.id.clone(),
-                                disposition: Disposition::Keep,
-                                seen_content: pair.newer.content.clone(),
-                            },
-                            NewMember {
-                                memory_id: pair.older.id.clone(),
-                                disposition: Disposition::Retire,
-                                seen_content: pair.older.content.clone(),
-                            },
-                        ],
-                    },
-                )
-                .await?;
+                        pair.similarity
+                    ),
+                    produced_by: "cosine".to_string(),
+                    similarity: Some(pair.similarity),
+                    posted_by: posted_by.clone(),
+                    members: vec![
+                        NewMember {
+                            memory_id: pair.newer.id.clone(),
+                            disposition: Disposition::Keep,
+                            seen_content: pair.newer.content.clone(),
+                        },
+                        NewMember {
+                            memory_id: pair.older.id.clone(),
+                            disposition: Disposition::Retire,
+                            seen_content: pair.older.content.clone(),
+                        },
+                    ],
+                },
+            )
+            .await?;
             tally(&outcome.0, &mut report);
             continue;
         }
@@ -440,27 +440,27 @@ async fn pass(
             report.stale_rows += 1;
             let age = (Utc::now() - row.created_at).num_days();
             let outcome = queue_checked(
-                    tenant,
-                    repo,
-                    NewProposal {
-                        kind: CleanupKind::Stale,
-                        namespace: row.namespace.clone(),
-                        keep_id: None,
-                        rationale: format!(
-                            "nothing has read this in the {age} days since it was written, and \
+                tenant,
+                repo,
+                NewProposal {
+                    kind: CleanupKind::Stale,
+                    namespace: row.namespace.clone(),
+                    keep_id: None,
+                    rationale: format!(
+                        "nothing has read this in the {age} days since it was written, and \
                              nothing has confirmed it."
-                        ),
-                        produced_by: "unread".to_string(),
-                        similarity: None,
-                        posted_by: posted_by.clone(),
-                        members: vec![NewMember {
-                            memory_id: row.id.clone(),
-                            disposition: Disposition::Retire,
-                            seen_content: row.content.clone(),
-                        }],
-                    },
-                )
-                .await?;
+                    ),
+                    produced_by: "unread".to_string(),
+                    similarity: None,
+                    posted_by: posted_by.clone(),
+                    members: vec![NewMember {
+                        memory_id: row.id.clone(),
+                        disposition: Disposition::Retire,
+                        seen_content: row.content.clone(),
+                    }],
+                },
+            )
+            .await?;
             tally(&outcome.0, &mut report);
         }
     }
@@ -507,7 +507,9 @@ pub async fn queue_checked(
     let latest = p
         .members
         .iter()
-        .filter_map(|m| times.get(&m.memory_id).copied().flatten().map(|t| (t, m.memory_id.clone())))
+        .filter_map(|m| {
+            times.get(&m.memory_id).copied().flatten().map(|t| (t, m.memory_id.clone()))
+        })
         .max_by_key(|(t, _)| *t);
 
     let Some((latest_at, latest_id)) = latest else {
@@ -735,8 +737,13 @@ pub async fn apply(ctx: &Ctx, repo: &dyn CleanupRepository, id: &str) -> Result<
         }
     }
 
-    let mut applied =
-        Applied { id: p.id.clone(), kind: p.kind, retired: Vec::new(), deleted: Vec::new(), kept: p.keep_id.clone() };
+    let mut applied = Applied {
+        id: p.id.clone(),
+        kind: p.kind,
+        retired: Vec::new(),
+        deleted: Vec::new(),
+        kept: p.keep_id.clone(),
+    };
 
     for m in p.members.iter().filter(|m| m.disposition == Disposition::Retire) {
         if p.kind.deletes() {
@@ -995,7 +1002,10 @@ mod tests {
     #[test]
     fn the_tenant_wide_sweep_needs_every_namespace_at_sealed_and_not_just_the_wildcard() {
         assert!(reads_everything(&NamespaceGrant::everything()));
-        assert!(!reads_everything(&[NamespaceGrant::open("*")]), "* at open cannot see what it would close");
+        assert!(
+            !reads_everything(&[NamespaceGrant::open("*")]),
+            "* at open cannot see what it would close"
+        );
         assert!(!reads_everything(&[NamespaceGrant::new("project:*", Sensitivity::Sealed)]));
         assert!(!reads_everything(&[]));
     }

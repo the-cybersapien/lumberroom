@@ -19,7 +19,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
-use sqlx::PgPool;
 use lumberroom_server::adapters::auth;
 use lumberroom_server::adapters::embedding::HashEmbedder;
 use lumberroom_server::adapters::postgres;
@@ -34,6 +33,7 @@ use lumberroom_server::ports::cleanup::{CleanupRepository, NewMember, NewProposa
 use lumberroom_server::ports::ingest::IngestRepository;
 use lumberroom_server::ports::OauthStore;
 use lumberroom_server::services::{bootstrap, write, Ctx, Repos};
+use sqlx::PgPool;
 
 mod common;
 
@@ -92,10 +92,8 @@ impl Harness {
         fields: &[(&str, &str)],
         cookie: Option<&str>,
     ) -> (u16, String) {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap();
+        let client =
+            reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
         let mut req = client.post(format!("{}{path}", self.base)).form(fields);
         if let Some(c) = cookie {
             req = req.header("cookie", c);
@@ -391,9 +389,8 @@ async fn queued(
 /// The hidden token the page minted for one finding and one act.
 fn token_for(html: &str, id: &str, action: &str) -> String {
     let form = format!("/console/cleanup/{id}/{action}");
-    let at = html
-        .find(&form)
-        .unwrap_or_else(|| panic!("no {action} form for {id} on the page: {html}"));
+    let at =
+        html.find(&form).unwrap_or_else(|| panic!("no {action} form for {id} on the page: {html}"));
     let rest = &html[at..];
     let key = "name=\"csrf\" value=\"";
     let start = rest.find(key).expect("the form carries no csrf field") + key.len();
@@ -432,9 +429,8 @@ async fn the_owner_applies_a_paraphrase_from_the_page_and_the_store_retires_the_
     );
 
     let csrf = token_for(&html, &id, "apply");
-    let (status, body) = h
-        .post(&format!("/console/cleanup/{id}/apply"), &[("csrf", &csrf)], Some(&h.cookie))
-        .await;
+    let (status, body) =
+        h.post(&format!("/console/cleanup/{id}/apply"), &[("csrf", &csrf)], Some(&h.cookie)).await;
     assert_eq!(status, 303, "an apply answers with a redirect so a refresh does not resubmit");
     assert!(body.contains("/console/cleanup?done=applied"), "the outcome travels back: {body}");
 
@@ -459,22 +455,16 @@ async fn the_owner_applies_a_paraphrase_from_the_page_and_the_store_retires_the_
 async fn applying_a_stale_finding_deletes_the_row_rather_than_answering_403() {
     let h = harness_or_skip!();
     let doomed = fact(&h, &format!("an old note nothing ever read {}", nonce("stale"))).await;
-    let id = queued(
-        &h,
-        CleanupKind::Stale,
-        "nothing has read this in ninety days",
-        None,
-        &[&doomed],
-    )
-    .await;
+    let id =
+        queued(&h, CleanupKind::Stale, "nothing has read this in ninety days", None, &[&doomed])
+            .await;
 
     let (_, html) = h.get("/console/cleanup").await;
     assert!(html.contains("Apply, deleting"), "the button says which act it is: {html}");
     let csrf = token_for(&html, &id, "apply");
 
-    let (status, body) = h
-        .post(&format!("/console/cleanup/{id}/apply"), &[("csrf", &csrf)], Some(&h.cookie))
-        .await;
+    let (status, body) =
+        h.post(&format!("/console/cleanup/{id}/apply"), &[("csrf", &csrf)], Some(&h.cookie)).await;
     assert_eq!(status, 303, "a 403 here means the console's principal cannot delete: {body}");
     assert_eq!(stored_content(&h, &doomed.0).await, None, "the row has to be gone");
     assert_eq!(state_of(&h, &id).await, "applied");
@@ -487,8 +477,8 @@ async fn a_contradiction_carries_no_apply_control_and_the_page_says_why() {
     let h = harness_or_skip!();
     let a = fact(&h, &format!("the port is 8080 {}", nonce("ca"))).await;
     let b = fact(&h, &format!("the port is 8787 {}", nonce("cb"))).await;
-    let id = queued(&h, CleanupKind::Contradiction, "these two cannot both hold", None, &[&a, &b])
-        .await;
+    let id =
+        queued(&h, CleanupKind::Contradiction, "these two cannot both hold", None, &[&a, &b]).await;
 
     let (status, html) = h.get("/console/cleanup").await;
     assert_eq!(status, 200);
@@ -501,10 +491,7 @@ async fn a_contradiction_carries_no_apply_control_and_the_page_says_why() {
         html.contains(&format!("/console/cleanup/{id}/resolve")),
         "no Apply, but there has to be a way to settle it"
     );
-    assert!(
-        html.contains(&format!("/console/cleanup/{id}/reject")),
-        "it can still be refused"
-    );
+    assert!(html.contains(&format!("/console/cleanup/{id}/reject")), "it can still be refused");
 
     // The token the page did mint, spent on the act it was not minted for.
     let rejecting = token_for(&html, &id, "reject");
@@ -526,8 +513,7 @@ async fn a_token_minted_for_one_finding_cannot_decide_another() {
     let other_keep = fact(&h, &format!("the second survivor {}", nonce("tk"))).await;
     let other = fact(&h, &format!("the second retiree {}", nonce("tr"))).await;
 
-    let first =
-        queued(&h, CleanupKind::Paraphrase, "one finding", Some(&keep), &[&mine]).await;
+    let first = queued(&h, CleanupKind::Paraphrase, "one finding", Some(&keep), &[&mine]).await;
     let second =
         queued(&h, CleanupKind::Exact, "another finding", Some(&other_keep), &[&other]).await;
 
@@ -565,8 +551,9 @@ async fn a_stranger_holding_a_token_still_decides_nothing() {
     let h = harness_or_skip!();
     let keep = fact(&h, &format!("a survivor {}", nonce("sk"))).await;
     let retire = fact(&h, &format!("a retiree {}", nonce("sr"))).await;
-    let id = queued(&h, CleanupKind::Paraphrase, "a finding a stranger wants", Some(&keep), &[&retire])
-        .await;
+    let id =
+        queued(&h, CleanupKind::Paraphrase, "a finding a stranger wants", Some(&keep), &[&retire])
+            .await;
 
     let (status, body) = h.get_anonymous("/console/cleanup").await;
     assert_eq!(status, 303, "the page answered {status} to a request with no session");
@@ -591,8 +578,9 @@ async fn a_rejection_from_the_page_records_the_reason_and_retires_nothing() {
     let h = harness_or_skip!();
     let keep = fact(&h, &format!("a survivor {}", nonce("rk"))).await;
     let retire = fact(&h, &format!("a retiree {}", nonce("rr"))).await;
-    let id = queued(&h, CleanupKind::Paraphrase, "not the same fact at all", Some(&keep), &[&retire])
-        .await;
+    let id =
+        queued(&h, CleanupKind::Paraphrase, "not the same fact at all", Some(&keep), &[&retire])
+            .await;
 
     let (_, html) = h.get("/console/cleanup").await;
     let csrf = token_for(&html, &id, "reject");
@@ -633,12 +621,14 @@ async fn a_member_edited_since_the_pass_read_it_is_marked_and_the_apply_is_refus
 
     let (status, html) = h.get("/console/cleanup").await;
     assert_eq!(status, 200);
-    assert!(html.contains("EDITED SINCE"), "the page marks it before the button is pressed: {html}");
+    assert!(
+        html.contains("EDITED SINCE"),
+        "the page marks it before the button is pressed: {html}"
+    );
 
     let csrf = token_for(&html, &id, "apply");
-    let (status, body) = h
-        .post(&format!("/console/cleanup/{id}/apply"), &[("csrf", &csrf)], Some(&h.cookie))
-        .await;
+    let (status, body) =
+        h.post(&format!("/console/cleanup/{id}/apply"), &[("csrf", &csrf)], Some(&h.cookie)).await;
     assert_eq!(status, 409, "the store moved under the proposal, so it is refused: {body}");
     assert_eq!(state_of(&h, &id).await, "proposed", "and the finding is still waiting");
     assert_eq!(superseded_by(&h, &retire.0).await, None);

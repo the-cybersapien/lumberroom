@@ -199,7 +199,8 @@ pub async fn by_query(
 
     let asked = match requested {
         Some(list) if !list.is_empty() => {
-            let mut out = list.iter().map(|n| namespaces::normalize(n)).collect::<Result<Vec<_>>>()?;
+            let mut out =
+                list.iter().map(|n| namespaces::normalize(n)).collect::<Result<Vec<_>>>()?;
             namespaces::dedupe(&mut out);
             out
         }
@@ -465,7 +466,8 @@ fn consequences(rows: &[Doomed]) -> Vec<String> {
     let mut out = Vec::new();
     if rows.iter().any(|r| r.sensitivity == Sensitivity::Open) {
         out.push(
-            "open: the row goes. A plaintext backup taken before now still contains it.".to_string(),
+            "open: the row goes. A plaintext backup taken before now still contains it."
+                .to_string(),
         );
     }
     if rows.iter().any(|r| r.sensitivity == Sensitivity::Private) {
@@ -591,7 +593,8 @@ mod tests {
 
     #[test]
     fn a_head_revives_only_predecessors_the_caller_could_delete() {
-        let p = principal(vec![NamespaceGrant::open("user:me")], vec![NamespaceGrant::open("user:me")]);
+        let p =
+            principal(vec![NamespaceGrant::open("user:me")], vec![NamespaceGrant::open("user:me")]);
         let mine = link("user:me", Sensitivity::Open);
         let plan = plan_for(&p, &head_with(vec![mine.clone()]));
         assert_eq!(plan, Plan::Apply(DeletePlan { revive: vec![mine.id], splice_to: None }));
@@ -599,14 +602,16 @@ mod tests {
 
     #[test]
     fn a_head_whose_predecessor_is_above_the_ceiling_blocks_the_delete() {
-        let p = principal(vec![NamespaceGrant::open("user:me")], vec![NamespaceGrant::open("user:me")]);
+        let p =
+            principal(vec![NamespaceGrant::open("user:me")], vec![NamespaceGrant::open("user:me")]);
         let private = link("user:me", Sensitivity::Private);
         assert_eq!(plan_for(&p, &head_with(vec![private])), Plan::Blocked);
     }
 
     #[test]
     fn a_head_whose_predecessor_is_in_another_namespace_blocks_the_delete() {
-        let p = principal(vec![NamespaceGrant::open("user:me")], vec![NamespaceGrant::open("user:me")]);
+        let p =
+            principal(vec![NamespaceGrant::open("user:me")], vec![NamespaceGrant::open("user:me")]);
         let foreign = link("personal:finance", Sensitivity::Open);
         assert_eq!(plan_for(&p, &head_with(vec![foreign])), Plan::Blocked);
     }
@@ -614,7 +619,10 @@ mod tests {
     #[test]
     fn a_read_grant_alone_does_not_let_a_delete_revive_a_row() {
         let p = principal(vec![NamespaceGrant::open("user:me")], vec![]);
-        assert_eq!(plan_for(&p, &head_with(vec![link("user:me", Sensitivity::Open)])), Plan::Blocked);
+        assert_eq!(
+            plan_for(&p, &head_with(vec![link("user:me", Sensitivity::Open)])),
+            Plan::Blocked
+        );
     }
 
     #[test]
@@ -670,7 +678,12 @@ mod tests {
         let text = render(false, &rows, &consequences(&rows), &edits, &["z".to_string()]);
         assert!(text.contains("Revived 1 row this had retired: p"), "{text}");
         assert!(text.contains("Re-pointed 2 retired rows at the successor"), "{text}");
-        assert!(text.contains("Left alone 1 row whose deletion would revive a row outside your grant: z"), "{text}");
+        assert!(
+            text.contains(
+                "Left alone 1 row whose deletion would revive a row outside your grant: z"
+            ),
+            "{text}"
+        );
 
         let empty = render(true, &[], &[], &Edits::default(), &["z".to_string()]);
         assert!(empty.contains("Nothing would be deleted"), "{empty}");

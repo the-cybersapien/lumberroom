@@ -483,11 +483,9 @@ fn env_bool(key: &str, fallback: bool) -> bool {
 
 fn env_list(key: &str, fallback: &[&str]) -> Vec<String> {
     match std::env::var(key) {
-        Ok(v) if !v.is_empty() => v
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect(),
+        Ok(v) if !v.is_empty() => {
+            v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        }
         _ => fallback.iter().map(|s| s.to_string()).collect(),
     }
 }
@@ -500,9 +498,9 @@ fn parse_fusion(raw: &str) -> Result<Fusion> {
     match raw.trim() {
         "linear" | "" => Ok(Fusion::Linear),
         "rrf" => Ok(Fusion::Rrf),
-        other => Err(DomainError::validation(format!(
-            "SEARCH_FUSION must be linear|rrf, got {other:?}"
-        ))),
+        other => {
+            Err(DomainError::validation(format!("SEARCH_FUSION must be linear|rrf, got {other:?}")))
+        }
     }
 }
 
@@ -747,7 +745,10 @@ pub fn load() -> Result<Config> {
         port: env_num("PORT", 8787u16)?,
         host: env("HOST", "0.0.0.0"),
         tenant_id: env("TENANT_ID", "me"),
-        database_url: env("DATABASE_URL", "postgres://lumberroom:lumberroom@127.0.0.1:5432/lumberroom"),
+        database_url: env(
+            "DATABASE_URL",
+            "postgres://lumberroom:lumberroom@127.0.0.1:5432/lumberroom",
+        ),
         run_migrations_on_boot: env_bool("RUN_MIGRATIONS_ON_BOOT", true),
         auth: AuthConfig {
             mode,
@@ -807,10 +808,7 @@ pub fn load() -> Result<Config> {
             defaults: sensitivity_defaults_env.clone().unwrap_or_default(),
             defaults_from_env: sensitivity_defaults_env.is_some(),
             tripwire: env_bool("SENSITIVITY_TRIPWIRE", true),
-            max_write_sensitivity: env_sensitivity(
-                "MAX_WRITE_SENSITIVITY",
-                Sensitivity::Private,
-            )?,
+            max_write_sensitivity: env_sensitivity("MAX_WRITE_SENSITIVITY", Sensitivity::Private)?,
             // A memory is a fact, not a transcript, and 8000 characters is generous for one. It
             // moves for one reason: a retrieval benchmark stores whole chat sessions as single
             // documents, and refusing those would measure the cap rather than the ranking.
@@ -1147,8 +1145,9 @@ mod tests {
 
     #[test]
     fn reads_compact_client_token_pairs() {
-        let g = parse_grants("mac:abcdefghijklmnopqrstuvwxyz,browser:abcdefghijklmnopqrstuvwxyz", "")
-            .unwrap();
+        let g =
+            parse_grants("mac:abcdefghijklmnopqrstuvwxyz,browser:abcdefghijklmnopqrstuvwxyz", "")
+                .unwrap();
         assert_eq!(g.len(), 2);
         assert_eq!(g[0].client, "mac");
         assert_eq!(g[0].read_grants(), NamespaceGrant::everything());
@@ -1195,7 +1194,8 @@ mod tests {
 
     #[test]
     fn a_phase_one_grant_stays_valid_and_gains_nothing() {
-        let g = parse_grants(r#"[{"client":"chatgpt","token":"t","read":["user:me"]}]"#, "").unwrap();
+        let g =
+            parse_grants(r#"[{"client":"chatgpt","token":"t","read":["user:me"]}]"#, "").unwrap();
         assert_eq!(
             g[0].read_grants()[0].max,
             Sensitivity::Open,
@@ -1386,7 +1386,10 @@ mod tests {
         auth.allowed_subjects = vec![];
         let err = validate_oidc(&auth).unwrap_err();
         let msg = err.client_message();
-        assert!(msg.contains("OIDC_ALLOWED_SUBJECTS"), "the refusal has to name the setting: {msg}");
+        assert!(
+            msg.contains("OIDC_ALLOWED_SUBJECTS"),
+            "the refusal has to name the setting: {msg}"
+        );
         assert!(msg.contains("sub"), "and where to find the value: {msg}");
     }
 

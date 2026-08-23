@@ -18,7 +18,8 @@ fn client_grant_wire_names() -> Vec<String> {
         .expect("ClientGrant struct body must precede its impl block");
     let body = &src[struct_start..struct_end];
 
-    let mut names = vec!["client".to_string(), "token".to_string(), "read".to_string(), "write".to_string()];
+    let mut names =
+        vec!["client".to_string(), "token".to_string(), "read".to_string(), "write".to_string()];
     for line in body.lines() {
         if let Some(idx) = line.find("rename = \"") {
             let rest = &line[idx + "rename = \"".len()..];
@@ -38,7 +39,10 @@ fn permissions_doc() -> String {
 fn every_client_grant_field_is_documented() {
     let doc = permissions_doc();
     let names = client_grant_wire_names();
-    assert!(names.len() >= 9, "extraction should find client, token, read, write, and five renamed flags");
+    assert!(
+        names.len() >= 9,
+        "extraction should find client, token, read, write, and five renamed flags"
+    );
 
     for name in &names {
         assert!(
@@ -53,7 +57,10 @@ fn every_client_grant_field_is_documented() {
 fn the_unrestricted_read_asymmetry_is_stated() {
     let doc = permissions_doc();
     for term in ["effective_sealed_capable", "effective_may_delete", "mayDelete", "sealedCapable"] {
-        assert!(doc.contains(term), "docs/permissions.md must name `{term}` to state the asymmetry");
+        assert!(
+            doc.contains(term),
+            "docs/permissions.md must name `{term}` to state the asymmetry"
+        );
     }
 }
 

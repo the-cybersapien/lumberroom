@@ -113,12 +113,10 @@ pub async fn verify_kek(
     fingerprint: &str,
     provider: &str,
 ) -> Result<KekCheck> {
-    let recorded = sqlx::query(
-        "SELECT kek_id, fingerprint FROM kek_state WHERE tenant_id = $1",
-    )
-    .bind(tenant)
-    .fetch_optional(pool)
-    .await?;
+    let recorded = sqlx::query("SELECT kek_id, fingerprint FROM kek_state WHERE tenant_id = $1")
+        .bind(tenant)
+        .fetch_optional(pool)
+        .await?;
 
     let Some(row) = recorded else {
         // Boot is single-process, so this is not a race in practice. ON CONFLICT DO NOTHING keeps
@@ -171,12 +169,11 @@ pub async fn sensitivity_defaults(
 ) -> Result<Vec<(String, crate::domain::types::Sensitivity)>> {
     use crate::domain::types::Sensitivity;
 
-    let rows = sqlx::query(
-        "SELECT pattern, sensitivity FROM sensitivity_default WHERE tenant_id = $1",
-    )
-    .bind(tenant)
-    .fetch_all(pool)
-    .await?;
+    let rows =
+        sqlx::query("SELECT pattern, sensitivity FROM sensitivity_default WHERE tenant_id = $1")
+            .bind(tenant)
+            .fetch_all(pool)
+            .await?;
 
     let mut out = Vec::with_capacity(rows.len());
     for row in &rows {
@@ -210,14 +207,15 @@ pub async fn assert_embedding_dim(pool: &PgPool, expected: usize) -> Result<usiz
     .await?;
 
     let ty: String = row
-        .ok_or_else(|| DomainError::internal("memory.embedding column not found — did migrations run?"))?
+        .ok_or_else(|| {
+            DomainError::internal("memory.embedding column not found — did migrations run?")
+        })?
         .get("type");
 
-    let actual: usize = ty
-        .trim_start_matches("vector(")
-        .trim_end_matches(')')
-        .parse()
-        .map_err(|_| DomainError::internal(format!("cannot read embedding dimension from {ty:?}")))?;
+    let actual: usize =
+        ty.trim_start_matches("vector(").trim_end_matches(')').parse().map_err(|_| {
+            DomainError::internal(format!("cannot read embedding dimension from {ty:?}"))
+        })?;
 
     if actual != expected {
         return Err(DomainError::internal(format!(

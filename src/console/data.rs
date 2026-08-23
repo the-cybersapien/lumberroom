@@ -109,9 +109,8 @@ impl Entry {
 }
 
 fn month(d: DateTime<Utc>) -> &'static str {
-    const NAMES: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
+    const NAMES: [&str; 12] =
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     NAMES[(d.month0() as usize).min(11)]
 }
 
@@ -433,16 +432,26 @@ async fn chain(ctx: &Ctx, row: &Memory) -> Result<(Timeline, Vec<String>)> {
 /// a model that forgot to say which project it is in and wrong for a reader who asked the whole
 /// document a question: it would rank a personal fact below a global one for no reason the reader
 /// can see.
-pub async fn answer(ctx: &Ctx, readable: &[NamespaceCeiling], query: &str, limit: i64) -> Result<Answer> {
+pub async fn answer(
+    ctx: &Ctx,
+    readable: &[NamespaceCeiling],
+    query: &str,
+    limit: i64,
+) -> Result<Answer> {
     let named: Vec<String> = readable.iter().map(|c| c.namespace.clone()).collect();
     let result = search::run(ctx, query, Some(named), Some(limit), None, Some(false), None).await?;
 
-    let mut out = Answer { query: query.to_string(), namespaces: result.namespaces, ..Answer::default() };
+    let mut out =
+        Answer { query: query.to_string(), namespaces: result.namespaces, ..Answer::default() };
     for hit in result.hits {
         let entry = Entry {
             id: hit.id,
             namespace: hit.namespace,
-            content: if hit.sensitivity == Sensitivity::Sealed { String::new() } else { hit.content },
+            content: if hit.sensitivity == Sensitivity::Sealed {
+                String::new()
+            } else {
+                hit.content
+            },
             tags: hit.tags,
             source_client: hit.source_client,
             sensitivity: hit.sensitivity,
@@ -654,14 +663,20 @@ mod tests {
 
     #[test]
     fn a_sealed_row_carries_no_content_past_this_layer() {
-        let entry = Entry::from_memory(&memory("ciphertext leaked into a text column", Sensitivity::Sealed));
+        let entry = Entry::from_memory(&memory(
+            "ciphertext leaked into a text column",
+            Sensitivity::Sealed,
+        ));
         assert!(entry.withheld);
         assert!(entry.content.is_empty(), "a sealed row is counted, never shown");
     }
 
     #[test]
     fn a_private_row_keeps_its_content_because_the_owner_is_reading() {
-        let entry = Entry::from_memory(&memory("Hetzner renewal lands on 4 September.", Sensitivity::Private));
+        let entry = Entry::from_memory(&memory(
+            "Hetzner renewal lands on 4 September.",
+            Sensitivity::Private,
+        ));
         assert!(!entry.withheld);
         assert_eq!(entry.content, "Hetzner renewal lands on 4 September.");
         assert_eq!(entry.sensitivity, Sensitivity::Private);

@@ -27,7 +27,8 @@ impl HashEmbedder {
             .filter(|t| !t.is_empty())
         {
             let digest = Sha256::digest(token.as_bytes());
-            let bucket = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) as usize % self.dim;
+            let bucket = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) as usize
+                % self.dim;
             // A sign from a second byte stops unrelated tokens piling up in one direction.
             let sign = if digest[4] % 2 == 0 { 1.0 } else { -1.0 };
             vec[bucket] += sign;
@@ -86,13 +87,19 @@ mod tests {
     #[tokio::test]
     async fn is_deterministic() {
         let e = HashEmbedder::new(768);
-        assert_eq!(e.embed_query("same text").await.unwrap(), e.embed_query("same text").await.unwrap());
+        assert_eq!(
+            e.embed_query("same text").await.unwrap(),
+            e.embed_query("same text").await.unwrap()
+        );
     }
 
     #[tokio::test]
     async fn scores_overlapping_text_above_unrelated_text() {
         let e = HashEmbedder::new(768);
-        let doc = e.embed_query("the memory engine embeds with bge-base at 768 dimensions").await.unwrap();
+        let doc = e
+            .embed_query("the memory engine embeds with bge-base at 768 dimensions")
+            .await
+            .unwrap();
         let near = e.embed_query("which embedding model does the memory engine use").await.unwrap();
         let far = e.embed_query("mango chutney recipe for a wedding lunch").await.unwrap();
         assert!(dot(&doc, &near) > dot(&doc, &far));

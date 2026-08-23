@@ -131,12 +131,9 @@ impl TryFrom<EvalCaseWire> for EvalCase {
 impl From<EvalCase> for EvalCaseWire {
     fn from(c: EvalCase) -> Self {
         match c.expect {
-            Expect::Id(id) => Self {
-                question: c.question,
-                expect_id: Some(id),
-                expect: None,
-                origin: c.origin,
-            },
+            Expect::Id(id) => {
+                Self { question: c.question, expect_id: Some(id), expect: None, origin: c.origin }
+            }
             Expect::Nothing => Self {
                 question: c.question,
                 expect_id: None,
@@ -154,11 +151,7 @@ fn clip(question: &str) -> String {
 
 impl EvalCase {
     pub fn hit(question: impl Into<String>, expect_id: impl Into<String>) -> Self {
-        Self {
-            question: question.into(),
-            expect: Expect::Id(expect_id.into()),
-            origin: None,
-        }
+        Self { question: question.into(), expect: Expect::Id(expect_id.into()), origin: None }
     }
 
     pub fn anti(question: impl Into<String>) -> Self {
@@ -447,10 +440,7 @@ mod tests {
 
     #[test]
     fn a_fixture_of_only_anti_cases_reports_no_recall_at_all() {
-        let results = vec![
-            (EvalCase::anti("q1"), vec![]),
-            (EvalCase::anti("q2"), ids(&["row-2"])),
-        ];
+        let results = vec![(EvalCase::anti("q1"), vec![]), (EvalCase::anti("q2"), ids(&["row-2"]))];
         let r = score(&results, EVAL_LIMIT);
         assert_eq!(r.recall_at_1, None);
         assert_eq!(r.recall_at_5, None);
@@ -515,12 +505,14 @@ mod tests {
         let e = serde_json::from_str::<EvalCase>(r#"{"question":"what os"}"#).unwrap_err();
         assert!(e.to_string().contains("neither expect_id nor"), "{e}");
 
-        let e = serde_json::from_str::<EvalCase>(r#"{"question":"q","expect":"maybe"}"#).unwrap_err();
+        let e =
+            serde_json::from_str::<EvalCase>(r#"{"question":"q","expect":"maybe"}"#).unwrap_err();
         assert!(e.to_string().contains("only value that means anything"), "{e}");
 
         // `"None"` is not `"none"`. Reading it as an anti-case would score a case the node client
         // scores as a normal miss.
-        let e = serde_json::from_str::<EvalCase>(r#"{"question":"q","expect":"None"}"#).unwrap_err();
+        let e =
+            serde_json::from_str::<EvalCase>(r#"{"question":"q","expect":"None"}"#).unwrap_err();
         assert!(e.to_string().contains("only value that means anything"), "{e}");
 
         let both = r#"{"question":"q","expect":"none","expect_id":"row-1"}"#;

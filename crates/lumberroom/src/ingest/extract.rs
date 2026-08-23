@@ -116,13 +116,16 @@ pub async fn run(args: &ExtractArgs) -> Result<RunState> {
         handles.push(tokio::spawn(async move {
             let _permit = permit.acquire_owned().await.expect("the semaphore is never closed");
             let started = Instant::now();
-            let outcome = run_chunk_with_retry(&http, &provider, &system, &user, timeout_secs).await;
+            let outcome =
+                run_chunk_with_retry(&http, &provider, &system, &user, timeout_secs).await;
             // Written inside the task, not after every handle is awaited in order: a stuck chunk
             // 0 must not hold up disk writes for chunks 1..N that finished over the network while
             // it hangs, or a kill mid-run throws away work that already completed.
-            let outcome = outcome.and_then(|(output, usage)| match write_json(&paths.chunk_out(idx), &output) {
-                Ok(()) => Ok((output, usage)),
-                Err(e) => Err(("write_failed".to_string(), Some(e.message))),
+            let outcome = outcome.and_then(|(output, usage)| {
+                match write_json(&paths.chunk_out(idx), &output) {
+                    Ok(()) => Ok((output, usage)),
+                    Err(e) => Err(("write_failed".to_string(), Some(e.message))),
+                }
             });
             (idx, outcome, started.elapsed())
         }));
@@ -210,7 +213,9 @@ async fn run_chunk_with_retry(
 
         let result = match attempted {
             Ok(inner) => inner,
-            Err(_) => Err(err_code(format!("{} timed out after {timeout_secs}s", provider.name), 3)),
+            Err(_) => {
+                Err(err_code(format!("{} timed out after {timeout_secs}s", provider.name), 3))
+            }
         };
 
         match result {

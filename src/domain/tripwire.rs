@@ -79,10 +79,8 @@ fn scan_private_key_header(bytes: &[u8]) -> Option<Finding> {
     let mut at = 0;
     while let Some(offset) = find(&bytes[at..], BEGIN) {
         let start = at + offset;
-        let line_end = bytes[start..]
-            .iter()
-            .position(|&b| b == b'\n')
-            .map_or(bytes.len(), |p| start + p);
+        let line_end =
+            bytes[start..].iter().position(|&b| b == b'\n').map_or(bytes.len(), |p| start + p);
         let line = &bytes[start..line_end];
         if find(line, b"PRIVATE KEY").is_some() {
             let what = if find(line, b"RSA ").is_some() {
@@ -98,10 +96,7 @@ fn scan_private_key_header(bytes: &[u8]) -> Option<Finding> {
             } else {
                 "a private key header"
             };
-            return Some(Finding::new(
-                "pem_private_key",
-                format!("{what} at byte {start}"),
-            ));
+            return Some(Finding::new("pem_private_key", format!("{what} at byte {start}")));
         }
         at = start + BEGIN.len();
     }
@@ -133,15 +128,18 @@ fn scan_connection_string(bytes: &[u8]) -> Option<Finding> {
         if i > 0 && is_word_byte(bytes[i - 1]) {
             continue;
         }
-        let Some(scheme) = URL_SCHEMES.iter().find(|s| bytes[i..].starts_with(s.as_bytes()))
-        else {
+        let Some(scheme) = URL_SCHEMES.iter().find(|s| bytes[i..].starts_with(s.as_bytes())) else {
             continue;
         };
         let authority_start = i + scheme.len();
         let authority_end = bytes[authority_start..]
             .iter()
-            .position(|&b| matches!(b, b'/' | b'?' | b'#' | b',' | b'"' | b'\'' | b'`' | b'<' | b'>' | b')' | b']')
-                || b.is_ascii_whitespace())
+            .position(|&b| {
+                matches!(
+                    b,
+                    b'/' | b'?' | b'#' | b',' | b'"' | b'\'' | b'`' | b'<' | b'>' | b')' | b']'
+                ) || b.is_ascii_whitespace()
+            })
             .map_or(bytes.len(), |p| authority_start + p);
         let authority = &bytes[authority_start..authority_end];
 
@@ -494,15 +492,14 @@ fn match_prefix_rule(bytes: &[u8], start: usize) -> Option<Finding> {
         let matched = match rule.tail {
             Tail::AtLeast(n) => run_len(bytes, tail, is_word_byte) >= n,
             Tail::Exactly(n) => run_len(bytes, tail, is_word_byte) == n,
-            Tail::ExactlyUpper(n) => run_len(bytes, tail, is_upper_alnum_byte) == n
-                && run_len(bytes, tail, is_word_byte) == n,
+            Tail::ExactlyUpper(n) => {
+                run_len(bytes, tail, is_upper_alnum_byte) == n
+                    && run_len(bytes, tail, is_word_byte) == n
+            }
             Tail::SendGrid => matches_sendgrid(bytes, tail),
         };
         if matched {
-            return Some(Finding::new(
-                rule.rule,
-                format!("{} at byte {}", rule.what, start),
-            ));
+            return Some(Finding::new(rule.rule, format!("{} at byte {}", rule.what, start)));
         }
     }
     None
@@ -614,7 +611,9 @@ fn match_high_entropy(
     }
     Some(Finding::new(
         "high_entropy_token",
-        format!("a {len}-character high-entropy token at byte {start} ({bits:.1} bits per character)"),
+        format!(
+            "a {len}-character high-entropy token at byte {start} ({bits:.1} bits per character)"
+        ),
     ))
 }
 
@@ -1073,7 +1072,9 @@ mod tests {
         // Sixty-four characters with no word beside it is a hash.
         assert_eq!(scan(HEX64), None);
         // The word has to be inside the window.
-        let far = format!("the token rotates monthly and is stored in the vault under infra/prod. {HEX64}");
+        let far = format!(
+            "the token rotates monthly and is stored in the vault under infra/prod. {HEX64}"
+        );
         assert_eq!(scan(&far), None, "a word outside the window is not an anchor");
     }
 

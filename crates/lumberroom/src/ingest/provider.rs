@@ -308,7 +308,10 @@ pub async fn call_text(
     let status = res.status();
     if !status.is_success() {
         // The key never enters this message. Only the provider's name and the bare status do.
-        return Err(err_code(format!("{} answered HTTP {}", p.name, status.as_u16()), status.as_u16() as i32));
+        return Err(err_code(
+            format!("{} answered HTTP {}", p.name, status.as_u16()),
+            status.as_u16() as i32,
+        ));
     }
 
     let value: Value = res
@@ -441,10 +444,8 @@ fn anthropic_text<'a>(value: &'a Value, provider: &str) -> Result<&'a str> {
         .as_array()
         .ok_or_else(|| err(format!("{provider} answered with no content array")))?;
 
-    let texts: Vec<&Value> = blocks
-        .iter()
-        .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-        .collect();
+    let texts: Vec<&Value> =
+        blocks.iter().filter(|b| b.get("type").and_then(Value::as_str) == Some("text")).collect();
 
     match texts.len() {
         0 => Err(err(format!("{provider} answered with no text block"))),
@@ -471,9 +472,8 @@ pub fn parse_response(text: &str) -> Result<ChunkOutput> {
     if candidate == "<no-facts/>" {
         return Ok(ChunkOutput { facts: vec![], refusal: Some("<no-facts/>".to_string()) });
     }
-    let value = parse_json_object(text, |v| {
-        v.get("facts").is_some() || v.get("refusal").is_some()
-    })?;
+    let value =
+        parse_json_object(text, |v| v.get("facts").is_some() || v.get("refusal").is_some())?;
     serde_json::from_value(value)
         .map_err(|_| err(format!("unparseable response: {}", crate::client::truncate(text, 200))))
 }
@@ -492,7 +492,8 @@ pub fn parse_response(text: &str) -> Result<ChunkOutput> {
 /// caller asked for.
 pub fn parse_json_object(text: &str, shaped: impl Fn(&Value) -> bool) -> Result<Value> {
     let candidate = strip_fence(text.trim());
-    let unparseable = || err(format!("unparseable response: {}", crate::client::truncate(text, 200)));
+    let unparseable =
+        || err(format!("unparseable response: {}", crate::client::truncate(text, 200)));
 
     let value: Value = serde_json::from_str(candidate).map_err(|_| unparseable())?;
 
@@ -532,7 +533,11 @@ pub async fn call_json(
 /// Strips one leading ```json or ``` and one trailing ``` fence, if both are present.
 fn strip_fence(s: &str) -> &str {
     let s = s.trim();
-    let s = s.strip_prefix("```json").or_else(|| s.strip_prefix("```")).map(str::trim_start).unwrap_or(s);
+    let s = s
+        .strip_prefix("```json")
+        .or_else(|| s.strip_prefix("```"))
+        .map(str::trim_start)
+        .unwrap_or(s);
     s.strip_suffix("```").map(str::trim_end).unwrap_or(s)
 }
 
@@ -642,12 +647,16 @@ mod tests {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     fn missing_file() -> FileConfig {
-        FileConfig { path: PathBuf::from("/nonexistent-lumberroom-provider-test/config.json"), value: json!({}) }
+        FileConfig {
+            path: PathBuf::from("/nonexistent-lumberroom-provider-test/config.json"),
+            value: json!({}),
+        }
     }
 
     fn write_config(contents: &Value, mode: u32) -> FileConfig {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("lumberroom-provider-test-{}-{n}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .join(format!("lumberroom-provider-test-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.json");
         std::fs::write(&path, serde_json::to_vec(contents).unwrap()).unwrap();
@@ -664,7 +673,10 @@ mod tests {
 
     #[test]
     fn parses_a_bare_object() {
-        let out = parse_response(r#"{"facts":[{"content":"c","namespace":"user:me","source_span_id":"s1"}]}"#).unwrap();
+        let out = parse_response(
+            r#"{"facts":[{"content":"c","namespace":"user:me","source_span_id":"s1"}]}"#,
+        )
+        .unwrap();
         assert_eq!(out.facts.len(), 1);
         assert_eq!(out.facts[0].content, "c");
     }
@@ -869,7 +881,8 @@ mod tests {
 
     fn temp_config_path() -> PathBuf {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("lumberroom-keys-test-{}-{n}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("lumberroom-keys-test-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("config.json")
     }
@@ -944,7 +957,8 @@ mod tests {
         std::fs::write(&path, br#"{"ingest":{"providers":{}}}"#).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
 
-        let e = keys_set("anthropic", path.clone(), || Ok("sk-ant-secret".to_string())).unwrap_err();
+        let e =
+            keys_set("anthropic", path.clone(), || Ok("sk-ant-secret".to_string())).unwrap_err();
         assert!(e.message.contains("chmod 600"), "{}", e.message);
         // The refusal happens before the key is read, so nothing reached the disk.
         let raw = std::fs::read_to_string(&path).unwrap();
@@ -967,7 +981,6 @@ mod tests {
         assert!(!path.exists());
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
-
 }
 
 #[cfg(test)]
@@ -1006,7 +1019,8 @@ mod json_mode_shapes {
 
     #[test]
     fn a_bare_object_still_parses_exactly_as_before() {
-        let out = parse_response(r#"{"facts": [], "refusal": "<no-facts/>"}"#).expect("bare object");
+        let out =
+            parse_response(r#"{"facts": [], "refusal": "<no-facts/>"}"#).expect("bare object");
         assert_eq!(out.refusal.as_deref(), Some("<no-facts/>"));
     }
 }

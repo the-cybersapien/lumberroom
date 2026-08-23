@@ -313,8 +313,10 @@ pub async fn check_emissions(c: &Client, probes: &[EmissionProbeReq]) -> Result<
             )
             .await?;
         let body = ok(status, body, "the emission check")?;
-        let answered: Vec<bool> = serde_json::from_value(body.get("echoes").cloned().unwrap_or(json!([])))
-            .map_err(|e| err(format!("the emission check answered something unreadable: {e}")))?;
+        let answered: Vec<bool> = serde_json::from_value(
+            body.get("echoes").cloned().unwrap_or(json!([])),
+        )
+        .map_err(|e| err(format!("the emission check answered something unreadable: {e}")))?;
         if answered.len() != batch.len() {
             // A zip over a short answer would pair echoes with the wrong facts.
             return Err(err(format!(
@@ -337,13 +339,11 @@ pub async fn post_proposals(c: &Client, extractor: &str, facts: &[FactReq]) -> R
         )
         .await?;
     let body = ok(status, body, "posting proposals")?;
-    serde_json::from_value(body)
-        .map_err(|e| err(format!("the post report was unreadable: {e}")))
+    serde_json::from_value(body).map_err(|e| err(format!("the post report was unreadable: {e}")))
 }
 
 pub async fn list_proposals(c: &Client, filter: &ProposalFilter) -> Result<Vec<Proposal>> {
-    let (status, body) =
-        c.http_get(&format!("/admin/ingest/proposals{}", filter.query())).await?;
+    let (status, body) = c.http_get(&format!("/admin/ingest/proposals{}", filter.query())).await?;
     let body = ok(status, body, "listing the queue")?;
     serde_json::from_value(body.get("proposals").cloned().unwrap_or(json!([])))
         .map_err(|e| err(format!("the queue listing was unreadable: {e}")))
@@ -364,7 +364,8 @@ pub async fn approve(c: &Client, id: Uuid) -> Result<ApproveOutcome> {
         )
         .await?;
     let body = ok(status, body, "approving a proposal")?;
-    serde_json::from_value(body).map_err(|e| err(format!("the approval answer was unreadable: {e}")))
+    serde_json::from_value(body)
+        .map_err(|e| err(format!("the approval answer was unreadable: {e}")))
 }
 
 pub async fn reject(c: &Client, id: Uuid, reason: Option<&str>) -> Result<bool> {

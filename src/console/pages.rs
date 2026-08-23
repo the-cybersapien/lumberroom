@@ -20,7 +20,9 @@
 use chrono::{DateTime, Utc};
 
 use crate::authserver::pages::escape;
-use crate::console::data::{Answer, Contents, Cursor, Entry, Leaf, Page, QueueRow, QueueView, RegistryGroup};
+use crate::console::data::{
+    Answer, Contents, Cursor, Entry, Leaf, Page, QueueRow, QueueView, RegistryGroup,
+};
 use crate::domain::types::Sensitivity;
 
 /// The mark, compiled in and served at `/console/logo.svg`.
@@ -144,15 +146,23 @@ pub fn shell(title: &str, tab: Tab, health: Option<&Health>, body: &str) -> Stri
 /// The one nav. Public because two other pages render their own chrome, and each kept a private
 /// copy of this list until the cleanup tab landed on one page and not the other two.
 pub fn nav(tab: Tab) -> String {
-    [("Reading", "/console/reading", Tab::Reading), ("Write", "/console/write", Tab::Write), ("Registry", "/console/registry", Tab::Registry), ("Aliases", "/console/aliases", Tab::Aliases), ("Queue", "/console/queue", Tab::Queue), ("Cleanup", "/console/cleanup", Tab::Cleanup), ("Clients", "/console/clients", Tab::Clients)]
-        .iter()
-        .map(|(label, href, which)| {
-            format!(
-                "<a href=\"{href}\"{on}>{label}</a>",
-                on = if *which == tab { " class=\"on\"" } else { "" }
-            )
-        })
-        .collect()
+    [
+        ("Reading", "/console/reading", Tab::Reading),
+        ("Write", "/console/write", Tab::Write),
+        ("Registry", "/console/registry", Tab::Registry),
+        ("Aliases", "/console/aliases", Tab::Aliases),
+        ("Queue", "/console/queue", Tab::Queue),
+        ("Cleanup", "/console/cleanup", Tab::Cleanup),
+        ("Clients", "/console/clients", Tab::Clients),
+    ]
+    .iter()
+    .map(|(label, href, which)| {
+        format!(
+            "<a href=\"{href}\"{on}>{label}</a>",
+            on = if *which == tab { " class=\"on\"" } else { "" }
+        )
+    })
+    .collect()
 }
 
 /// The password form. The same password and the same signed cookie the consent screen uses, so
@@ -240,11 +250,7 @@ pub fn reading(
     };
     let count = match namespace {
         Some(ns) => match contents.namespaces.iter().find(|l| l.namespace == ns) {
-            Some(line) => format!(
-                "{} live, {} retired",
-                line.live,
-                line.retired
-            ),
+            Some(line) => format!("{} live, {} retired", line.live, line.retired),
             None => "nothing readable here".to_string(),
         },
         None => format!("{} entries on this page", page.entries.len()),
@@ -302,11 +308,7 @@ pub fn fact(
     min_occurred_age_secs: u64,
 ) -> String {
     let e = &leaf.entry;
-    let kicker = format!(
-        "{} entry, {}",
-        if e.retired { "Retired" } else { "Live" },
-        e.sensitivity
-    );
+    let kicker = format!("{} entry, {}", if e.retired { "Retired" } else { "Live" }, e.sensitivity);
 
     let claim = if e.withheld {
         "<div class=\"claim\">Withheld. This entry is stored at sealed and this server holds no key \
@@ -415,11 +417,7 @@ for it.</div>"
                     class = if r.current { " now" } else { " past" },
                     held = escape(&held),
                     ended = escape(&ended),
-                    value = if r.withheld {
-                        "withheld".to_string()
-                    } else {
-                        escape(&r.content)
-                    },
+                    value = if r.withheld { "withheld".to_string() } else { escape(&r.content) },
                     by = escape(&r.source_client),
                 )
             })
@@ -643,11 +641,8 @@ notebook leaves them off the page.</p></div>",
 <div class=\"pagehead\"><h2>{heading}</h2><div class=\"when\">{scope}</div>\
 <div class=\"grow\"></div>{ask}</div>{body}</main></div>",
             rail = rail(contents, None, health),
-            heading = if answer.query.is_empty() {
-                "Ask".to_string()
-            } else {
-                escape(&answer.query)
-            },
+            heading =
+                if answer.query.is_empty() { "Ask".to_string() } else { escape(&answer.query) },
             scope = escape(&if answer.namespaces.is_empty() {
                 String::new()
             } else {
@@ -836,16 +831,18 @@ aria-label=\"Ask the notebook\"><button type=\"submit\">Ask</button></form>",
 ///
 /// Every hint is a rule the store enforces anyway. The page states them so a refusal arrives as
 /// something the reader was told, rather than as a wall they walked into.
-fn write_form(draft: &Draft, csrf: &str, min_occurred_age_secs: u64, error: Option<&str>) -> String {
+fn write_form(
+    draft: &Draft,
+    csrf: &str,
+    min_occurred_age_secs: u64,
+    error: Option<&str>,
+) -> String {
     let banner = match error {
         Some(message) => format!("<p class=\"wrerr\">{}</p>", escape(message)),
         None => String::new(),
     };
     let target = match &draft.supersedes {
-        Some(id) => format!(
-            "<input type=\"hidden\" name=\"supersedes\" value=\"{}\">",
-            escape(id)
-        ),
+        Some(id) => format!("<input type=\"hidden\" name=\"supersedes\" value=\"{}\">", escape(id)),
         None => String::new(),
     };
     let replacing = match &draft.replacing {
@@ -855,21 +852,18 @@ fn write_form(draft: &Draft, csrf: &str, min_occurred_age_secs: u64, error: Opti
         ),
         None => String::new(),
     };
-    let levels: String = [
-        ("", "whatever the namespace sets"),
-        ("open", "open"),
-        ("private", "private"),
-    ]
-    .iter()
-    .map(|(value, label)| {
-        format!(
-            "<option value=\"{value}\"{on}>{label}</option>",
-            value = escape(value),
-            on = if draft.sensitivity == *value { " selected" } else { "" },
-            label = escape(label),
-        )
-    })
-    .collect();
+    let levels: String =
+        [("", "whatever the namespace sets"), ("open", "open"), ("private", "private")]
+            .iter()
+            .map(|(value, label)| {
+                format!(
+                    "<option value=\"{value}\"{on}>{label}</option>",
+                    value = escape(value),
+                    on = if draft.sensitivity == *value { " selected" } else { "" },
+                    label = escape(label),
+                )
+            })
+            .collect();
 
     format!(
         "<form class=\"f\" method=\"post\" action=\"/console/write\">\
@@ -930,9 +924,7 @@ fn rail(contents: &Contents, current: Option<&str>, health: &Health) -> String {
     let mut out = String::from("<aside class=\"rail\"><h3>Contents</h3>");
 
     if contents.namespaces.is_empty() {
-        out.push_str(
-            "<p class=\"nswhen\">Nothing readable is stored yet.</p>",
-        );
+        out.push_str("<p class=\"nswhen\">Nothing readable is stored yet.</p>");
     }
     for line in &contents.namespaces {
         let level = match (line.above_open, line.retired) {
@@ -1205,7 +1197,11 @@ fn thousands(n: i64) -> String {
 }
 
 fn plural(n: i64, one: &str, many: &str) -> String {
-    if n == 1 { one.to_string() } else { many.to_string() }
+    if n == 1 {
+        one.to_string()
+    } else {
+        many.to_string()
+    }
 }
 
 /// `19 Aug 2026`.
@@ -1451,8 +1447,10 @@ mod tests {
 
     #[test]
     fn a_private_entry_renders_its_content_and_is_marked_private() {
-        let page =
-            Page { entries: vec![entry("Hetzner renewal, 41 euro.", Sensitivity::Private)], older: None };
+        let page = Page {
+            entries: vec![entry("Hetzner renewal, 41 euro.", Sensitivity::Private)],
+            older: None,
+        };
         let html = reading(&contents(), &page, None, &health());
         assert!(html.contains("Hetzner renewal, 41 euro."));
         assert!(html.contains("class=\"e private\""), "the level travels on more than a word");
@@ -1689,10 +1687,8 @@ mod tests {
     /// reach itself.
     #[test]
     fn the_queue_marks_the_speaker_as_a_claim_and_the_auto_badge_as_the_servers_finding() {
-        let view = QueueView {
-            proposed: vec![sample_row("proposed", None)],
-            ..QueueView::default()
-        };
+        let view =
+            QueueView { proposed: vec![sample_row("proposed", None)], ..QueueView::default() };
         let html = queue(&view, &contents(), &health(), &token, None);
         assert!(html.contains("claimed: dana"), "the speaker is printed as a claim");
         assert!(html.contains("auto, poster holds write"), "the badge says what auto now means");
@@ -1735,7 +1731,10 @@ mod tests {
     #[test]
     fn the_queue_page_shows_a_refusal_it_holds_rather_than_hiding_it() {
         let view = QueueView {
-            proposed: vec![sample_row("proposed", Some("rule credentials.tripwire: matched a key"))],
+            proposed: vec![sample_row(
+                "proposed",
+                Some("rule credentials.tripwire: matched a key"),
+            )],
             written: vec![],
             rejected: vec![],
         };
@@ -1745,10 +1744,8 @@ mod tests {
 
     #[test]
     fn a_waiting_row_carries_an_approve_and_a_reject_form_with_a_token_for_that_row() {
-        let view = QueueView {
-            proposed: vec![sample_row("proposed", None)],
-            ..QueueView::default()
-        };
+        let view =
+            QueueView { proposed: vec![sample_row("proposed", None)], ..QueueView::default() };
         let html = queue(&view, &contents(), &health(), &token, None);
         let id = "3f9c1d2a-6b41-4c07-9e55-1a2f8c4d0e77";
         assert!(html.contains(&format!("action=\"/console/queue/{id}/approve\"")));
@@ -1760,8 +1757,7 @@ mod tests {
 
     #[test]
     fn a_written_row_carries_no_control_at_all() {
-        let view =
-            QueueView { written: vec![sample_row("written", None)], ..QueueView::default() };
+        let view = QueueView { written: vec![sample_row("written", None)], ..QueueView::default() };
         let html = queue(&view, &contents(), &health(), &token, None);
         assert!(!html.contains("<form method=\"post\""), "the memory already exists");
     }
@@ -1786,10 +1782,8 @@ mod tests {
 
     #[test]
     fn the_outcome_line_prints_a_word_this_module_chose_and_nothing_else() {
-        let view = QueueView {
-            proposed: vec![sample_row("proposed", None)],
-            ..QueueView::default()
-        };
+        let view =
+            QueueView { proposed: vec![sample_row("proposed", None)], ..QueueView::default() };
         let deduplicated = queue(&view, &contents(), &health(), &token, Some("deduplicated"));
         assert!(deduplicated.contains("collapsed into the row that was there"));
 
@@ -1860,7 +1854,13 @@ mod tests {
     /// no period, no clause about dates in the provenance sentence.
     #[test]
     fn a_single_undated_fact_renders_with_no_timeline_and_no_period() {
-        let html = fact(&leaf(entry("Dana prefers plain prose.", Sensitivity::Open)), &contents(), &health(), "tok", DAY);
+        let html = fact(
+            &leaf(entry("Dana prefers plain prose.", Sensitivity::Open)),
+            &contents(),
+            &health(),
+            "tok",
+            DAY,
+        );
         assert!(!html.contains("What this value has been"));
         assert!(!html.contains("No period recorded"));
         assert!(!html.contains("It has held since"));
@@ -1874,12 +1874,16 @@ mod tests {
     fn a_dated_entry_carries_its_period_on_the_reading_page_and_an_undated_one_adds_nothing() {
         let mut dated = entry("The port is 8787.", Sensitivity::Open);
         dated.occurred_at = Some("2026-08-20T00:00:00Z".parse().unwrap());
-        let with = reading(&contents(), &Page { entries: vec![dated], older: None }, None, &health());
+        let with =
+            reading(&contents(), &Page { entries: vec![dated], older: None }, None, &health());
         assert!(with.contains("<span class=\"vt\">since 20 Aug 2026</span>"));
 
         let without = reading(
             &contents(),
-            &Page { entries: vec![entry("Dana prefers plain prose.", Sensitivity::Open)], older: None },
+            &Page {
+                entries: vec![entry("Dana prefers plain prose.", Sensitivity::Open)],
+                older: None,
+            },
             Some("user:me"),
             &health(),
         );
@@ -1920,4 +1924,3 @@ mod tests {
         assert_eq!(ago("2026-01-15T16:02:00Z".parse().unwrap(), now), "on 15 Jan 2026");
     }
 }
-

@@ -1,0 +1,5 @@
+# The code was written to a 100-column line with compact literals and chains; the default
+# rustfmt heuristics wrap a short struct literal onto four lines, which is not the house style.
+max_width = 100
+use_small_heuristics = "Max"
+edition = "2021"

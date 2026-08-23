@@ -11,9 +11,9 @@
 //! Split one file per port so that work on the memory store and work on the authorization server
 //! never touch the same file.
 
-pub mod embedder;
 pub mod alias;
 pub mod cleanup;
+pub mod embedder;
 pub mod ingest;
 pub mod memory;
 pub mod oauth;
@@ -21,6 +21,7 @@ pub mod registry;
 pub mod sealed;
 pub mod tool_calls;
 
+pub use alias::{Alias, AliasRepository, NewAlias};
 pub use cleanup::CleanupRepository;
 pub use embedder::Embedder;
 pub use ingest::{
@@ -28,7 +29,6 @@ pub use ingest::{
     ProposalSource, ProposalState, ProposalUpsert, RunRecord, RunTotals, Watermark,
     WatermarkAdvance,
 };
-pub use alias::{Alias, AliasRepository, NewAlias};
 pub use memory::{
     ChainEdits, ChainLink, ChainNeighbours, ConflictPair, DeleteOutcome, DeletePlan, DigestData,
     DigestQuery, Emission, MemoryRepository, NamespaceSummary, NeighbourQuery, NewMemory,
@@ -38,6 +38,8 @@ pub use oauth::{
     AccessTokenRecord, ClientGrantUpdate, CodeOutcome, NewAccessToken, NewAuthCode, NewOauthClient,
     NewRefreshToken, OauthClientRecord, OauthStore, RefreshOutcome,
 };
-pub use registry::{AliasOrigin, RegistryRepository, RegistryUpsert, RegistryVersion, RegistryWrite};
+pub use registry::{
+    AliasOrigin, RegistryRepository, RegistryUpsert, RegistryVersion, RegistryWrite,
+};
 pub use sealed::SealedRepository;
 pub use tool_calls::{ClientStats, ToolCallRepository, ToolCallStats};

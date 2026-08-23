@@ -149,7 +149,8 @@ pub fn chunk(spans: &[Span], limits: &Limits) -> Vec<ChunkRef> {
 
     for span in spans {
         let n = span.text.chars().count();
-        let session_changed = !current.is_empty() && session.as_deref() != span.session_id.as_deref();
+        let session_changed =
+            !current.is_empty() && session.as_deref() != span.session_id.as_deref();
         let full = current.len() >= max_spans || (!current.is_empty() && chars + n > max_chars);
         if session_changed || full {
             out.push(ChunkRef { index: out.len(), span_ids: std::mem::take(&mut current) });
@@ -333,8 +334,7 @@ mod tests {
     #[test]
     fn chunking_stops_at_the_span_cap() {
         let l = limits(6000, 2, 24_000);
-        let spans: Vec<Span> =
-            (0..5).map(|i| span_of(&format!("s{i}"), Some("a"), "x")).collect();
+        let spans: Vec<Span> = (0..5).map(|i| span_of(&format!("s{i}"), Some("a"), "x")).collect();
         let chunks = chunk(&spans, &l);
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[0].span_ids, vec!["s0".to_string(), "s1".to_string()]);

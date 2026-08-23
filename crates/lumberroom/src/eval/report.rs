@@ -55,14 +55,10 @@ fn overall_table(report: &RunReport) -> String {
         report.overall.mrr,
     ];
     // The right column is headed so nobody reads it as ours.
-    let mut s = String::from("metric           lumberroom     agentmemory (published, their stack)\n");
+    let mut s =
+        String::from("metric           lumberroom     agentmemory (published, their stack)\n");
     for (i, (name, theirs)) in AGENTMEMORY.iter().enumerate() {
-        s.push_str(&format!(
-            "{:<15} {:>5.1}%   {:>5.1}%\n",
-            name,
-            100.0 * ours[i],
-            theirs
-        ));
+        s.push_str(&format!("{:<15} {:>5.1}%   {:>5.1}%\n", name, 100.0 * ours[i], theirs));
     }
     s
 }
@@ -145,7 +141,9 @@ fn deviations(report: &RunReport) -> String {
             "WARNING: {} haystack sessions never reached the store. A question whose gold session\n",
             report.sessions_never_stored,
         ));
-        s.push_str("is one of them cannot be answered for a reason that has nothing to do with ranking.\n");
+        s.push_str(
+            "is one of them cannot be answered for a reason that has nothing to do with ranking.\n",
+        );
         s.push_str("This number is not comparable to agentmemory's until that count is zero.\n");
     }
     if unmapped > 0 {
@@ -207,10 +205,7 @@ mod tests {
         }
 
         let mut per_type: BTreeMap<String, Aggregate> = BTreeMap::new();
-        per_type.insert(
-            "single-session-user".into(),
-            aggregate(&results[..2]),
-        );
+        per_type.insert("single-session-user".into(), aggregate(&results[..2]));
         per_type.insert("multi-session".into(), aggregate(&results[2..]));
 
         RunReport {

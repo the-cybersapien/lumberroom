@@ -249,16 +249,17 @@ pub fn resolve(
             String::new()
         });
 
-    let mcp_url = if base_url.ends_with("/mcp") {
-        base_url.clone()
-    } else {
-        format!("{base_url}/mcp")
-    };
+    let mcp_url =
+        if base_url.ends_with("/mcp") { base_url.clone() } else { format!("{base_url}/mcp") };
     let http_base = base_url.strip_suffix("/mcp").unwrap_or(&base_url).to_string();
 
-    let invocation = invocation_flag
-        .map(str::to_string)
-        .unwrap_or_else(|| if hook { "hook".to_string() } else { "cli".to_string() });
+    let invocation = invocation_flag.map(str::to_string).unwrap_or_else(|| {
+        if hook {
+            "hook".to_string()
+        } else {
+            "cli".to_string()
+        }
+    });
 
     let timeout_ms = nonempty(timeout_flag.map(str::to_string))
         .or_else(|| nonempty(env.get("LUMBERROOM_TIMEOUT_MS")))
@@ -284,10 +285,12 @@ mod tests {
 
     #[test]
     fn flag_beats_env_beats_file() {
-        let e = env(&[("LUMBERROOM_URL", "https://env.example"), ("LUMBERROOM_TOKEN", "env-token")]);
+        let e =
+            env(&[("LUMBERROOM_URL", "https://env.example"), ("LUMBERROOM_TOKEN", "env-token")]);
         let f = file(json!({ "url": "https://file.example", "token": "file-token" }));
 
-        let r = resolve(&e, &f, Some("https://flag.example"), Some("flag-token"), None, false, None);
+        let r =
+            resolve(&e, &f, Some("https://flag.example"), Some("flag-token"), None, false, None);
         assert_eq!(r.base_url, "https://flag.example");
         assert_eq!(r.token, "flag-token");
 
@@ -323,12 +326,28 @@ mod tests {
 
     #[test]
     fn trailing_slashes_go_and_mcp_is_not_doubled() {
-        let r = resolve(&HashMap::new(), &file(json!({})), Some("https://s.example///"), None, None, false, None);
+        let r = resolve(
+            &HashMap::new(),
+            &file(json!({})),
+            Some("https://s.example///"),
+            None,
+            None,
+            false,
+            None,
+        );
         assert_eq!(r.base_url, "https://s.example");
         assert_eq!(r.mcp_url, "https://s.example/mcp");
         assert_eq!(r.http_base, "https://s.example");
 
-        let r = resolve(&HashMap::new(), &file(json!({})), Some("https://s.example/mcp"), None, None, false, None);
+        let r = resolve(
+            &HashMap::new(),
+            &file(json!({})),
+            Some("https://s.example/mcp"),
+            None,
+            None,
+            false,
+            None,
+        );
         assert_eq!(r.mcp_url, "https://s.example/mcp");
         assert_eq!(r.http_base, "https://s.example");
     }
@@ -357,7 +376,10 @@ mod tests {
         let f = file(json!({}));
         assert_eq!(resolve(&e, &f, None, None, None, false, None).timeout_ms, 5000);
         assert_eq!(resolve(&e, &f, None, None, None, false, Some("900")).timeout_ms, 900);
-        assert_eq!(resolve(&HashMap::new(), &f, None, None, None, false, None).timeout_ms, DEFAULT_TIMEOUT_MS);
+        assert_eq!(
+            resolve(&HashMap::new(), &f, None, None, None, false, None).timeout_ms,
+            DEFAULT_TIMEOUT_MS
+        );
     }
 
     #[test]

@@ -370,9 +370,10 @@ pub fn verify_pkce_s256(challenge: &str, verifier: &str) -> bool {
 /// RFC 7636 §4.1: 43 to 128 characters drawn from the unreserved set. Checking the alphabet first
 /// makes the length check byte-safe, since every accepted character is one ASCII byte.
 fn is_valid_verifier(verifier: &str) -> bool {
-    verifier.bytes().all(|b| {
-        b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_' || b == b'~'
-    }) && (43..=128).contains(&verifier.len())
+    verifier
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_' || b == b'~')
+        && (43..=128).contains(&verifier.len())
 }
 
 fn is_base64url(s: &str) -> bool {
@@ -401,9 +402,8 @@ pub fn validate_redirect_uris(uris: &[String]) -> Result<()> {
                 "a redirect URI is longer than {MAX_REDIRECT_URI} characters"
             )));
         }
-        validate_redirect_uri(uri).map_err(|e| {
-            DomainError::validation(format!("{uri}: {}", e.client_message()))
-        })?;
+        validate_redirect_uri(uri)
+            .map_err(|e| DomainError::validation(format!("{uri}: {}", e.client_message())))?;
     }
     Ok(())
 }
@@ -522,7 +522,10 @@ mod tests {
     fn a_verifier_shorter_than_43_characters_is_refused_before_it_is_hashed() {
         let short = "a".repeat(42);
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(short.as_bytes()));
-        assert!(!verify_pkce_s256(&challenge, &short), "a correct hash of a short verifier still fails");
+        assert!(
+            !verify_pkce_s256(&challenge, &short),
+            "a correct hash of a short verifier still fails"
+        );
     }
 
     #[test]
@@ -766,7 +769,11 @@ mod tests {
         assert!(validate_redirect_uris(&long).is_err(), "one over the length cap");
         let bad = vec!["https://lumberroom.example/cb#frag".to_string()];
         let e = validate_redirect_uris(&bad).unwrap_err();
-        assert!(e.client_message().contains("#frag"), "the refusal names the URI: {}", e.client_message());
+        assert!(
+            e.client_message().contains("#frag"),
+            "the refusal names the URI: {}",
+            e.client_message()
+        );
     }
 
     #[test]
@@ -848,9 +855,6 @@ mod tests {
     #[test]
     fn a_profile_serialises_as_the_same_lowercase_word_it_parses() {
         assert_eq!(serde_json::to_string(&GrantProfile::Narrow).unwrap(), r#""narrow""#);
-        assert_eq!(
-            serde_json::from_str::<GrantProfile>(r#""full""#).unwrap(),
-            GrantProfile::Full
-        );
+        assert_eq!(serde_json::from_str::<GrantProfile>(r#""full""#).unwrap(), GrantProfile::Full);
     }
 }

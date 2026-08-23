@@ -206,10 +206,11 @@ impl OauthStore for PgOauthStore {
         let pool = self.pool.clone();
         let client_id = client_id.to_string();
         tokio::spawn(async move {
-            let r = sqlx::query("UPDATE oauth_client SET last_used_at = now() WHERE client_id = $1")
-                .bind(&client_id)
-                .execute(&pool)
-                .await;
+            let r =
+                sqlx::query("UPDATE oauth_client SET last_used_at = now() WHERE client_id = $1")
+                    .bind(&client_id)
+                    .execute(&pool)
+                    .await;
             if let Err(e) = r {
                 tracing::debug!(error = %e, client = %client_id, "could not record last_used_at");
             }
@@ -273,7 +274,9 @@ impl OauthStore for PgOauthStore {
             // Consumed is checked before expired on purpose. A code that is both was spent and then
             // aged out, and "someone presented this twice" outranks "it was old" because only the
             // first calls for killing the tokens it produced.
-            Some(r) if r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("consumed_at").is_some() => {
+            Some(r)
+                if r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("consumed_at").is_some() =>
+            {
                 CodeOutcome::AlreadyConsumed { client_id: r.get("client_id") }
             }
             Some(r) if r.get::<bool, _>("expired") => CodeOutcome::Expired,
@@ -427,10 +430,11 @@ impl OauthStore for PgOauthStore {
         // a day of history costs nothing; a refresh family matters for as long as the family does.
         // The fourth clears self-registered clients the owner never consented to: registration is
         // unauthenticated, so those rows are the one thing here a stranger can create.
-        let codes = sqlx::query("DELETE FROM oauth_code WHERE expires_at < now() - interval '1 day'")
-            .execute(&self.pool)
-            .await?
-            .rows_affected();
+        let codes =
+            sqlx::query("DELETE FROM oauth_code WHERE expires_at < now() - interval '1 day'")
+                .execute(&self.pool)
+                .await?
+                .rows_affected();
 
         let tokens =
             sqlx::query("DELETE FROM oauth_token WHERE expires_at < now() - interval '1 day'")

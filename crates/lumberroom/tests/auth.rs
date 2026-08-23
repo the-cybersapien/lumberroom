@@ -128,7 +128,11 @@ async fn a_401_triggers_one_refresh_and_the_retry_carries_the_new_token() {
     let saved: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(saved["oauth"]["access_token"], json!("fresh-token"));
-    assert_eq!(saved["oauth"]["refresh_token"], json!("rt"), "an absent rotation keeps the old token");
+    assert_eq!(
+        saved["oauth"]["refresh_token"],
+        json!("rt"),
+        "an absent rotation keeps the old token"
+    );
     assert_eq!(saved["oauth"]["client_id"], json!("c1"));
     assert_eq!(saved["oauth"]["redirect_uri"], json!("http://127.0.0.1:8976/callback"));
     assert_eq!(saved["keptByTheOtherClient"]["a"], json!(1));

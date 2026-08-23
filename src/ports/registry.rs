@@ -162,7 +162,8 @@ pub trait RegistryRepository: Send + Sync {
     ) -> Result<Option<String>>;
 
     /// Everything the caller may read, for the digest and for `lumberroom registry list`.
-    async fn list(&self, tenant: &str, readable: &[NamespaceCeiling]) -> Result<Vec<RegistryEntry>>;
+    async fn list(&self, tenant: &str, readable: &[NamespaceCeiling])
+        -> Result<Vec<RegistryEntry>>;
 
     async fn delete(&self, tenant: &str, namespace: &str, kind: &str, key: &str) -> Result<bool>;
 

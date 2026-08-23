@@ -335,7 +335,8 @@ pub(crate) fn grant_arrays(grants: &[NamespaceGrant]) -> (Vec<String>, Vec<bool>
 
 fn candidate_from(row: &sqlx::postgres::PgRow, prefix: &str) -> Result<Candidate> {
     let id: Uuid = row.try_get(format!("{prefix}id").as_str()).map_err(map_err)?;
-    let sensitivity: String = row.try_get(format!("{prefix}sensitivity").as_str()).map_err(map_err)?;
+    let sensitivity: String =
+        row.try_get(format!("{prefix}sensitivity").as_str()).map_err(map_err)?;
     Ok(Candidate {
         id: id.to_string(),
         namespace: row.try_get(format!("{prefix}namespace").as_str()).map_err(map_err)?,
@@ -702,14 +703,13 @@ impl CleanupRepository for PgCleanupRepository {
         ids: &[String],
     ) -> Result<Vec<(String, Option<DateTime<Utc>>)>> {
         let uuids: Vec<Uuid> = ids.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect();
-        let rows = sqlx::query(
-            "SELECT id, occurred_at FROM memory WHERE tenant_id = $1 AND id = ANY($2)",
-        )
-        .bind(tenant)
-        .bind(&uuids)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(map_err)?;
+        let rows =
+            sqlx::query("SELECT id, occurred_at FROM memory WHERE tenant_id = $1 AND id = ANY($2)")
+                .bind(tenant)
+                .bind(&uuids)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(map_err)?;
         let mut found: std::collections::HashMap<String, Option<DateTime<Utc>>> =
             std::collections::HashMap::new();
         for row in &rows {
@@ -885,7 +885,10 @@ mod tests {
 
     #[test]
     fn a_glob_is_trimmed_and_folded_the_way_a_grant_is() {
-        assert_eq!(ns_bounds(Some("  Project:Lumberroom  ")), ("project:lumberroom".to_string(), true));
+        assert_eq!(
+            ns_bounds(Some("  Project:Lumberroom  ")),
+            ("project:lumberroom".to_string(), true)
+        );
     }
 
     #[test]
@@ -946,7 +949,10 @@ mod tests {
         // NOT EXISTS over the members at their stored level rather than a test on the proposal's
         // own namespace, which the poster chose.
         for (name, sql) in [("list", LIST_SQL), ("get", GET_SQL)] {
-            assert!(sql.contains(PROPOSAL_VISIBLE_PREDICATE.trim()), "{name} lost the visibility rule");
+            assert!(
+                sql.contains(PROPOSAL_VISIBLE_PREDICATE.trim()),
+                "{name} lost the visibility rule"
+            );
         }
         assert!(PROPOSAL_VISIBLE_PREDICATE.contains("JOIN memory m ON m.id = cm.memory_id"));
         assert!(PROPOSAL_VISIBLE_PREDICATE

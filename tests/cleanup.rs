@@ -28,7 +28,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use chrono::Utc;
-use sqlx::PgPool;
 use lumberroom_server::adapters::auth;
 use lumberroom_server::adapters::embedding::HashEmbedder;
 use lumberroom_server::adapters::postgres::{self, PgCleanupRepository};
@@ -40,6 +39,7 @@ use lumberroom_server::mcp::AppState;
 use lumberroom_server::ports::cleanup::{CandidateQuery, CleanupRepository};
 use lumberroom_server::ports::OauthStore;
 use lumberroom_server::services::{bootstrap, cleanup, review, search, Ctx, Repos};
+use sqlx::PgPool;
 
 mod common;
 
@@ -119,7 +119,6 @@ impl Harness {
         let status = res.status().as_u16();
         (status, res.text().await.unwrap())
     }
-
 }
 
 /// Returns None when no database is reachable, so the suite skips rather than fails on a machine
@@ -317,12 +316,14 @@ async fn set_occurred(h: &Harness, id: &str, at: &str) {
 
 /// Back-date a row, so a test can put one side of a pair outside the window without waiting an hour.
 async fn backdate(h: &Harness, id: &str, days: i64) {
-    sqlx::query("UPDATE memory SET created_at = now() - make_interval(days => $2::int) WHERE id = $1")
-        .bind(uuid::Uuid::parse_str(id).unwrap())
-        .bind(i32::try_from(days).unwrap())
-        .execute(&h.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE memory SET created_at = now() - make_interval(days => $2::int) WHERE id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(id).unwrap())
+    .bind(i32::try_from(days).unwrap())
+    .execute(&h.pool)
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -334,14 +335,20 @@ async fn two_identical_rows_become_one_proposal_and_the_oldest_survives() {
     let second = put_raw(&h, "user:me", "The deploy runbook lives in DEPLOY.md  ").await;
     assert_ne!(first, second);
 
-    let (report, _) = cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None).await.unwrap();
+    let (report, _) =
+        cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None)
+            .await
+            .unwrap();
     assert_eq!(report.exact_groups, 1, "case and spacing should not make two rows distinct");
     // One finding, not two. Identical text also sits at a cosine of 1.0, so the same pair would
     // otherwise arrive again as a paraphrase under a different cluster key.
     assert_eq!(report.queued, 1, "the same pair was queued twice: {report:?}");
 
     let rows = cleanup::list(&h.ctx, h.repo.as_ref(), Some("proposed"), 50).await.unwrap();
-    let p = rows.iter().find(|p| p.kind == lumberroom_server::domain::cleanup::CleanupKind::Exact).unwrap();
+    let p = rows
+        .iter()
+        .find(|p| p.kind == lumberroom_server::domain::cleanup::CleanupKind::Exact)
+        .unwrap();
     assert_eq!(p.keep_id.as_deref(), Some(first.as_str()), "the oldest carries the reads");
 }
 
@@ -353,9 +360,14 @@ async fn a_second_run_over_the_same_window_queues_nothing() {
     put_raw(&h, "user:me", "the builder image carries g++").await;
     put_raw(&h, "user:me", "the builder image carries g++").await;
 
-    let (first, _) = cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None).await.unwrap();
+    let (first, _) = cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None)
+        .await
+        .unwrap();
     assert!(first.queued >= 1);
-    let (second, _) = cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None).await.unwrap();
+    let (second, _) =
+        cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None)
+            .await
+            .unwrap();
     assert_eq!(second.queued, 0, "the same cluster was queued twice");
     assert!(second.already_known >= 1, "and it was not counted as known either");
 }
@@ -369,7 +381,9 @@ async fn the_exact_query_still_groups_an_old_row_once_the_watermark_has_passed_i
     backdate(&h, &old, 30).await;
     put_raw(&h, "user:me", "an unrelated fact that moves the watermark").await;
 
-    let (first, _) = cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None).await.unwrap();
+    let (first, _) = cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None)
+        .await
+        .unwrap();
     let mark = first.through.expect("a run that found nothing still has to advance its watermark");
     let old_created: chrono::DateTime<Utc> =
         sqlx::query_scalar("SELECT created_at FROM memory WHERE id = $1")
@@ -380,7 +394,10 @@ async fn the_exact_query_still_groups_an_old_row_once_the_watermark_has_passed_i
     assert!(old_created < mark, "the fixture did not put the old row outside the window");
 
     let restated = put_raw(&h, "user:me", "the  ACCEPTANCE gates run  against a live server").await;
-    let (report, _) = cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None).await.unwrap();
+    let (report, _) =
+        cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None)
+            .await
+            .unwrap();
 
     let rows = cleanup::list(&h.ctx, h.repo.as_ref(), Some("proposed"), 50).await.unwrap();
     let found = rows.iter().any(|p| {
@@ -431,7 +448,10 @@ async fn applying_retires_through_supersession_so_the_old_text_is_still_readable
 
     cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None).await.unwrap();
     let rows = cleanup::list(&h.ctx, h.repo.as_ref(), Some("proposed"), 50).await.unwrap();
-    let p = rows.iter().find(|p| p.kind == lumberroom_server::domain::cleanup::CleanupKind::Exact).unwrap();
+    let p = rows
+        .iter()
+        .find(|p| p.kind == lumberroom_server::domain::cleanup::CleanupKind::Exact)
+        .unwrap();
 
     let applied = cleanup::apply(&h.ctx, h.repo.as_ref(), &p.id).await.unwrap();
     assert_eq!(applied.retired, vec![second.clone()]);
@@ -469,7 +489,10 @@ async fn a_member_edited_since_the_pass_read_it_makes_apply_refuse() {
 
     cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None).await.unwrap();
     let rows = cleanup::list(&h.ctx, h.repo.as_ref(), Some("proposed"), 50).await.unwrap();
-    let p = rows.iter().find(|p| p.kind == lumberroom_server::domain::cleanup::CleanupKind::Exact).unwrap();
+    let p = rows
+        .iter()
+        .find(|p| p.kind == lumberroom_server::domain::cleanup::CleanupKind::Exact)
+        .unwrap();
 
     sqlx::query("UPDATE memory SET content = $2 WHERE id = $1")
         .bind(uuid::Uuid::parse_str(&second).unwrap())
@@ -495,7 +518,10 @@ async fn a_finding_the_owner_answered_by_hand_closes_itself() {
 
     cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None).await.unwrap();
     let rows = cleanup::list(&h.ctx, h.repo.as_ref(), Some("proposed"), 50).await.unwrap();
-    let p = rows.iter().find(|p| p.kind == lumberroom_server::domain::cleanup::CleanupKind::Exact).unwrap();
+    let p = rows
+        .iter()
+        .find(|p| p.kind == lumberroom_server::domain::cleanup::CleanupKind::Exact)
+        .unwrap();
 
     // The owner resolves it himself, which is what he does with a contradiction.
     review::supersede(&h.ctx, &second, &first).await.unwrap();
@@ -503,7 +529,8 @@ async fn a_finding_the_owner_answered_by_hand_closes_itself() {
     let closed = h.repo.close_answered(&h.ctx.cfg.tenant_id).await.unwrap();
     assert!(closed.contains(&p.id), "the proposal stayed queued after the store answered it");
 
-    let still_proposed = cleanup::list(&h.ctx, h.repo.as_ref(), Some("proposed"), 50).await.unwrap();
+    let still_proposed =
+        cleanup::list(&h.ctx, h.repo.as_ref(), Some("proposed"), 50).await.unwrap();
     assert!(!still_proposed.iter().any(|q| q.id == p.id));
 }
 
@@ -515,7 +542,9 @@ async fn a_private_row_never_reaches_the_list_handed_to_a_model() {
     put_private(&h, "personal:finance", "The household budget review is the first Sunday").await;
 
     let (report, for_model) =
-        cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None).await.unwrap();
+        cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None)
+            .await
+            .unwrap();
     assert!(
         for_model.is_empty(),
         "a private row was handed to the model path: {for_model:?} (report {report:?})"
@@ -580,7 +609,10 @@ async fn a_survivor_that_became_true_first_is_swapped_before_the_proposal_is_que
 
     cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None).await.unwrap();
     let rows = cleanup::list(&h.ctx, h.repo.as_ref(), Some("proposed"), 50).await.unwrap();
-    let p = rows.iter().find(|p| p.kind == lumberroom_server::domain::cleanup::CleanupKind::Exact).unwrap();
+    let p = rows
+        .iter()
+        .find(|p| p.kind == lumberroom_server::domain::cleanup::CleanupKind::Exact)
+        .unwrap();
 
     assert_eq!(
         p.keep_id.as_deref(),
@@ -604,7 +636,10 @@ async fn a_cluster_with_no_valid_time_is_left_alone() {
 
     cleanup::run(&h.ctx.cfg.tenant_id, h.repo.as_ref(), None, "hourly", 500, None).await.unwrap();
     let rows = cleanup::list(&h.ctx, h.repo.as_ref(), Some("proposed"), 50).await.unwrap();
-    let p = rows.iter().find(|p| p.kind == lumberroom_server::domain::cleanup::CleanupKind::Exact).unwrap();
+    let p = rows
+        .iter()
+        .find(|p| p.kind == lumberroom_server::domain::cleanup::CleanupKind::Exact)
+        .unwrap();
     assert_eq!(p.keep_id.as_deref(), Some(first.as_str()), "the oldest should still survive");
 }
 
@@ -622,8 +657,10 @@ async fn a_narrow_client_running_the_pass_reads_nothing_outside_its_grant() {
     put_raw(&h, "user:me", "the owner's laptop is called kestrel").await;
     put_raw(&h, "user:me", "The owner's laptop is called kestrel  ").await;
     put_raw(&h, "user:me", "the owner's phone is on silent after ten").await;
-    let mine_a = put_raw(&h, "project:lumberroom", "the gate script is scripts/deploy-check.sh").await;
-    let mine_b = put_raw(&h, "project:lumberroom", "The gate script is scripts/deploy-check.sh").await;
+    let mine_a =
+        put_raw(&h, "project:lumberroom", "the gate script is scripts/deploy-check.sh").await;
+    let mine_b =
+        put_raw(&h, "project:lumberroom", "The gate script is scripts/deploy-check.sh").await;
     let mine_c = put_raw(&h, "project:lumberroom", "the builder image carries g++").await;
 
     // Floor at zero so every pair in reach lands in the model band, which is the band that leaves
@@ -640,7 +677,10 @@ async fn a_narrow_client_running_the_pass_reads_nothing_outside_its_grant() {
     assert_eq!(v["report"]["exact_groups"], 1, "only the project pair is in reach: {body}");
     assert_eq!(v["report"]["queued"], 1, "{body}");
     let pairs = v["for_the_model"].as_array().unwrap();
-    assert!(!pairs.is_empty(), "the floor at zero should put the unrelated project row in the band");
+    assert!(
+        !pairs.is_empty(),
+        "the floor at zero should put the unrelated project row in the band"
+    );
     for pair in pairs {
         assert_eq!(pair["namespace"], "project:lumberroom", "a pair leaked past the grant: {body}");
         for id in [&pair["a_id"], &pair["b_id"]] {
@@ -653,12 +693,11 @@ async fn a_narrow_client_running_the_pass_reads_nothing_outside_its_grant() {
     }
 
     // The user:me pair was never queued, because the narrow run never saw it.
-    let outside: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM cleanup_proposal WHERE namespace = 'user:me'",
-    )
-    .fetch_one(&h.pool)
-    .await
-    .unwrap();
+    let outside: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM cleanup_proposal WHERE namespace = 'user:me'")
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
     assert_eq!(outside, 0, "a narrow run queued a finding outside its grant");
 
     // And a scope outside the grant is refused rather than narrowed to nothing.
@@ -666,9 +705,8 @@ async fn a_narrow_client_running_the_pass_reads_nothing_outside_its_grant() {
         .post("/admin/cleanup/run", NARROW_TOKEN, serde_json::json!({ "namespace": "user:me" }))
         .await;
     assert_eq!(status, 403, "{body}");
-    let (status, body) = h
-        .post("/admin/cleanup/run", NARROW_TOKEN, serde_json::json!({ "namespace": "*" }))
-        .await;
+    let (status, body) =
+        h.post("/admin/cleanup/run", NARROW_TOKEN, serde_json::json!({ "namespace": "*" })).await;
     assert_eq!(status, 403, "a prefix grant does not cover the whole store: {body}");
 }
 
@@ -843,13 +881,12 @@ async fn a_posted_finding_cannot_name_a_row_the_poster_may_not_read() {
     assert_eq!(shown.posted_by.as_deref(), Some("narrow"));
     assert_eq!(shown.produced_by, "qwen/qwen3.7-flash");
 
-    let forged: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM cleanup_proposal_member WHERE memory_id = $1",
-    )
-    .bind(uuid::Uuid::parse_str(&theirs).unwrap())
-    .fetch_one(&h.pool)
-    .await
-    .unwrap();
+    let forged: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM cleanup_proposal_member WHERE memory_id = $1")
+            .bind(uuid::Uuid::parse_str(&theirs).unwrap())
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
     assert_eq!(forged, 0, "a refused post still wrote a member row");
 }
 
@@ -880,7 +917,9 @@ async fn the_scheduled_pass_stays_inside_one_namespace_and_names_no_poster() {
     .unwrap();
     assert_eq!(straddling, 0);
 
-    let posters: Vec<Option<String>> =
-        sqlx::query_scalar("SELECT posted_by FROM cleanup_proposal").fetch_all(&h.pool).await.unwrap();
+    let posters: Vec<Option<String>> = sqlx::query_scalar("SELECT posted_by FROM cleanup_proposal")
+        .fetch_all(&h.pool)
+        .await
+        .unwrap();
     assert!(posters.iter().all(Option::is_none), "the in-process pass named a poster: {posters:?}");
 }

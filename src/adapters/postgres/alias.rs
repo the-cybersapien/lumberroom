@@ -158,9 +158,7 @@ fn normalize_name(raw: &str) -> Result<String> {
 /// at read time.
 fn settle(alias: &str, canonical: &str, canonical_points_to: Option<&str>) -> Result<String> {
     if alias == canonical {
-        return Err(DomainError::validation(format!(
-            "{alias:?} cannot be an alias of itself"
-        )));
+        return Err(DomainError::validation(format!("{alias:?} cannot be an alias of itself")));
     }
     let target = canonical_points_to.unwrap_or(canonical);
     if target == alias {
@@ -288,11 +286,7 @@ impl AliasRepository for PgAliasRepository {
     }
 
     async fn list(&self, tenant: &str, namespace: Option<&str>) -> Result<Vec<Alias>> {
-        let rows = sqlx::query(LIST_SQL)
-            .bind(tenant)
-            .bind(namespace)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(LIST_SQL).bind(tenant).bind(namespace).fetch_all(&self.pool).await?;
         Ok(rows.iter().map(alias_from_row).collect())
     }
 

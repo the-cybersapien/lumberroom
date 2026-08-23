@@ -71,7 +71,11 @@ enum Callback {
 /// Accepting once is not enough. Browsers open speculative connections they never write a request
 /// on and ask for `/favicon.ico` unprompted, so a single accept can consume a connection that
 /// carries no callback and then wait forever on one that never comes.
-async fn wait_for_callback(listener: TcpListener, path: &str, expected_state: &str) -> Result<String> {
+async fn wait_for_callback(
+    listener: TcpListener,
+    path: &str,
+    expected_state: &str,
+) -> Result<String> {
     let deadline = tokio::time::sleep(SIGN_IN_TIMEOUT);
     tokio::pin!(deadline);
 
@@ -162,7 +166,8 @@ async fn respond(socket: &mut tokio::net::TcpStream, status: u16, body: &str) {
 pub async fn login(client: &Client, args: &crate::args::Args) -> Result<()> {
     // Before the saved client id and secret are read out of it. A file at 0644 is reported, never
     // used and never repaired.
-    crate::config::refuse_loose_permissions(&client.file.borrow().path).map_err(|e| err(e.to_string()))?;
+    crate::config::refuse_loose_permissions(&client.file.borrow().path)
+        .map_err(|e| err(e.to_string()))?;
     let state = hex(&random_bytes(16)?);
     let verifier = base64url(&random_bytes(32)?);
     let challenge = pkce_challenge(&verifier);
@@ -218,13 +223,17 @@ run with --reregister --port <n> to register a fresh client on a different one."
             )
             .await?;
         if status == 404 {
-            return Err(err("server has no /oauth/register: it is not running in oauth or oidc mode"));
+            return Err(err(
+                "server has no /oauth/register: it is not running in oauth or oidc mode",
+            ));
         }
         if status >= 300 {
             return Err(err(format!("client registration failed ({status}): {body}")));
         }
-        let reg: crate::wire::RegistrationResponse = serde_json::from_value(body.clone())
-            .map_err(|e| err(format!("registration response is not the expected shape ({e}): {body}")))?;
+        let reg: crate::wire::RegistrationResponse =
+            serde_json::from_value(body.clone()).map_err(|e| {
+                err(format!("registration response is not the expected shape ({e}): {body}"))
+            })?;
         client_id = reg.client_id;
         client_secret = reg.client_secret;
         out(&format!("registered client {client_id} on redirect {redirect_uri}"));
@@ -352,7 +361,8 @@ mod tests {
     async fn the_listener_survives_a_connection_that_sends_nothing() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let handle = tokio::spawn(async move { wait_for_callback(listener, "/callback", "st8").await });
+        let handle =
+            tokio::spawn(async move { wait_for_callback(listener, "/callback", "st8").await });
 
         // A speculative connection that closes without writing, then a favicon, then the callback.
         let dead = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -373,8 +383,10 @@ mod tests {
     async fn a_state_mismatch_is_refused() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let handle = tokio::spawn(async move { wait_for_callback(listener, "/callback", "expected").await });
-        let _ = reqwest::get(format!("http://127.0.0.1:{port}/callback?code=abc&state=forged")).await;
+        let handle =
+            tokio::spawn(async move { wait_for_callback(listener, "/callback", "expected").await });
+        let _ =
+            reqwest::get(format!("http://127.0.0.1:{port}/callback?code=abc&state=forged")).await;
         let e = handle.await.unwrap().unwrap_err();
         assert!(e.message.contains("state parameter mismatch"), "{}", e.message);
     }
@@ -383,8 +395,11 @@ mod tests {
     async fn an_error_redirect_is_reported_rather_than_waited_out() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let handle = tokio::spawn(async move { wait_for_callback(listener, "/callback", "st8").await });
-        let _ = reqwest::get(format!("http://127.0.0.1:{port}/callback?error=access_denied&state=st8")).await;
+        let handle =
+            tokio::spawn(async move { wait_for_callback(listener, "/callback", "st8").await });
+        let _ =
+            reqwest::get(format!("http://127.0.0.1:{port}/callback?error=access_denied&state=st8"))
+                .await;
         let e = handle.await.unwrap().unwrap_err();
         assert!(e.message.contains("error=access_denied"), "{}", e.message);
     }

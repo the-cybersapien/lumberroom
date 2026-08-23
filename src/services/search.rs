@@ -277,11 +277,9 @@ pub async fn run(
     // What the store handed out, so an extractor reading a transcript of this answer proposes a
     // confirmation rather than the same fact again. Recorded from `out`, after decryption and after
     // the ceiling check, because a row dropped by either was never handed to anyone.
-    let emissions = emissions_for(
-        ctx,
-        out.iter().map(|h| (h.id.as_str(), h.content.as_str(), h.sensitivity)),
-    )
-    .await;
+    let emissions =
+        emissions_for(ctx, out.iter().map(|h| (h.id.as_str(), h.content.as_str(), h.sensitivity)))
+            .await;
     ctx.repos.memories.record_emissions(
         ctx.tenant(),
         SEARCH_TOOL,
@@ -325,7 +323,10 @@ pub(crate) async fn emissions_for<'a>(
     };
     candidates
         .into_iter()
-        .map(|(memory_id, content)| Emission { content_sha256: digester.digest(content), memory_id })
+        .map(|(memory_id, content)| Emission {
+            content_sha256: digester.digest(content),
+            memory_id,
+        })
         .collect()
 }
 
@@ -339,10 +340,7 @@ fn admitted(
     namespace: &str,
     sensitivity: Sensitivity,
 ) -> bool {
-    primary
-        .iter()
-        .chain(secondary)
-        .any(|c| c.namespace == namespace && sensitivity <= c.max)
+    primary.iter().chain(secondary).any(|c| c.namespace == namespace && sensitivity <= c.max)
 }
 
 /// Candidate namespaces outside the primary set, for the query and for nothing else.
@@ -351,12 +349,13 @@ fn admitted(
 /// alone, so these names are a query argument rather than an answer. The counts are dropped here and
 /// the names go no further than `SearchQuery::secondary`, where each one travels with its ceiling and
 /// the second axis runs in SQL.
-async fn other_namespaces(ctx: &Ctx, exclude: &[NamespaceCeiling]) -> Result<Vec<NamespaceCeiling>> {
+async fn other_namespaces(
+    ctx: &Ctx,
+    exclude: &[NamespaceCeiling],
+) -> Result<Vec<NamespaceCeiling>> {
     let counts = ctx.repos.memories.namespace_counts(ctx.tenant()).await?;
-    let mut candidates: Vec<String> = counts
-        .into_keys()
-        .filter(|ns| !exclude.iter().any(|c| &c.namespace == ns))
-        .collect();
+    let mut candidates: Vec<String> =
+        counts.into_keys().filter(|ns| !exclude.iter().any(|c| &c.namespace == ns)).collect();
     candidates.sort();
     Ok(filter_readable(&ctx.principal, &candidates))
 }

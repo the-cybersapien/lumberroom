@@ -92,7 +92,8 @@ async fn serve(listener: TcpListener, state: Arc<Mutex<StubState>>) {
             let body: Value = serde_json::from_slice(&buf[head_end..]).unwrap_or(Value::Null);
             let method = head.split_whitespace().next().unwrap_or("").to_string();
 
-            let (code, reply) = state.lock().expect("the stub lock is not poisoned").answer(&method, body);
+            let (code, reply) =
+                state.lock().expect("the stub lock is not poisoned").answer(&method, body);
             let text = reply.to_string();
             let response = format!(
                 "HTTP/1.1 {code} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}",
@@ -125,7 +126,8 @@ static SCRATCH: AtomicUsize = AtomicUsize::new(0);
 
 fn scratch_dir(tag: &str) -> std::path::PathBuf {
     let n = SCRATCH.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("lumberroom-batch-{tag}-{}-{n}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("lumberroom-batch-{tag}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("the scratch directory is writable");
     dir
@@ -163,8 +165,11 @@ fn plant_run(run_id: uuid::Uuid, chunks: usize) -> RunPaths {
     };
     write_json(&paths.worklist(), &worklist).expect("the worklist writes");
     for index in 0..chunks {
-        write_json(&paths.chunk_in(index), &json!([{ "id": format!("s{index}"), "text": "a span" }]))
-            .expect("the chunk input writes");
+        write_json(
+            &paths.chunk_in(index),
+            &json!([{ "id": format!("s{index}"), "text": "a span" }]),
+        )
+        .expect("the chunk input writes");
     }
     paths
 }
@@ -177,7 +182,12 @@ fn batch_record(paths: &RunPaths) -> Value {
     read_state(paths).batch.unwrap_or(Value::Null)
 }
 
-fn args(run_id: uuid::Uuid, addr: SocketAddr, action: BatchAction, retry_failed: bool) -> BatchArgs {
+fn args(
+    run_id: uuid::Uuid,
+    addr: SocketAddr,
+    action: BatchAction,
+    retry_failed: bool,
+) -> BatchArgs {
     BatchArgs {
         run_id,
         provider: "custom".to_string(),
@@ -328,13 +338,17 @@ async fn a_run_submits_polls_splits_once_and_resubmits_only_what_failed() {
 
     // 5. Poll the finished batch again. Free, and the owner will do it, so it must not count the
     // same tokens twice.
-    batch::run(&args(run_id, addr, BatchAction::Advance, false)).await.expect("a second poll is fine");
+    batch::run(&args(run_id, addr, BatchAction::Advance, false))
+        .await
+        .expect("a second poll is fine");
     let state = read_state(&paths);
     assert_eq!(state.usage.prompt_tokens, 120, "a second poll counted the batch's tokens again");
     assert_eq!(state.usage.requests, 1);
 
     // 6. Resubmit the failures. A finished batch is spent, and the new record replaces it.
-    batch::run(&args(run_id, addr, BatchAction::Advance, true)).await.expect("the resubmission goes out");
+    batch::run(&args(run_id, addr, BatchAction::Advance, true))
+        .await
+        .expect("the resubmission goes out");
     let sent = {
         let s = stub_state.lock().unwrap();
         assert_eq!(s.created.len(), 2, "--retry-failed did not submit a second batch");

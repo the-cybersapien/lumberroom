@@ -235,8 +235,10 @@ async fn register(
                     return registration_error(
                         StatusCode::BAD_REQUEST,
                         "invalid_client_metadata",
-                        format!("grant_type {g:?} is not supported. This server issues \
-                                 authorization codes and refresh tokens."),
+                        format!(
+                            "grant_type {g:?} is not supported. This server issues \
+                                 authorization codes and refresh tokens."
+                        ),
                     );
                 }
             }
@@ -274,7 +276,9 @@ async fn register(
         _ => "unnamed client".to_string(),
     };
 
-    for (field, value) in [("software_id", &req.software_id), ("software_version", &req.software_version)] {
+    for (field, value) in
+        [("software_id", &req.software_id), ("software_version", &req.software_version)]
+    {
         if value.as_deref().is_some_and(|v| v.len() > MAX_SOFTWARE_FIELD) {
             return registration_error(
                 StatusCode::BAD_REQUEST,
@@ -508,7 +512,11 @@ async fn login(
 
 // ---- POST /oauth/consent ----
 
-async fn consent(State(app): State<AuthServer>, headers: HeaderMap, Form(form): Form<FlowForm>) -> Response {
+async fn consent(
+    State(app): State<AuthServer>,
+    headers: HeaderMap,
+    Form(form): Form<FlowForm>,
+) -> Response {
     let Some(session) = app.sessions.verify(&headers, now()) else {
         return page(
             StatusCode::UNAUTHORIZED,
@@ -560,7 +568,10 @@ async fn consent(State(app): State<AuthServer>, headers: HeaderMap, Form(form): 
     let Some(profile) = form.profile.as_deref().and_then(GrantProfile::parse) else {
         return page(
             StatusCode::BAD_REQUEST,
-            pages::error_page("no choice made", "Pick what the client may reach, then press Allow."),
+            pages::error_page(
+                "no choice made",
+                "Pick what the client may reach, then press Allow.",
+            ),
         );
     };
 
@@ -591,8 +602,7 @@ async fn consent(State(app): State<AuthServer>, headers: HeaderMap, Form(form): 
         code_challenge: intent.code_challenge.clone(),
         scope: intent.scope.clone(),
         resource: intent.resource.clone(),
-        expires_at: chrono::Utc::now()
-            + chrono::Duration::seconds(app.cfg.oauth.code_ttl_secs),
+        expires_at: chrono::Utc::now() + chrono::Duration::seconds(app.cfg.oauth.code_ttl_secs),
     };
     if let Err(e) = app.store.insert_code(record).await {
         return page_internal(&e);
@@ -613,7 +623,11 @@ async fn consent(State(app): State<AuthServer>, headers: HeaderMap, Form(form): 
 
 // ---- POST /oauth/token ----
 
-async fn token(State(app): State<AuthServer>, headers: HeaderMap, Form(form): Form<HashMap<String, String>>) -> Response {
+async fn token(
+    State(app): State<AuthServer>,
+    headers: HeaderMap,
+    Form(form): Form<HashMap<String, String>>,
+) -> Response {
     // Form encoded, per RFC 6749 §3.2, while /oauth/register takes JSON. A stack wired for JSON only
     // answers 415 here while registration succeeds, which reads as almost-working.
     let field = |name: &str| form.get(name).map(String::as_str).filter(|v| !v.is_empty());
@@ -624,13 +638,13 @@ async fn token(State(app): State<AuthServer>, headers: HeaderMap, Form(form): Fo
     };
 
     match field("grant_type") {
-        Some("authorization_code") => {
-            exchange_code(&app, &form, credentials).await
-        }
+        Some("authorization_code") => exchange_code(&app, &form, credentials).await,
         Some("refresh_token") => rotate(&app, &form, credentials).await,
         Some(other) => oauth_error(OauthError::new(
             "unsupported_grant_type",
-            format!("grant_type {other:?} is not supported. Use authorization_code or refresh_token."),
+            format!(
+                "grant_type {other:?} is not supported. Use authorization_code or refresh_token."
+            ),
         )),
         None => oauth_error(OauthError::new("invalid_request", "grant_type is required")),
     }
@@ -871,7 +885,10 @@ async fn issue_tokens(
 
 // ---- POST /oauth/revoke ----
 
-async fn revoke(State(app): State<AuthServer>, Form(form): Form<HashMap<String, String>>) -> Response {
+async fn revoke(
+    State(app): State<AuthServer>,
+    Form(form): Form<HashMap<String, String>>,
+) -> Response {
     let Some(presented) = form.get("token").filter(|v| !v.is_empty()) else {
         return oauth_error(OauthError::new("invalid_request", "token is required"));
     };
@@ -901,11 +918,7 @@ async fn revoke(State(app): State<AuthServer>, Form(form): Form<HashMap<String, 
         Err(e) => return internal_oauth(&e),
     }
 
-    (
-        StatusCode::OK,
-        [(header::CACHE_CONTROL, "no-store")],
-        Json(serde_json::json!({})),
-    )
+    (StatusCode::OK, [(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({})))
         .into_response()
 }
 
@@ -921,9 +934,7 @@ async fn clients(
     // the clients, because the list names every surface connected to this store.
     let signed_in = app.sessions.verify(&headers, now()).is_some();
     if !signed_in {
-        let header = headers
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok());
+        let header = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok());
         match app.auth.authenticate(header).await {
             Ok(principal) if principal.registry_write => {}
             Ok(principal) => {
@@ -947,10 +958,8 @@ async fn clients(
         }
     }
 
-    let include_revoked = matches!(
-        query.get("include_revoked").map(String::as_str),
-        Some("1" | "true" | "yes")
-    );
+    let include_revoked =
+        matches!(query.get("include_revoked").map(String::as_str), Some("1" | "true" | "yes"));
 
     match app.store.list_clients(include_revoked).await {
         Ok(records) => {
@@ -1042,10 +1051,7 @@ fn client_credentials(
         }
     }
 
-    Ok(ClientCredentials {
-        client_id: Some(id.to_string()),
-        secret: Some(secret.to_string()),
-    })
+    Ok(ClientCredentials { client_id: Some(id.to_string()), secret: Some(secret.to_string()) })
 }
 
 /// A confidential client must prove it holds the secret. A public client has none, and presenting
@@ -1209,10 +1215,7 @@ fn consent_page(
         self_registered: client.registered_via == "dcr",
         current_profile: client.profile.as_deref(),
     };
-    page(
-        status,
-        pages::consent(&flow_fields(intent), &view, &csrf, app.default_profile()),
-    )
+    page(status, pages::consent(&flow_fields(intent), &view, &csrf, app.default_profile()))
 }
 
 fn page(status: StatusCode, body: String) -> Response {
@@ -1237,7 +1240,10 @@ fn redirect(location: &str) -> Response {
     match header::HeaderValue::from_str(location) {
         Ok(value) => (
             StatusCode::FOUND,
-            [(header::LOCATION, value), (header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"))],
+            [
+                (header::LOCATION, value),
+                (header::CACHE_CONTROL, header::HeaderValue::from_static("no-store")),
+            ],
         )
             .into_response(),
         // A redirect URI that cannot be a header value never passed registration, so this is a bug
@@ -1251,7 +1257,8 @@ fn redirect(location: &str) -> Response {
 /// An OAuth error reported to the client, by redirect. Only reachable once the redirect URI has been
 /// matched against the client record.
 fn redirect_error(intent: &AuthorizeIntent, error: &str, description: &str) -> Response {
-    let mut pairs = vec![("error", error.to_string()), ("error_description", description.to_string())];
+    let mut pairs =
+        vec![("error", error.to_string()), ("error_description", description.to_string())];
     if let Some(state) = intent.state.as_deref().filter(|s| !s.is_empty()) {
         pairs.push(("state", state.to_string()));
     }
@@ -1259,8 +1266,7 @@ fn redirect_error(intent: &AuthorizeIntent, error: &str, description: &str) -> R
 }
 
 fn oauth_error(e: OauthError) -> Response {
-    let status =
-        StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::BAD_REQUEST);
+    let status = StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::BAD_REQUEST);
     (status, [(header::CACHE_CONTROL, "no-store")], Json(e)).into_response()
 }
 
@@ -1297,10 +1303,7 @@ fn registration_error(
 
 fn internal_json(e: &DomainError) -> Response {
     tracing::error!(error = %e.log_message(), "authorization server failed");
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({ "error": "server_error" })),
-    )
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": "server_error" })))
         .into_response()
 }
 
@@ -1442,7 +1445,11 @@ mod tests {
     fn a_family_id_is_stable_for_one_code_and_different_for_another() {
         let a = family_for(&hash_token("code-a"));
         let b = family_for(&hash_token("code-b"));
-        assert_eq!(a, family_for(&hash_token("code-a")), "a replay must resolve to the same family");
+        assert_eq!(
+            a,
+            family_for(&hash_token("code-a")),
+            "a replay must resolve to the same family"
+        );
         assert_ne!(a, b);
         assert_ne!(a, uuid::Uuid::nil());
     }
@@ -1601,7 +1608,8 @@ mod tests {
     #[test]
     fn a_confidential_client_must_present_the_right_secret() {
         let stored = hash_token("s3cret");
-        let good = ClientCredentials { client_id: Some("abc".into()), secret: Some("s3cret".into()) };
+        let good =
+            ClientCredentials { client_id: Some("abc".into()), secret: Some("s3cret".into()) };
         assert!(authenticate_client(&record(Some(&stored)), &good).is_ok());
 
         let bad = ClientCredentials { client_id: Some("abc".into()), secret: Some("wrong".into()) };

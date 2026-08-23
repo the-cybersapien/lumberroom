@@ -49,8 +49,10 @@ impl LocalEmbedder {
             .with_cache_dir(cache_dir.into())
             .with_show_download_progress(false);
 
-        let model = TextEmbedding::try_new(opts)
-            .map_err(|e| DomainError::internal("failed to load the embedding model").with_source(SendErr(e.to_string())))?;
+        let model = TextEmbedding::try_new(opts).map_err(|e| {
+            DomainError::internal("failed to load the embedding model")
+                .with_source(SendErr(e.to_string()))
+        })?;
 
         Ok(Self {
             model: Arc::new(Mutex::new(model)),
@@ -71,12 +73,14 @@ impl LocalEmbedder {
             let mut guard = model
                 .lock()
                 .map_err(|_| DomainError::internal("embedding model lock was poisoned"))?;
-            guard
-                .embed(texts, None)
-                .map_err(|e| DomainError::internal("embedding failed").with_source(SendErr(e.to_string())))
+            guard.embed(texts, None).map_err(|e| {
+                DomainError::internal("embedding failed").with_source(SendErr(e.to_string()))
+            })
         })
         .await
-        .map_err(|e| DomainError::internal("embedding task panicked").with_source(SendErr(e.to_string())))??;
+        .map_err(|e| {
+            DomainError::internal("embedding task panicked").with_source(SendErr(e.to_string()))
+        })??;
 
         // A model narrower than the column is padded with zeros rather than refused. Cosine is
         // invariant under zero padding: the dot product and both norms are unchanged, so a
@@ -122,14 +126,10 @@ impl Embedder for LocalEmbedder {
     }
 
     async fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
-        let prompt = if self.is_bge {
-            format!("{BGE_QUERY_PREFIX}{text}")
-        } else {
-            text.to_string()
-        };
+        let prompt =
+            if self.is_bge { format!("{BGE_QUERY_PREFIX}{text}") } else { text.to_string() };
         let mut out = self.run(vec![prompt]).await?;
-        out.pop()
-            .ok_or_else(|| DomainError::internal("embedder returned no vector"))
+        out.pop().ok_or_else(|| DomainError::internal("embedder returned no vector"))
     }
 }
 

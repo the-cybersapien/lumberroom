@@ -146,8 +146,11 @@ pub trait CleanupRepository: Send + Sync {
     ///
     /// Exact duplicates are the one finding that needs no model and no threshold, so they get their
     /// own query rather than falling out of a cosine band with a high cutoff.
-    async fn exact_duplicates(&self, tenant: &str, q: &CandidateQuery)
-        -> Result<Vec<Vec<Candidate>>>;
+    async fn exact_duplicates(
+        &self,
+        tenant: &str,
+        q: &CandidateQuery,
+    ) -> Result<Vec<Vec<Candidate>>>;
 
     /// Live pairs within a cosine band, nearest first.
     ///
@@ -204,8 +207,12 @@ pub trait CleanupRepository: Send + Sync {
 
     /// One proposal, under the same rule as `list`. `None` for an id outside the grant as much as
     /// for one that does not exist, so the answer is not an existence check.
-    async fn get(&self, tenant: &str, id: &str, grant: &[NamespaceGrant])
-        -> Result<Option<Proposal>>;
+    async fn get(
+        &self,
+        tenant: &str,
+        id: &str,
+        grant: &[NamespaceGrant],
+    ) -> Result<Option<Proposal>>;
 
     /// Move a proposal to `applied`, `rejected` or `obsolete`. False when it was not `proposed`.
     async fn decide(
@@ -242,8 +249,12 @@ pub trait CleanupRepository: Send + Sync {
         ids: &[String],
     ) -> Result<Vec<(String, Option<DateTime<Utc>>)>>;
 
-    async fn watermark(&self, tenant: &str, scope: &str, cadence: &str)
-        -> Result<Option<Watermark>>;
+    async fn watermark(
+        &self,
+        tenant: &str,
+        scope: &str,
+        cadence: &str,
+    ) -> Result<Option<Watermark>>;
 
     /// Advance to `through`, which is the newest row the run actually read.
     ///

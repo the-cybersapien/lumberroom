@@ -168,7 +168,11 @@ fn confirm(question: &str) -> Option<bool> {
 fn approve_outcome_line(id: uuid::Uuid, outcome: &Result<api::ApproveOutcome>) -> String {
     match outcome {
         Ok(o) if o.deduplicated => {
-            format!("  {} deduplicated ({})", short_id(&id), o.memory_id.map(|m| m.to_string()).unwrap_or_default())
+            format!(
+                "  {} deduplicated ({})",
+                short_id(&id),
+                o.memory_id.map(|m| m.to_string()).unwrap_or_default()
+            )
         }
         Ok(o) => match (&o.refused, o.memory_id) {
             (Some(reason), _) => format!("  {} refused: {reason}", short_id(&id)),
@@ -227,7 +231,9 @@ pub async fn approve(
         proposals.into_iter().map(|p| p.id).collect()
     } else {
         if ids.is_empty() {
-            return Err(err("usage: lumberroom ingest approve <id>... | --run <id> [--auto] [--yes]"));
+            return Err(err(
+                "usage: lumberroom ingest approve <id>... | --run <id> [--auto] [--yes]",
+            ));
         }
         ids.to_vec()
     };
@@ -308,10 +314,7 @@ pub async fn unreject(c: &Client, id: uuid::Uuid) -> Result<()> {
 
 fn watermark_row(w: &api::Watermark) -> String {
     let reason = w.skip_reason.as_deref().unwrap_or("-");
-    format!(
-        "{}  offset {}  entries {}  skip: {reason}",
-        w.file_path, w.byte_offset, w.entries_seen
-    )
+    format!("{}  offset {}  entries {}  skip: {reason}", w.file_path, w.byte_offset, w.entries_seen)
 }
 
 pub async fn watermarks(c: &Client, skipped_only: bool, json: bool) -> Result<()> {

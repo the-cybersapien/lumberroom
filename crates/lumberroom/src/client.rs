@@ -75,7 +75,10 @@ impl Client {
     fn net_err(&self, e: reqwest::Error) -> CliError {
         if e.is_timeout() {
             err_code(
-                format!("timed out after {}ms talking to {}", self.cfg.timeout_ms, self.cfg.mcp_url),
+                format!(
+                    "timed out after {}ms talking to {}",
+                    self.cfg.timeout_ms, self.cfg.mcp_url
+                ),
                 3,
             )
         } else {
@@ -83,7 +86,12 @@ impl Client {
         }
     }
 
-    fn build(&self, method: reqwest::Method, url: &str, payload: &Payload) -> reqwest::RequestBuilder {
+    fn build(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        payload: &Payload,
+    ) -> reqwest::RequestBuilder {
         let mut req = self
             .http
             .request(method, url)
@@ -105,12 +113,14 @@ impl Client {
     ///
     /// The request is rebuilt for the retry rather than replayed, so the second attempt carries the
     /// refreshed token instead of the stale header that caused the 401.
-    pub async fn send(&self, method: reqwest::Method, url: &str, payload: Payload) -> Result<reqwest::Response> {
-        let res = self
-            .build(method.clone(), url, &payload)
-            .send()
-            .await
-            .map_err(|e| self.net_err(e))?;
+    pub async fn send(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        payload: Payload,
+    ) -> Result<reqwest::Response> {
+        let res =
+            self.build(method.clone(), url, &payload).send().await.map_err(|e| self.net_err(e))?;
         if res.status().as_u16() != 401 {
             return Ok(res);
         }
@@ -184,7 +194,12 @@ impl Client {
 
     /// An admin or health route. Returns the status beside the body, because every caller here
     /// branches on the status and node's `httpRequest` does the same.
-    pub async fn http_request(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<(u16, Value)> {
+    pub async fn http_request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<(u16, Value)> {
         let url = format!("{}{}", self.cfg.http_base, path);
         let payload = match body {
             Some(v) => Payload::Json(v),
@@ -211,9 +226,7 @@ impl Client {
             "method": method,
             "params": params,
         });
-        let res = self
-            .send(reqwest::Method::POST, &self.cfg.mcp_url, Payload::Json(body))
-            .await?;
+        let res = self.send(reqwest::Method::POST, &self.cfg.mcp_url, Payload::Json(body)).await?;
         let status = res.status().as_u16();
         if status == 401 || status == 403 {
             let detail = res.text().await.unwrap_or_default();

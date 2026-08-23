@@ -106,11 +106,8 @@ impl Args {
     /// A comma-separated list, trimmed, empties dropped. None when the flag is absent or bare.
     pub fn comma_list(&self, keys: &[&str]) -> Option<Vec<String>> {
         let raw = self.value_any(keys)?;
-        let list: Vec<String> = raw
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        let list: Vec<String> =
+            raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
         Some(list)
     }
 }

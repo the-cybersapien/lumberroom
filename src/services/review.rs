@@ -156,13 +156,7 @@ pub async fn queue(ctx: &Ctx, limit: Option<i64>) -> Result<ReviewQueue> {
         },
     };
 
-    let mut queue = ReviewQueue {
-        conflicts,
-        stale,
-        registry_due,
-        staleness,
-        text: String::new(),
-    };
+    let mut queue = ReviewQueue { conflicts, stale, registry_due, staleness, text: String::new() };
     queue.text = render(&queue, ctx.cfg.quality.stale_days);
     Ok(queue)
 }
@@ -203,7 +197,11 @@ pub async fn supersede(ctx: &Ctx, old: &str, new: &str) -> Result<Resolved> {
 
 /// Deleting goes through the delete path, grant flag included. A second entry point with its own
 /// checks is how the two drift apart.
-pub async fn delete(ctx: &Ctx, id: &str, reason: Option<&str>) -> Result<super::forget::ForgetOutcome> {
+pub async fn delete(
+    ctx: &Ctx,
+    id: &str,
+    reason: Option<&str>,
+) -> Result<super::forget::ForgetOutcome> {
     super::forget::by_id(ctx, id, reason, false).await
 }
 

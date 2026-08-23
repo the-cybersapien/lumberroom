@@ -133,12 +133,9 @@ fn grouped(rows: Vec<AliasRecord>) -> Vec<Group> {
 /// Case folded because the store lowercases a name on the way in and a hand-edited form need not.
 fn find<'a>(groups: &'a [Group], namespace: &str, alias: &str) -> Option<&'a AliasRecord> {
     let (namespace, alias) = (namespace.trim(), alias.trim());
-    groups
-        .iter()
-        .flat_map(|g| g.names.iter())
-        .find(|row| {
-            row.namespace.eq_ignore_ascii_case(namespace) && row.alias.eq_ignore_ascii_case(alias)
-        })
+    groups.iter().flat_map(|g| g.names.iter()).find(|row| {
+        row.namespace.eq_ignore_ascii_case(namespace) && row.alias.eq_ignore_ascii_case(alias)
+    })
 }
 
 // ---- the routes ----
@@ -229,13 +226,13 @@ pub async fn record(
         return stale();
     }
 
-    let (since, until) = match (moment("Current from", &form.since), moment("Current until", &form.until))
-    {
-        (Ok(since), Ok(until)) => (since, until),
-        (Err(e), _) | (_, Err(e)) => {
-            return refused(&app, sessions, &session, &form, &e).await;
-        }
-    };
+    let (since, until) =
+        match (moment("Current from", &form.since), moment("Current until", &form.until)) {
+            (Ok(since), Ok(until)) => (since, until),
+            (Err(e), _) | (_, Err(e)) => {
+                return refused(&app, sessions, &session, &form, &e).await;
+            }
+        };
     // A period that ends before it starts is a typo, and the store takes it: the column pair carries
     // no check and the service adds none. Catching it on the surface a person types into costs one
     // comparison, and the alias it would record was current for no time at all.
@@ -380,10 +377,7 @@ async fn listing(
     let forget = |namespace: &str, alias: &str| {
         sessions.console_csrf(session, FORGET_ACTION, &forget_key(namespace, alias))
     };
-    page(
-        status,
-        listing_html(&groups, &app.health(), &draft, &record, &forget, error, done),
-    )
+    page(status, listing_html(&groups, &app.health(), &draft, &record, &forget, error, done))
 }
 
 /// What a forget token is signed for.
@@ -617,8 +611,10 @@ The period records when the name was the one in use.</p>\
 fn done_note(done: Option<&str>) -> String {
     let line = match done.unwrap_or_default() {
         "recorded" => "Recorded. Every search naming either name now reads both.",
-        "forgotten" => "Forgotten. That name stands alone again, and the facts under it stay where \
-                        they are.",
+        "forgotten" => {
+            "Forgotten. That name stands alone again, and the facts under it stay where \
+                        they are."
+        }
         "unchanged" => "Nothing changed. That name was already gone.",
         _ => return String::new(),
     };
@@ -642,7 +638,11 @@ fn day(instant: &str) -> String {
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
-    if n == 1 { one.to_string() } else { many.to_string() }
+    if n == 1 {
+        one.to_string()
+    } else {
+        many.to_string()
+    }
 }
 
 /// The document, the chrome and the health line.
@@ -742,10 +742,7 @@ mod tests {
     }
 
     fn chain() -> Vec<AliasRecord> {
-        vec![
-            row("project:lumen", "quill", "lumen"),
-            row("project:lumen", "warden", "lumen"),
-        ]
+        vec![row("project:lumen", "quill", "lumen"), row("project:lumen", "warden", "lumen")]
     }
 
     /// The owner's case. Warden became Quill and Quill became Lumen, and the store holds facts
@@ -788,9 +785,8 @@ mod tests {
     fn the_record_form_carries_the_token_it_will_spend() {
         let html =
             listing_html(&[], &health(), &Draft::default(), "tok-alias-record", &token, None, None);
-        assert!(html.contains(
-            "<form class=\"al-f\" method=\"post\" action=\"/console/aliases/record\">"
-        ));
+        assert!(html
+            .contains("<form class=\"al-f\" method=\"post\" action=\"/console/aliases/record\">"));
         assert!(html.contains("name=\"csrf\" value=\"tok-alias-record\""));
         for field in ["namespace", "alias", "canonical", "since", "until"] {
             assert!(html.contains(&format!("name=\"{field}\"")), "{field} is missing");
@@ -834,7 +830,15 @@ mod tests {
     fn the_page_fetches_nothing_and_runs_nothing() {
         let groups = grouped(chain());
         for html in [
-            listing_html(&groups, &health(), &Draft::default(), "tok", &token, None, Some("recorded")),
+            listing_html(
+                &groups,
+                &health(),
+                &Draft::default(),
+                "tok",
+                &token,
+                None,
+                Some("recorded"),
+            ),
             listing_html(&[], &health(), &Draft::default(), "tok", &token, Some("refused"), None),
             confirm_html(&row("project:lumen", "warden", "lumen"), "tok", &health()),
         ] {
@@ -939,10 +943,7 @@ mod tests {
     /// Two aliases whose namespace and name run together must not sign one token.
     #[test]
     fn a_forget_token_names_one_row_and_no_other() {
-        assert_ne!(
-            forget_key("project:lumen", "warden"),
-            forget_key("project:lumen", "quill")
-        );
+        assert_ne!(forget_key("project:lumen", "warden"), forget_key("project:lumen", "quill"));
         assert_eq!(forget_key(" project:lumen ", " warden "), "project:lumen/warden");
     }
 

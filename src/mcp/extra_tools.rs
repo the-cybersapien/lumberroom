@@ -108,8 +108,9 @@ story. One indexed walk, bounded by a depth cap it reports as depth_capped."
         // No namespace recorded against the call: the walk crosses namespaces, so the argument
         // would file the call under one of several the answer came from.
         self.run("memory_history", None, &rc, |ctx| async move {
-            let id = uuid::Uuid::parse_str(args.id.trim())
-                .map_err(|_| DomainError::validation(format!("{:?} is not a memory id", args.id)))?;
+            let id = uuid::Uuid::parse_str(args.id.trim()).map_err(|_| {
+                DomainError::validation(format!("{:?} is not a memory id", args.id))
+            })?;
             if let Some(ns) = args.namespace.as_deref() {
                 namespaces::normalize(ns)?;
             }
@@ -240,8 +241,8 @@ are absent, so this is what you may see rather than everything there is."
             // `alias::list` drops every namespace this caller may not read, and that filter is the
             // whole of the tool. A name is a disclosure a content filter never sees: an unfiltered
             // list hands a narrow credential the names of namespaces it cannot open.
-            let rows = alias::list(&ctx, ctx.repos.aliases.as_ref(), args.namespace.as_deref())
-                .await?;
+            let rows =
+                alias::list(&ctx, ctx.repos.aliases.as_ref(), args.namespace.as_deref()).await?;
             let json = serde_json::json!({ "aliases": rows });
             Ok((serde_json::to_string_pretty(&json).unwrap_or_default(), json))
         })

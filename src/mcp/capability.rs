@@ -113,7 +113,13 @@ mod tests {
             .collect();
         assert_eq!(
             visible,
-            vec!["context_bootstrap", "memory_search", "memory_write", "registry_get", "alias_list"]
+            vec![
+                "context_bootstrap",
+                "memory_search",
+                "memory_write",
+                "registry_get",
+                "alias_list"
+            ]
         );
     }
 

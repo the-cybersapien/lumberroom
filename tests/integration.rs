@@ -6,7 +6,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sqlx::{PgPool, Row};
 use lumberroom_server::adapters::embedding::HashEmbedder;
 use lumberroom_server::adapters::postgres;
 use lumberroom_server::config::{self, Config};
@@ -15,7 +14,10 @@ use lumberroom_server::domain::policy::{NamespaceGrant, SensitivityDefaults};
 use lumberroom_server::domain::types::{Invocation, Principal, Sensitivity, ToolCall};
 use lumberroom_server::ports::registry::RegistryUpsert;
 use lumberroom_server::ports::RegistryWrite;
-use lumberroom_server::services::{bootstrap, export, forget, recall, registry, review, search, write, Ctx, Repos};
+use lumberroom_server::services::{
+    bootstrap, export, forget, recall, registry, review, search, write, Ctx, Repos,
+};
+use sqlx::{PgPool, Row};
 
 mod common;
 
@@ -325,27 +327,35 @@ async fn writes_embeds_and_attributes_the_source_client() {
 #[tokio::test]
 async fn collapses_an_exact_duplicate_and_keeps_it_per_namespace() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
-    let first = write::run(&ctx, "A fact stated twice", "user:me", None, None, None, None).await.unwrap();
-    let second = write::run(&ctx, "  A fact stated twice  ", "user:me", None, None, None, None).await.unwrap();
+    let first =
+        write::run(&ctx, "A fact stated twice", "user:me", None, None, None, None).await.unwrap();
+    let second = write::run(&ctx, "  A fact stated twice  ", "user:me", None, None, None, None)
+        .await
+        .unwrap();
     assert_eq!(first.id, second.id);
     assert!(second.deduplicated);
 
     // The same sentence in another namespace is a different fact.
-    let other = write::run(&ctx, "A fact stated twice", "global", None, None, None, None).await.unwrap();
+    let other =
+        write::run(&ctx, "A fact stated twice", "global", None, None, None, None).await.unwrap();
     assert_ne!(other.id, first.id);
 }
 
 #[tokio::test]
 async fn records_supersedes_without_acting_on_it() {
     let (ctx, pool, _serial) = ctx_or_skip!();
-    let old = write::run(&ctx, "The old port was 8080", "global", None, None, None, None).await.unwrap();
-    let new = write::run(&ctx, "The port is 8787", "global", None, Some(&old.id), None, None).await.unwrap();
-
-    let target: Option<uuid::Uuid> = sqlx::query_scalar("SELECT supersedes FROM memory WHERE id = $1")
-        .bind(uuid::Uuid::parse_str(&new.id).unwrap())
-        .fetch_one(&pool)
+    let old =
+        write::run(&ctx, "The old port was 8080", "global", None, None, None, None).await.unwrap();
+    let new = write::run(&ctx, "The port is 8787", "global", None, Some(&old.id), None, None)
         .await
         .unwrap();
+
+    let target: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT supersedes FROM memory WHERE id = $1")
+            .bind(uuid::Uuid::parse_str(&new.id).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(target.unwrap().to_string(), old.id);
 
     // The target is retired, not deleted: history stays queryable, which is what makes the
@@ -369,7 +379,10 @@ async fn rejects_validation_failures() {
         "x",
         "global",
         None,
-        Some("00000000-0000-0000-0000-000000000000"), None, None)
+        Some("00000000-0000-0000-0000-000000000000"),
+        None,
+        None
+    )
     .await
     .is_err());
 }
@@ -377,9 +390,17 @@ async fn rejects_validation_failures() {
 #[tokio::test]
 async fn enforces_grants_on_read_and_write() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
-    write::run(&ctx, "Warden uses Django with Celery for scheduled jobs", "project:warden", None, None, None, None)
-        .await
-        .unwrap();
+    write::run(
+        &ctx,
+        "Warden uses Django with Celery for scheduled jobs",
+        "project:warden",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     let limited = restricted(&ctx, &["global"], &["global"]);
     assert!(
@@ -387,7 +408,8 @@ async fn enforces_grants_on_read_and_write() {
         "a write outside the grant must fail loudly"
     );
 
-    let res = search::run(&limited, "what does warden use", None, None, None, None, None).await.unwrap();
+    let res =
+        search::run(&limited, "what does warden use", None, None, None, None, None).await.unwrap();
     assert!(
         res.hits.iter().all(|h| h.namespace != "project:warden"),
         "a namespace the client cannot read must not appear"
@@ -397,14 +419,23 @@ async fn enforces_grants_on_read_and_write() {
 #[tokio::test]
 async fn refuses_to_supersede_a_row_the_client_cannot_write() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
-    let mine = write::run(&ctx, "only the operator may retire this", "user:me", None, None, None, None)
-        .await
-        .unwrap();
+    let mine =
+        write::run(&ctx, "only the operator may retire this", "user:me", None, None, None, None)
+            .await
+            .unwrap();
 
     let limited = restricted(&ctx, &["*"], &["global"]);
-    let err = write::run(&limited, "browser tries to retire it", "global", None, Some(&mine.id), None, None)
-        .await
-        .unwrap_err();
+    let err = write::run(
+        &limited,
+        "browser tries to retire it",
+        "global",
+        None,
+        Some(&mine.id),
+        None,
+        None,
+    )
+    .await
+    .unwrap_err();
     let msg = err.client_message().to_string();
     assert!(msg.contains("does not exist or is not writable"));
     // Naming the namespace would tell the client that a namespace it cannot write exists.
@@ -414,19 +445,36 @@ async fn refuses_to_supersede_a_row_the_client_cannot_write() {
 #[tokio::test]
 async fn search_reaches_other_projects_and_promotes_the_active_one() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
-    write::run(&ctx, "Warden uses Django with Celery for scheduled jobs", "project:warden", None, None, None, None)
-        .await
-        .unwrap();
+    write::run(
+        &ctx,
+        "Warden uses Django with Celery for scheduled jobs",
+        "project:warden",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
-    let without = search::run(&ctx, "what does warden use for scheduled jobs", None, None, None, None, None)
-        .await
-        .unwrap();
+    let without =
+        search::run(&ctx, "what does warden use for scheduled jobs", None, None, None, None, None)
+            .await
+            .unwrap();
     assert!(without.also_searched.contains(&"project:warden".to_string()));
     let hit_without = without.hits.iter().find(|h| h.content.contains("Celery")).expect("found");
 
-    let with = search::run(&ctx, "what does warden use for scheduled jobs", None, None, Some("warden"), None, None)
-        .await
-        .unwrap();
+    let with = search::run(
+        &ctx,
+        "what does warden use for scheduled jobs",
+        None,
+        None,
+        Some("warden"),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let hit_with = with.hits.iter().find(|h| h.content.contains("Celery")).expect("found");
     assert!(hit_with.score > hit_without.score, "passing project must promote it");
     assert!(hit_with.primary);
@@ -455,9 +503,17 @@ async fn an_explicit_namespace_list_is_honoured_exactly() {
 async fn treats_sql_payloads_as_content_not_as_sql() {
     let (ctx, pool, _serial) = ctx_or_skip!();
     let payload = "'; DROP TABLE memory; --";
-    let written = write::run(&ctx, payload, "global", Some(vec!["x'; DROP TABLE registry; --".into()]), None, None, None)
-        .await
-        .unwrap();
+    let written = write::run(
+        &ctx,
+        payload,
+        "global",
+        Some(vec!["x'; DROP TABLE registry; --".into()]),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     let back = ctx
         .repos
@@ -468,7 +524,9 @@ async fn treats_sql_payloads_as_content_not_as_sql() {
         .unwrap();
     assert_eq!(back.content, payload);
 
-    assert!(search::run(&ctx, "' OR 1=1; DROP TABLE memory; --", None, None, None, None, None).await.is_ok());
+    assert!(search::run(&ctx, "' OR 1=1; DROP TABLE memory; --", None, None, None, None, None)
+        .await
+        .is_ok());
     let got = registry::get(&ctx, "host", "') ; DROP TABLE memory; --", None, None).await.unwrap();
     assert!(!got.found);
 
@@ -510,7 +568,8 @@ async fn registry_is_exact_and_prefers_a_project_override() {
         .upsert(registry_write("project:warden", "https://warden.internal/mcp", &provenance))
         .await
         .unwrap();
-    let override_hit = registry::get(&ctx, "host", "mcp-endpoint", None, Some("warden")).await.unwrap();
+    let override_hit =
+        registry::get(&ctx, "host", "mcp-endpoint", None, Some("warden")).await.unwrap();
     assert_eq!(override_hit.namespace.as_deref(), Some("project:warden"));
 
     // The upsert bumps the version rather than inserting a second row.
@@ -526,12 +585,28 @@ async fn registry_is_exact_and_prefers_a_project_override() {
 #[tokio::test]
 async fn digest_covers_readable_namespaces_and_caches() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
-    write::run(&ctx, "Dana prefers TypeScript for server work", "user:me", Some(vec!["preference".into()]), None, None, None)
-        .await
-        .unwrap();
-    write::run(&ctx, "Warden uses Celery for scheduled jobs", "project:warden", None, None, None, None)
-        .await
-        .unwrap();
+    write::run(
+        &ctx,
+        "Dana prefers TypeScript for server work",
+        "user:me",
+        Some(vec!["preference".into()]),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    write::run(
+        &ctx,
+        "Warden uses Celery for scheduled jobs",
+        "project:warden",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     bootstrap::clear_cache();
     let d = bootstrap::run(&ctx, Some("/tmp/warden")).await.unwrap();
@@ -544,7 +619,9 @@ async fn digest_covers_readable_namespaces_and_caches() {
     assert!(again.cached, "the second call should be served from cache");
 
     // A write must invalidate, or a fact written now appears only after the TTL.
-    write::run(&ctx, "A fact written moments ago", "user:me", None, None, None, None).await.unwrap();
+    write::run(&ctx, "A fact written moments ago", "user:me", None, None, None, None)
+        .await
+        .unwrap();
     let fresh = bootstrap::run(&ctx, Some("/tmp/warden")).await.unwrap();
     assert!(!fresh.cached);
     assert!(fresh.text.contains("A fact written moments ago"));
@@ -553,9 +630,17 @@ async fn digest_covers_readable_namespaces_and_caches() {
 #[tokio::test]
 async fn digest_hides_namespaces_a_restricted_client_cannot_read() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
-    write::run(&ctx, "Warden uses Celery for scheduled jobs", "project:warden", None, None, None, None)
-        .await
-        .unwrap();
+    write::run(
+        &ctx,
+        "Warden uses Celery for scheduled jobs",
+        "project:warden",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     bootstrap::clear_cache();
 
     // Every subquery must intersect the grant. The TypeScript build shipped a bug where the
@@ -569,7 +654,9 @@ async fn digest_hides_namespaces_a_restricted_client_cannot_read() {
 #[tokio::test]
 async fn bootstrap_stays_inside_the_latency_budget() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
-    write::run(&ctx, "a fact to make the digest non-empty", "global", None, None, None, None).await.unwrap();
+    write::run(&ctx, "a fact to make the digest non-empty", "global", None, None, None, None)
+        .await
+        .unwrap();
     bootstrap::clear_cache();
     let started = std::time::Instant::now();
     bootstrap::run(&ctx, Some("/tmp/warden")).await.unwrap();
@@ -583,14 +670,30 @@ async fn filtered_search_returns_the_full_limit_from_a_sparse_namespace() {
     // for: the scan pulls a fixed candidate batch, the filter removes all of it, and the caller
     // is told nothing is known. Migration 003 sets strict_order. This fails if that is lost.
     for i in 0..40 {
-        write::run(&ctx, &format!("bulk filler fact number {i} about unrelated matters"), "global", None, None, None, None)
-            .await
-            .unwrap();
+        write::run(
+            &ctx,
+            &format!("bulk filler fact number {i} about unrelated matters"),
+            "global",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
     }
     for i in 0..6 {
-        write::run(&ctx, &format!("scarce namespace fact {i} concerning the rare project"), "project:scarce", None, None, None, None)
-            .await
-            .unwrap();
+        write::run(
+            &ctx,
+            &format!("scarce namespace fact {i} concerning the rare project"),
+            "project:scarce",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
     }
     let res = search::run(
         &ctx,
@@ -611,9 +714,17 @@ async fn filtered_search_returns_the_full_limit_from_a_sparse_namespace() {
 async fn reports_honest_recall_against_an_exact_scan() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
     for i in 0..12 {
-        write::run(&ctx, &format!("recall probe fact {i} about infrastructure"), "global", None, None, None, None)
-            .await
-            .unwrap();
+        write::run(
+            &ctx,
+            &format!("recall probe fact {i} about infrastructure"),
+            "global",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
     }
     let report = recall::measure(&ctx, 10, 5).await.unwrap();
     assert!(report.sampled > 0);
@@ -626,9 +737,17 @@ async fn reports_honest_recall_against_an_exact_scan() {
 #[tokio::test]
 async fn published_payloads_keep_their_field_names() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
-    let written = write::run(&ctx, "a fact so recall has something to sample", "global", None, None, None, None)
-        .await
-        .unwrap();
+    let written = write::run(
+        &ctx,
+        "a fact so recall has something to sample",
+        "global",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     // memory_write. `superseded` and `possible_conflicts` are skipped when there is nothing to
     // report, so this write, which retires nothing and has no near neighbour, publishes four keys.
@@ -641,7 +760,8 @@ async fn published_payloads_keep_their_field_names() {
     let hits = search::run(&ctx, "what has something to sample", None, None, None, None, None)
         .await
         .unwrap();
-    let json = serde_json::to_value(hits.hits.first().expect("the written row comes back")).unwrap();
+    let json =
+        serde_json::to_value(hits.hits.first().expect("the written row comes back")).unwrap();
     let mut keys: Vec<&str> = json.as_object().unwrap().keys().map(|s| s.as_str()).collect();
     keys.sort();
     assert_eq!(
@@ -752,30 +872,60 @@ async fn a_namespace_outside_the_grant_is_invisible_through_every_surface() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
     let secret = nonce("excluded");
 
-    write::run(&ctx, &format!("the deploy key is {secret}"), "project:vault", None, None, Some("private"), None)
+    write::run(
+        &ctx,
+        &format!("the deploy key is {secret}"),
+        "project:vault",
+        None,
+        None,
+        Some("private"),
+        None,
+    )
+    .await
+    .unwrap();
+    write::run(&ctx, "an open fact anyone may read", "global", None, None, None, None)
         .await
         .unwrap();
-    write::run(&ctx, "an open fact anyone may read", "global", None, None, None, None).await.unwrap();
     ctx.repos
         .registry
-        .upsert(registry_write_at("project:vault", "vault-host", &secret, Sensitivity::Private, &provenance()))
+        .upsert(registry_write_at(
+            "project:vault",
+            "vault-host",
+            &secret,
+            Sensitivity::Private,
+            &provenance(),
+        ))
         .await
         .unwrap();
 
     let limited = restricted(&ctx, &["global"], &["global"]);
 
     // memory_search, asking for the namespace by name so nothing is narrowed by the default list.
-    let res = search::run(&limited, "what is the deploy key", Some(vec!["project:vault".into()]), None, None, None, None)
-        .await
-        .unwrap();
+    let res = search::run(
+        &limited,
+        "what is the deploy key",
+        Some(vec!["project:vault".into()]),
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     assert!(res.hits.is_empty(), "a namespace outside the grant answers nothing");
 
     // context_bootstrap, including the inventory line. The Phase 1 bug was a digest subquery that
     // skipped the grant filter, so this asserts on the digest specifically rather than on search.
     bootstrap::clear_cache();
     let d = bootstrap::run(&limited, Some("vault")).await.unwrap();
-    assert!(!digest_json(&d).contains(&secret), "the digest leaked a row from an excluded namespace");
-    assert!(!d.inventory.contains_key("project:vault"), "the inventory named an excluded namespace");
+    assert!(
+        !digest_json(&d).contains(&secret),
+        "the digest leaked a row from an excluded namespace"
+    );
+    assert!(
+        !d.inventory.contains_key("project:vault"),
+        "the inventory named an excluded namespace"
+    );
     assert!(!d.counts.by_namespace.contains_key("project:vault"));
     assert_eq!(d.counts.memories, 1, "only the one readable row counts");
     assert!(d.registry.iter().all(|r| r.namespace != "project:vault"));
@@ -786,7 +936,9 @@ async fn a_namespace_outside_the_grant_is_invisible_through_every_surface() {
     assert!(!got.searched.iter().any(|n| n == "project:vault"));
 
     // And a write into it is refused loudly rather than dropped.
-    let err = write::run(&limited, "trying anyway", "project:vault", None, None, None, None).await.unwrap_err();
+    let err = write::run(&limited, "trying anyway", "project:vault", None, None, None, None)
+        .await
+        .unwrap_err();
     assert_eq!(err.kind.http_status(), 403);
 }
 
@@ -795,20 +947,47 @@ async fn a_ceiling_of_open_cannot_read_a_private_row_in_a_namespace_it_reaches()
     let (ctx, _pool, _serial) = ctx_or_skip!();
     let secret = nonce("ceiling");
 
-    write::run(&ctx, &format!("the salary review lands at {secret}"), "project:hr", None, None, Some("private"), None)
-        .await
-        .unwrap();
-    write::run(&ctx, "the hr project uses the standard onboarding checklist", "project:hr", None, None, None, None)
-        .await
-        .unwrap();
+    write::run(
+        &ctx,
+        &format!("the salary review lands at {secret}"),
+        "project:hr",
+        None,
+        None,
+        Some("private"),
+        None,
+    )
+    .await
+    .unwrap();
+    write::run(
+        &ctx,
+        "the hr project uses the standard onboarding checklist",
+        "project:hr",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     // Namespace alone is not a grant. This client reaches project:hr and still may not read what is
     // stored above open in it, which is the two-axis model's whole point.
     let at_open = restricted_at(&ctx, &at(&[("project:hr", Sensitivity::Open)]), &[]);
-    let res = search::run(&at_open, "salary review checklist", Some(vec!["project:hr".into()]), None, None, None, None)
-        .await
-        .unwrap();
-    assert!(res.hits.iter().all(|h| !h.content.contains(&secret)), "a row above the ceiling came back");
+    let res = search::run(
+        &at_open,
+        "salary review checklist",
+        Some(vec!["project:hr".into()]),
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        res.hits.iter().all(|h| !h.content.contains(&secret)),
+        "a row above the ceiling came back"
+    );
     assert_eq!(res.hits.len(), 1, "the open row in the same namespace still answers");
 
     bootstrap::clear_cache();
@@ -819,19 +998,38 @@ async fn a_ceiling_of_open_cannot_read_a_private_row_in_a_namespace_it_reaches()
     // The same namespace at the higher ceiling does see it, so the refusal above is the ceiling
     // rather than something else being broken.
     let at_private = restricted_at(&ctx, &at(&[("project:hr", Sensitivity::Private)]), &[]);
-    let res = search::run(&at_private, "salary review checklist", Some(vec!["project:hr".into()]), None, None, None, None)
-        .await
-        .unwrap();
-    assert!(res.hits.iter().any(|h| h.content.contains(&secret)), "the private row must round-trip at private");
+    let res = search::run(
+        &at_private,
+        "salary review checklist",
+        Some(vec!["project:hr".into()]),
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        res.hits.iter().any(|h| h.content.contains(&secret)),
+        "the private row must round-trip at private"
+    );
 }
 
 #[tokio::test]
 async fn two_clients_with_different_ceilings_do_not_share_a_cached_digest() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
     let secret = nonce("cachekey");
-    write::run(&ctx, &format!("the private note says {secret}"), "user:me", None, None, Some("private"), None)
-        .await
-        .unwrap();
+    write::run(
+        &ctx,
+        &format!("the private note says {secret}"),
+        "user:me",
+        None,
+        None,
+        Some("private"),
+        None,
+    )
+    .await
+    .unwrap();
 
     bootstrap::clear_cache();
     // Same client name on purpose: the cache key has to separate these on the ceiling, not on the
@@ -854,9 +1052,17 @@ async fn two_clients_with_different_ceilings_do_not_share_a_cached_digest() {
 async fn a_private_row_reaches_every_digest_section_it_belongs_to_and_no_further() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
     let secret = nonce("bothsections");
-    write::run(&ctx, &format!("the private note says {secret}"), "user:me", None, None, Some("private"), None)
-        .await
-        .unwrap();
+    write::run(
+        &ctx,
+        &format!("the private note says {secret}"),
+        "user:me",
+        None,
+        None,
+        Some("private"),
+        None,
+    )
+    .await
+    .unwrap();
 
     // A fresh row in the user namespace lands in profile and in recent at once. The digest decrypts
     // all three sections in one pass, so a decryptor that spent the ciphertext on the first copy
@@ -871,9 +1077,10 @@ async fn a_private_row_reaches_every_digest_section_it_belongs_to_and_no_further
     assert_eq!(d.text.matches(&secret).count(), 1, "the markdown prints it once");
 
     // Search reads the same row through the same decryptor.
-    let hits = search::run(&high, "private note", Some(vec!["user:me".into()]), None, None, None, None)
-        .await
-        .unwrap();
+    let hits =
+        search::run(&high, "private note", Some(vec!["user:me".into()]), None, None, None, None)
+            .await
+            .unwrap();
     assert!(hits.hits.iter().any(|h| h.content.contains(&secret)), "search serves it at private");
 
     // The other direction, on the same row: an open ceiling reaches the namespace and still gets
@@ -883,10 +1090,14 @@ async fn a_private_row_reaches_every_digest_section_it_belongs_to_and_no_further
     let d = bootstrap::run(&low, None).await.unwrap();
     assert!(!digest_json(&d).contains(&secret), "an open ceiling must not see it in the digest");
     assert!(d.profile.is_empty() && d.recent.is_empty());
-    let hits = search::run(&low, "private note", Some(vec!["user:me".into()]), None, None, None, None)
-        .await
-        .unwrap();
-    assert!(hits.hits.iter().all(|h| !h.content.contains(&secret)), "search must not serve it at open");
+    let hits =
+        search::run(&low, "private note", Some(vec!["user:me".into()]), None, None, None, None)
+            .await
+            .unwrap();
+    assert!(
+        hits.hits.iter().all(|h| !h.content.contains(&secret)),
+        "search must not serve it at open"
+    );
 }
 
 #[tokio::test]
@@ -894,7 +1105,13 @@ async fn registry_get_applies_the_ceiling_per_namespace() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
     ctx.repos
         .registry
-        .upsert(registry_write_at("user:me", "bank-account", "sort-code-40-11-22", Sensitivity::Private, &provenance()))
+        .upsert(registry_write_at(
+            "user:me",
+            "bank-account",
+            "sort-code-40-11-22",
+            Sensitivity::Private,
+            &provenance(),
+        ))
         .await
         .unwrap();
 
@@ -914,18 +1131,28 @@ async fn a_sealed_item_is_served_as_ciphertext_and_only_to_a_sealed_grant() {
     let plaintext = nonce("sealedblob");
     let b64 = base64::engine::general_purpose::STANDARD.encode(plaintext.as_bytes());
 
-    let put = lumberroom_server::services::sealed::put(&ctx, "project:creds", "hmac-aws-key", &b64, "aes-256-gcm/client-v1")
-        .await
-        .unwrap();
+    let put = lumberroom_server::services::sealed::put(
+        &ctx,
+        "project:creds",
+        "hmac-aws-key",
+        &b64,
+        "aes-256-gcm/client-v1",
+    )
+    .await
+    .unwrap();
     assert_eq!(put.namespace, "project:creds");
 
     // A client holding the ceiling but not the capability. The bytes are the same for everyone,
     // because the server holds no key for them; `decryptable` is the honest label on them.
     let mut blind = restricted_at(&ctx, &at(&[("project:creds", Sensitivity::Sealed)]), &[]);
     blind.principal.sealed_capable = false;
-    let got = lumberroom_server::services::sealed::get(&blind, "hmac-aws-key", Some(vec!["project:creds".into()]))
-        .await
-        .unwrap();
+    let got = lumberroom_server::services::sealed::get(
+        &blind,
+        "hmac-aws-key",
+        Some(vec!["project:creds".into()]),
+    )
+    .await
+    .unwrap();
     assert!(got.found);
     assert!(!got.decryptable, "a client that cannot decrypt is told so rather than left to guess");
     let item = got.item.expect("the item is served");
@@ -940,9 +1167,13 @@ async fn a_sealed_item_is_served_as_ciphertext_and_only_to_a_sealed_grant() {
     // answer 400 "name the namespace to read a sealed item from", which sent the operator looking at
     // a request that was correct.
     let low = restricted_at(&ctx, &at(&[("project:creds", Sensitivity::Open)]), &[]);
-    let err = lumberroom_server::services::sealed::get(&low, "hmac-aws-key", Some(vec!["project:creds".into()]))
-        .await
-        .unwrap_err();
+    let err = lumberroom_server::services::sealed::get(
+        &low,
+        "hmac-aws-key",
+        Some(vec!["project:creds".into()]),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err.kind.http_status(), 403);
     assert!(!err.client_message().contains(&plaintext));
 }
@@ -953,9 +1184,10 @@ async fn the_tripwire_refuses_a_credential_at_open_and_never_echoes_it() {
     // A well-known example key id, so nothing real is written down here.
     let credential = "AKIAIOSFODNN7EXAMPLE";
 
-    let err = write::run(&ctx, &format!("the aws key is {credential}"), "global", None, None, None, None)
-        .await
-        .unwrap_err();
+    let err =
+        write::run(&ctx, &format!("the aws key is {credential}"), "global", None, None, None, None)
+            .await
+            .unwrap_err();
     assert_eq!(err.kind.http_status(), 400);
     let msg = err.client_message().to_string();
     assert!(msg.contains("aws_access_key_id"), "the refusal names the rule: {msg}");
@@ -966,9 +1198,17 @@ async fn the_tripwire_refuses_a_credential_at_open_and_never_echoes_it() {
 
     // The tripwire is a backstop for storing a credential in the clear, so the same content stored
     // above open is accepted.
-    let ok = write::run(&ctx, &format!("the aws key is {credential}"), "global", None, None, Some("private"), None)
-        .await
-        .unwrap();
+    let ok = write::run(
+        &ctx,
+        &format!("the aws key is {credential}"),
+        "global",
+        None,
+        None,
+        Some("private"),
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(ok.sensitivity, Sensitivity::Private);
 }
 
@@ -987,9 +1227,17 @@ async fn a_personal_namespace_is_writable_lands_private_and_reaches_the_digest()
 
     // No explicit level: the namespace default is what classifies it. That is the product claim,
     // that nobody classifies anything in the normal case.
-    let w = write::run(&ctx, &format!("the retainer is {secret}"), "personal:finance", None, None, None, None)
-        .await
-        .unwrap();
+    let w = write::run(
+        &ctx,
+        &format!("the retainer is {secret}"),
+        "personal:finance",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(w.namespace, "personal:finance");
     assert_eq!(w.sensitivity, Sensitivity::Private, "the seeded rule has to actually fire");
 
@@ -1010,7 +1258,10 @@ async fn a_personal_namespace_is_writable_lands_private_and_reaches_the_digest()
     bootstrap::clear_cache();
     let low = restricted_at(&ctx, &at(&[("personal:finance", Sensitivity::Open)]), &[]);
     let d = bootstrap::run(&low, None).await.unwrap();
-    assert!(!digest_json(&d).contains(&secret), "an open ceiling reaches the namespace, not the row");
+    assert!(
+        !digest_json(&d).contains(&secret),
+        "an open ceiling reaches the namespace, not the row"
+    );
 }
 
 /// Finding 1, the part that matters most. A `credentials:*` namespace now validates, so the question
@@ -1023,9 +1274,17 @@ async fn a_credentials_namespace_refuses_plaintext_and_points_at_lumberroom_seal
         ctx_or_skip!(|cfg: &mut Config| cfg.policy.defaults = SensitivityDefaults::seeded());
     let secret = nonce("credplaintext");
 
-    let err = write::run(&ctx, &format!("the token is {secret}"), "credentials:aws", None, None, None, None)
-        .await
-        .unwrap_err();
+    let err = write::run(
+        &ctx,
+        &format!("the token is {secret}"),
+        "credentials:aws",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err.kind.http_status(), 400, "a clear refusal, not an internal error");
     let msg = err.client_message().to_string();
     assert!(msg.contains("lumberroom seal"), "the refusal has to name the route that works: {msg}");
@@ -1039,9 +1298,10 @@ async fn a_credentials_namespace_refuses_plaintext_and_points_at_lumberroom_seal
     let mut cfg = (*ctx.cfg).clone();
     cfg.policy.defaults = SensitivityDefaults::new(vec![("*".to_string(), Sensitivity::Open)]);
     wide.cfg = Arc::new(cfg);
-    let err = write::run(&wide, "an unremarkable sentence", "credentials:aws", None, None, None, None)
-        .await
-        .unwrap_err();
+    let err =
+        write::run(&wide, "an unremarkable sentence", "credentials:aws", None, None, None, None)
+            .await
+            .unwrap_err();
     assert!(
         err.client_message().contains("lumberroom seal"),
         "the shape refuses even when no rule classifies it: {}",
@@ -1049,9 +1309,10 @@ async fn a_credentials_namespace_refuses_plaintext_and_points_at_lumberroom_seal
     );
 
     // Nothing landed, by either route.
-    let hits = search::run(&ctx, "token", Some(vec!["credentials:aws".into()]), None, None, None, None)
-        .await
-        .unwrap();
+    let hits =
+        search::run(&ctx, "token", Some(vec!["credentials:aws".into()]), None, None, None, None)
+            .await
+            .unwrap();
     assert!(hits.hits.is_empty(), "no plaintext row exists in a credentials namespace");
 }
 
@@ -1065,9 +1326,15 @@ async fn a_namespace_holding_only_sealed_items_reaches_the_digest_at_a_sealed_ce
     use base64::Engine as _;
     let (ctx, _pool, _serial) = ctx_or_skip!();
     let b64 = base64::engine::general_purpose::STANDARD.encode(nonce("credsealed").as_bytes());
-    lumberroom_server::services::sealed::put(&ctx, "credentials:aws", "hmac-prod-key", &b64, "aes-256-gcm/client-v1")
-        .await
-        .unwrap();
+    lumberroom_server::services::sealed::put(
+        &ctx,
+        "credentials:aws",
+        "hmac-prod-key",
+        &b64,
+        "aes-256-gcm/client-v1",
+    )
+    .await
+    .unwrap();
 
     bootstrap::clear_cache();
     let d = bootstrap::run(&ctx, None).await.unwrap();
@@ -1077,7 +1344,11 @@ async fn a_namespace_holding_only_sealed_items_reaches_the_digest_at_a_sealed_ce
         "the owner has to be told the item exists: {:?}",
         d.sealed_inventory
     );
-    assert!(d.text.contains("credentials:aws (1)"), "and told in the text the model reads: {}", d.text);
+    assert!(
+        d.text.contains("credentials:aws (1)"),
+        "and told in the text the model reads: {}",
+        d.text
+    );
     assert!(
         !d.inventory.contains_key("credentials:aws"),
         "a sealed-only namespace is not a memory inventory entry, where a zero count would announce \
@@ -1110,9 +1381,17 @@ async fn a_namespace_holding_only_sealed_items_reaches_the_digest_at_a_sealed_ce
 async fn a_namespace_the_ceiling_refuses_is_absent_from_the_inventory_and_from_the_digest_text() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
     let secret = nonce("inventoryceiling");
-    write::run(&ctx, &format!("the retainer is {secret}"), "personal:finance", None, None, Some("private"), None)
-        .await
-        .unwrap();
+    write::run(
+        &ctx,
+        &format!("the retainer is {secret}"),
+        "personal:finance",
+        None,
+        None,
+        Some("private"),
+        None,
+    )
+    .await
+    .unwrap();
 
     // Named by the grant, refused by the ceiling. `*` at open is what a bare Phase 1 glob resolves
     // to, so this is the shipped default rather than a grant invented for the test.
@@ -1142,9 +1421,17 @@ async fn a_namespace_the_ceiling_refuses_is_absent_from_the_inventory_and_from_t
 async fn a_ceiling_that_reaches_the_row_is_still_told_the_count() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
     let secret = nonce("inventoryreaches");
-    write::run(&ctx, &format!("the retainer is {secret}"), "personal:finance", None, None, Some("private"), None)
-        .await
-        .unwrap();
+    write::run(
+        &ctx,
+        &format!("the retainer is {secret}"),
+        "personal:finance",
+        None,
+        None,
+        Some("private"),
+        None,
+    )
+    .await
+    .unwrap();
 
     bootstrap::clear_cache();
     let at_private = restricted_at(&ctx, &at(&[("*", Sensitivity::Private)]), &[]);
@@ -1172,12 +1459,28 @@ async fn the_recall_report_never_quotes_content_the_caller_cannot_search_for() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
     let outside = nonce("recalloutside");
     let inside = nonce("recallinside");
-    write::run(&ctx, &format!("the vault rota starts {outside}"), "project:vault", None, None, None, None)
-        .await
-        .unwrap();
-    write::run(&ctx, &format!("an open fact anyone may read {inside}"), "global", None, None, None, None)
-        .await
-        .unwrap();
+    write::run(
+        &ctx,
+        &format!("the vault rota starts {outside}"),
+        "project:vault",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    write::run(
+        &ctx,
+        &format!("an open fact anyone may read {inside}"),
+        "global",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     let limited = restricted(&ctx, &["global"], &["global"]);
     let report = recall::measure(&limited, 25, 5).await.unwrap();
@@ -1250,9 +1553,17 @@ async fn a_namespace_the_ceiling_refuses_is_absent_from_also_searched() {
         ]),
         &[],
     );
-    let res = search::run(&narrow, "what does warden use for scheduled jobs", None, None, None, None, None)
-        .await
-        .unwrap();
+    let res = search::run(
+        &narrow,
+        "what does warden use for scheduled jobs",
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let published = serde_json::to_value(&res).unwrap().to_string();
 
     assert!(!published.contains(&refused), "the row itself leaked: {published}");
@@ -1287,12 +1598,28 @@ async fn the_export_never_counts_the_rows_a_grant_excludes() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
     let outside = nonce("exportoutside");
     let inside = nonce("exportinside");
-    write::run(&ctx, &format!("the vault rota starts {outside}"), "project:vault", None, None, None, None)
-        .await
-        .unwrap();
-    write::run(&ctx, &format!("an open fact anyone may read {inside}"), "global", None, None, None, None)
-        .await
-        .unwrap();
+    write::run(
+        &ctx,
+        &format!("the vault rota starts {outside}"),
+        "project:vault",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    write::run(
+        &ctx,
+        &format!("an open fact anyone may read {inside}"),
+        "global",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     let limited = restricted(&ctx, &["global"], &["global"]);
     let mirrored = export::run(&limited, None, None).await.unwrap();
@@ -1316,16 +1643,29 @@ async fn the_export_never_counts_the_rows_a_grant_excludes() {
 #[tokio::test]
 async fn the_review_queue_hands_a_narrow_grant_no_tenant_wide_row_counts() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
-    write::run(&ctx, "a fact the narrow grant cannot reach", "project:vault", None, None, None, None)
+    write::run(
+        &ctx,
+        "a fact the narrow grant cannot reach",
+        "project:vault",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    write::run(&ctx, "a fact the narrow grant may read", "global", None, None, None, None)
         .await
         .unwrap();
-    write::run(&ctx, "a fact the narrow grant may read", "global", None, None, None, None).await.unwrap();
 
     let limited = restricted(&ctx, &["global"], &["global"]);
     let queue = review::queue(&limited, Some(10)).await.unwrap();
     let published = serde_json::to_value(&queue).unwrap().to_string();
     assert!(queue.staleness.is_none(), "live_rows counts the whole tenant: {published}");
-    assert!(!published.contains("live_rows"), "and it must not survive in the payload: {published}");
+    assert!(
+        !published.contains("live_rows"),
+        "and it must not survive in the payload: {published}"
+    );
     assert!(
         !queue.text.contains("live rows"),
         "the rendered half carries the same claim: {}",
@@ -1382,9 +1722,17 @@ async fn the_sensitivity_default_table_classifies_a_write_when_the_environment_i
     booted.cfg = Arc::new(cfg);
 
     let secret = nonce("tablevsenv");
-    let w = write::run(&booted, &format!("vault note {secret}"), "project:vault", None, None, None, None)
-        .await
-        .unwrap();
+    let w = write::run(
+        &booted,
+        &format!("vault note {secret}"),
+        "project:vault",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         w.sensitivity,
         Sensitivity::Private,
@@ -1393,11 +1741,13 @@ async fn the_sensitivity_default_table_classifies_a_write_when_the_environment_i
 
     // The row this test added is not part of the seeded set, and `setup` does not truncate this
     // table, so it goes back out rather than following the next run around.
-    sqlx::query("DELETE FROM sensitivity_default WHERE tenant_id = $1 AND pattern = 'project:vault'")
-        .bind(&booted.cfg.tenant_id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "DELETE FROM sensitivity_default WHERE tenant_id = $1 AND pattern = 'project:vault'",
+    )
+    .bind(&booted.cfg.tenant_id)
+    .execute(&pool)
+    .await
+    .unwrap();
 }
 
 /// Finding 4. A sealed read the sensitivity ceiling refused answered "name the namespace to read a
@@ -1408,9 +1758,13 @@ async fn a_sealed_read_the_ceiling_refused_says_so_instead_of_asking_for_a_names
     let (ctx, _pool, _serial) = ctx_or_skip!();
 
     let named = restricted_at(&ctx, &at(&[("global", Sensitivity::Open)]), &[]);
-    let err = lumberroom_server::services::sealed::get(&named, "hmac-anything", Some(vec!["global".into()]))
-        .await
-        .unwrap_err();
+    let err = lumberroom_server::services::sealed::get(
+        &named,
+        "hmac-anything",
+        Some(vec!["global".into()]),
+    )
+    .await
+    .unwrap_err();
     let msg = err.client_message().to_string();
     assert_eq!(err.kind.http_status(), 403, "the grant refused it, so it is not a bad request");
     assert!(msg.contains("sealed"), "the message names the ceiling that refused: {msg}");
@@ -1424,7 +1778,8 @@ async fn a_sealed_read_the_ceiling_refused_says_so_instead_of_asking_for_a_names
     // The original message is still right for the case it was written for: nothing named, and a
     // grant with no concrete namespace to look in.
     let globs = restricted_at(&ctx, &at(&[("*", Sensitivity::Sealed)]), &[]);
-    let err = lumberroom_server::services::sealed::get(&globs, "hmac-anything", None).await.unwrap_err();
+    let err =
+        lumberroom_server::services::sealed::get(&globs, "hmac-anything", None).await.unwrap_err();
     assert_eq!(err.kind.http_status(), 400);
     assert!(
         err.client_message().contains("name the namespace"),
@@ -1441,23 +1796,28 @@ async fn a_sealed_read_the_ceiling_refused_says_so_instead_of_asking_for_a_names
 async fn a_private_row_stores_ciphertext_and_reopens_to_the_original_through_the_real_kek() {
     let (ctx, pool, _serial) = ctx_or_skip!();
     let plaintext = "the private probe fact zqxprobezqx";
-    let w = write::run(&ctx, plaintext, "user:me", None, None, Some("private"), None).await.unwrap();
+    let w =
+        write::run(&ctx, plaintext, "user:me", None, None, Some("private"), None).await.unwrap();
     let id = uuid::Uuid::parse_str(&w.id).unwrap();
 
-    let row: (Option<String>, Option<Vec<u8>>, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT content, content_ct, enc_alg, kek_id FROM memory WHERE id = $1")
-        .bind(id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let row: (Option<String>, Option<Vec<u8>>, Option<String>, Option<String>) =
+        sqlx::query_as("SELECT content, content_ct, enc_alg, kek_id FROM memory WHERE id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert!(row.0.is_none(), "a private row's content column must stay NULL");
     assert!(row.1.is_some(), "a private row must carry ciphertext");
     assert!(row.2.is_some(), "a private row must record its encryption algorithm");
     assert!(row.3.is_some(), "a private row must record which kek sealed it");
 
-    let batch = lumberroom_server::services::SealedReader::sealed_batch(&*ctx.repos.ciphertext.clone().unwrap(), "me", &[id])
-        .await
-        .unwrap();
+    let batch = lumberroom_server::services::SealedReader::sealed_batch(
+        &*ctx.repos.ciphertext.clone().unwrap(),
+        "me",
+        &[id],
+    )
+    .await
+    .unwrap();
     assert_eq!(batch.len(), 1, "sealed_batch must return exactly the row asked for");
 
     let kek = ctx.keys.clone().unwrap().kek().await.unwrap();
@@ -1482,9 +1842,17 @@ async fn a_private_row_stores_ciphertext_and_reopens_to_the_original_through_the
 async fn an_alias_reaches_facts_filed_under_the_projects_old_name() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
 
-    write::run(&ctx, "Ferrous ships its frontend from apps/web", "project:ferrous", None, None, None, None)
-        .await
-        .unwrap();
+    write::run(
+        &ctx,
+        "Ferrous ships its frontend from apps/web",
+        "project:ferrous",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     write::run(&ctx, "Cuprum bills annually in euros", "project:cuprum", None, None, None, None)
         .await
         .unwrap();
@@ -1532,9 +1900,17 @@ async fn an_alias_reaches_facts_filed_under_the_projects_old_name() {
 async fn an_alias_resolves_from_the_old_name_as_well_as_the_new_one() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
 
-    write::run(&ctx, "Tinbox ships its frontend from apps/web", "project:tinbox", None, None, None, None)
-        .await
-        .unwrap();
+    write::run(
+        &ctx,
+        "Tinbox ships its frontend from apps/web",
+        "project:tinbox",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     write::run(&ctx, "Zincbox bills annually in euros", "project:zincbox", None, None, None, None)
         .await
         .unwrap();
@@ -1595,9 +1971,17 @@ async fn an_alias_group_does_not_cross_a_namespace_prefix() {
     write::run(&ctx, "Leadbox runs its billing monthly", "project:leadbox", None, None, None, None)
         .await
         .unwrap();
-    write::run(&ctx, "the leadbox in the hallway needs a new lock", "personal:leadbox", None, None, None, None)
-        .await
-        .unwrap();
+    write::run(
+        &ctx,
+        "the leadbox in the hallway needs a new lock",
+        "personal:leadbox",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     put_alias(&ctx, "project:goldbox", "leadbox", "goldbox").await;
 
     let personal = search::run(
@@ -1628,9 +2012,17 @@ async fn an_alias_does_not_pull_in_a_namespace_the_caller_may_not_read() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
 
     let secret = nonce("aliasgrant");
-    write::run(&ctx, &format!("Ferrous keeps {secret} in apps/web"), "project:ferrous", None, None, None, None)
-        .await
-        .unwrap();
+    write::run(
+        &ctx,
+        &format!("Ferrous keeps {secret} in apps/web"),
+        "project:ferrous",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     write::run(&ctx, "Cuprum bills annually in euros", "project:cuprum", None, None, None, None)
         .await
         .unwrap();
@@ -1639,19 +2031,27 @@ async fn an_alias_does_not_pull_in_a_namespace_the_caller_may_not_read() {
     // The owner reads both, so the alias demonstrably works before the narrow grant is asked the
     // same question. Without this half, a broken expansion would pass the assertions below.
     let asked = || Some(vec!["project:cuprum".to_string()]);
-    let owner = search::run(&ctx, "where does ferrous keep its frontend", asked(), None, None, None, None)
-        .await
-        .unwrap();
+    let owner =
+        search::run(&ctx, "where does ferrous keep its frontend", asked(), None, None, None, None)
+            .await
+            .unwrap();
     assert!(
         owner.hits.iter().any(|x| x.namespace == "project:ferrous"),
         "the alias has to reach the old namespace for the owner"
     );
 
     let narrow = restricted(&ctx, &["project:cuprum"], &["project:cuprum"]);
-    let answer =
-        search::run(&narrow, "where does ferrous keep its frontend", asked(), None, None, None, None)
-            .await
-            .unwrap();
+    let answer = search::run(
+        &narrow,
+        "where does ferrous keep its frontend",
+        asked(),
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     assert!(
         !answer.hits.iter().any(|x| x.namespace == "project:ferrous"),
         "the alias reached a namespace this grant excludes"
@@ -1756,17 +2156,10 @@ async fn three_versions(ctx: &Ctx, namespaces: [&str; 3]) -> [uuid::Uuid; 3] {
     .enumerate()
     {
         let previous = written.last().cloned();
-        let outcome = write::run(
-            ctx,
-            content,
-            namespaces[i],
-            None,
-            previous.as_deref(),
-            None,
-            day(days),
-        )
-        .await
-        .unwrap();
+        let outcome =
+            write::run(ctx, content, namespaces[i], None, previous.as_deref(), None, day(days))
+                .await
+                .unwrap();
         written.push(outcome.id);
     }
     let id = |s: &String| uuid::Uuid::parse_str(s).unwrap();
@@ -1806,15 +2199,18 @@ async fn a_chain_of_three_reads_back_oldest_first_with_periods_that_tile() {
         .subject_history(ctx.tenant(), &ctx.principal.read, ids[2])
         .await
         .unwrap();
-    let periods: Vec<(Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>)> =
-        timeline.versions.iter().map(|m| (m.occurred_at, m.occurred_until)).collect();
+    let periods: Vec<(
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+    )> = timeline.versions.iter().map(|m| (m.occurred_at, m.occurred_until)).collect();
     for (i, (start, end)) in periods.iter().enumerate() {
         assert!(start.is_some(), "version {i} lost the date it was written with");
         match periods.get(i + 1) {
             // Half-open, so one period's end is the next one's start and no instant belongs to two
             // versions. A gap here reads as "nothing was true then" and an overlap as "both were".
             Some((next_start, _)) => assert_eq!(
-                end, next_start,
+                end,
+                next_start,
                 "version {i} does not end where version {} begins",
                 i + 1
             ),
@@ -1837,8 +2233,7 @@ async fn a_version_the_grant_refuses_is_counted_rather_than_stopping_the_walk() 
     let ids = three_versions(&ctx, ["project:ports", "project:hidden", "project:ports"]).await;
     let narrow = grants(&[("project:ports", Sensitivity::Open)]);
 
-    let timeline =
-        ctx.repos.memories.subject_history(ctx.tenant(), &narrow, ids[2]).await.unwrap();
+    let timeline = ctx.repos.memories.subject_history(ctx.tenant(), &narrow, ids[2]).await.unwrap();
     let order: Vec<&str> = timeline.versions.iter().map(|m| m.id.as_str()).collect();
     assert_eq!(
         order,
@@ -1889,13 +2284,15 @@ async fn a_client_without_the_history_capability_reads_no_past() {
         refused.client_message()
     );
 
-    let leaf = lumberroom_server::console::data::leaf(&blind, &ids[2].to_string()).await.unwrap().unwrap();
+    let leaf =
+        lumberroom_server::console::data::leaf(&blind, &ids[2].to_string()).await.unwrap().unwrap();
     assert_eq!(leaf.revisions.len(), 1, "a reader without the capability sees one version");
     assert_eq!(leaf.revisions[0].id, ids[2].to_string());
 
     // The same call with the capability, so the assertion above is about the capability rather than
     // about a chain that was never built.
-    let full = lumberroom_server::console::data::leaf(&ctx, &ids[2].to_string()).await.unwrap().unwrap();
+    let full =
+        lumberroom_server::console::data::leaf(&ctx, &ids[2].to_string()).await.unwrap().unwrap();
     assert_eq!(full.revisions.len(), 3);
 }
 
@@ -1910,13 +2307,23 @@ async fn a_client_without_the_history_capability_reads_no_past() {
 async fn three_upserts_leave_two_versions_newest_first_without_the_live_value() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
     for port in ["8080", "8443", "8787"] {
-        registry::set(&ctx, "global", "service", "services.lumberroom.port", &serde_json::json!(port), None, None)
-            .await
-            .unwrap();
+        registry::set(
+            &ctx,
+            "global",
+            "service",
+            "services.lumberroom.port",
+            &serde_json::json!(port),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
     }
 
     let archive =
-        registry::history(&ctx, "service", "services.lumberroom.port", Some("global"), None, None).await.unwrap();
+        registry::history(&ctx, "service", "services.lumberroom.port", Some("global"), None, None)
+            .await
+            .unwrap();
     let values: Vec<&str> =
         archive.entries.iter().map(|v| v.value.as_str().unwrap_or_default()).collect();
     assert_eq!(values, vec!["8443", "8080"], "newest first, and the live value is not among them");
@@ -1924,13 +2331,19 @@ async fn three_upserts_leave_two_versions_newest_first_without_the_live_value() 
     assert_eq!(archive.key, "services.lumberroom.port");
 
     let versions: Vec<i32> = archive.entries.iter().map(|v| v.version).collect();
-    assert_eq!(versions, vec![2, 1], "each row carries the version it was, not the one that replaced it");
+    assert_eq!(
+        versions,
+        vec![2, 1],
+        "each row carries the version it was, not the one that replaced it"
+    );
     assert!(
         archive.entries.windows(2).all(|w| w[0].replaced_at >= w[1].replaced_at),
         "the order is by when the value was replaced"
     );
 
-    let live = registry::get(&ctx, "service", "services.lumberroom.port", Some("global"), None).await.unwrap();
+    let live = registry::get(&ctx, "service", "services.lumberroom.port", Some("global"), None)
+        .await
+        .unwrap();
     assert_eq!(
         live.value.as_str(),
         Some("8787"),
@@ -1943,16 +2356,35 @@ async fn three_upserts_leave_two_versions_newest_first_without_the_live_value() 
 async fn a_history_limit_of_one_returns_the_newest_version_alone() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
     for port in ["8080", "8443", "8787"] {
-        registry::set(&ctx, "global", "service", "services.lumberroom.port", &serde_json::json!(port), None, None)
-            .await
-            .unwrap();
-    }
-
-    let page = registry::history(&ctx, "service", "services.lumberroom.port", Some("global"), None, Some(1))
+        registry::set(
+            &ctx,
+            "global",
+            "service",
+            "services.lumberroom.port",
+            &serde_json::json!(port),
+            None,
+            None,
+        )
         .await
         .unwrap();
+    }
+
+    let page = registry::history(
+        &ctx,
+        "service",
+        "services.lumberroom.port",
+        Some("global"),
+        None,
+        Some(1),
+    )
+    .await
+    .unwrap();
     assert_eq!(page.entries.len(), 1);
-    assert_eq!(page.entries[0].value.as_str(), Some("8443"), "the newest retired value, not the oldest");
+    assert_eq!(
+        page.entries[0].value.as_str(),
+        Some("8443"),
+        "the newest retired value, not the oldest"
+    );
 }
 
 /// A grant over what a key holds is not a grant over what it used to hold.
@@ -1962,18 +2394,41 @@ async fn a_history_limit_of_one_returns_the_newest_version_alone() {
 #[tokio::test]
 async fn a_client_without_the_history_capability_is_refused_the_registry_archive() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
-    registry::set(&ctx, "global", "service", "services.lumberroom.port", &serde_json::json!("8080"), None, None)
-        .await
-        .unwrap();
-    registry::set(&ctx, "global", "service", "services.lumberroom.port", &serde_json::json!("8787"), None, None)
-        .await
-        .unwrap();
+    registry::set(
+        &ctx,
+        "global",
+        "service",
+        "services.lumberroom.port",
+        &serde_json::json!("8080"),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    registry::set(
+        &ctx,
+        "global",
+        "service",
+        "services.lumberroom.port",
+        &serde_json::json!("8787"),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     let blind = restricted(&ctx, &["global"], &[]);
     assert!(!blind.principal.may_read_history);
-    let refused = registry::history(&blind, "service", "services.lumberroom.port", Some("global"), None, None)
-        .await
-        .unwrap_err();
+    let refused = registry::history(
+        &blind,
+        "service",
+        "services.lumberroom.port",
+        Some("global"),
+        None,
+        None,
+    )
+    .await
+    .unwrap_err();
     let message = refused.client_message().to_string();
     assert!(
         message.contains("no longer holds"),
@@ -1984,7 +2439,9 @@ async fn a_client_without_the_history_capability_is_refused_the_registry_archive
 
     // The same client still reads the value, which is what makes this a second axis rather than a
     // narrower grant.
-    let live = registry::get(&blind, "service", "services.lumberroom.port", Some("global"), None).await.unwrap();
+    let live = registry::get(&blind, "service", "services.lumberroom.port", Some("global"), None)
+        .await
+        .unwrap();
     assert_eq!(live.value.as_str(), Some("8787"));
 }
 
@@ -2075,17 +2532,34 @@ async fn link_proposal(pool: &PgPool, proposal: uuid::Uuid, memory: &str) {
 #[tokio::test]
 async fn include_superseded_needs_the_history_capability_like_as_of_does() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
-    let old = write::run(&ctx, "the vault password lives in the old keychain", "user:me", None, None, None, None)
-        .await
-        .unwrap();
-    write::run(&ctx, "the vault password lives in 1Password", "user:me", None, Some(&old.id), None, None)
-        .await
-        .unwrap();
+    let old = write::run(
+        &ctx,
+        "the vault password lives in the old keychain",
+        "user:me",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    write::run(
+        &ctx,
+        "the vault password lives in 1Password",
+        "user:me",
+        None,
+        Some(&old.id),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     let blind = with_principal(&ctx, |p| p.may_read_history = false);
-    let refused = search::run(&blind, "where the vault password lives", None, None, None, Some(true), None)
-        .await
-        .unwrap_err();
+    let refused =
+        search::run(&blind, "where the vault password lives", None, None, None, Some(true), None)
+            .await
+            .unwrap_err();
     assert_eq!(refused.kind.http_status(), 403);
     assert!(refused.client_message().contains("no longer hold"), "{}", refused.client_message());
 
@@ -2096,10 +2570,14 @@ async fn include_superseded_needs_the_history_capability_like_as_of_does() {
     assert!(!live.hits.iter().any(|h| h.id == old.id));
 
     // With the capability, the flag does what it says.
-    let seen = search::run(&ctx, "where the vault password lives", None, None, None, Some(true), None)
-        .await
-        .unwrap();
-    assert!(seen.hits.iter().any(|h| h.id == old.id), "the owner asked for history and did not get it");
+    let seen =
+        search::run(&ctx, "where the vault password lives", None, None, None, Some(true), None)
+            .await
+            .unwrap();
+    assert!(
+        seen.hits.iter().any(|h| h.id == old.id),
+        "the owner asked for history and did not get it"
+    );
 }
 
 #[tokio::test]
@@ -2108,22 +2586,26 @@ async fn an_emission_is_a_keyed_digest_and_is_never_recorded_for_an_encrypted_ro
     let open_text = format!("the open fact is {}", nonce("emitopen"));
     let private_text = format!("the private fact is {}", nonce("emitpriv"));
     let open = write::run(&ctx, &open_text, "user:me", None, None, None, None).await.unwrap();
-    let private = write::run(&ctx, &private_text, "user:me", None, None, Some("private"), None).await.unwrap();
-    assert_eq!(private.sensitivity, Sensitivity::Private);
-
-    let hits = search::run(&ctx, "the fact is", Some(vec!["user:me".into()]), Some(10), None, None, None)
+    let private = write::run(&ctx, &private_text, "user:me", None, None, Some("private"), None)
         .await
         .unwrap();
+    assert_eq!(private.sensitivity, Sensitivity::Private);
+
+    let hits =
+        search::run(&ctx, "the fact is", Some(vec!["user:me".into()]), Some(10), None, None, None)
+            .await
+            .unwrap();
     assert!(hits.hits.iter().any(|h| h.id == open.id));
     assert!(hits.hits.iter().any(|h| h.id == private.id), "the owner reads the private row");
     // record_emissions is fire and forget by contract.
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
 
-    let recorded: Vec<(uuid::Uuid, String)> =
-        sqlx::query_as("SELECT memory_id, content_sha256 FROM recall_emission WHERE tenant_id = 'me'")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
+    let recorded: Vec<(uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT memory_id, content_sha256 FROM recall_emission WHERE tenant_id = 'me'",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
     let open_id = uuid::Uuid::parse_str(&open.id).unwrap();
     let private_id = uuid::Uuid::parse_str(&private.id).unwrap();
     assert!(
@@ -2136,7 +2618,8 @@ async fn an_emission_is_a_keyed_digest_and_is_never_recorded_for_an_encrypted_ro
         .map(|(_, h)| h.clone())
         .expect("the open row was emitted");
 
-    let keyed = lumberroom_server::crypto::Digester::from_provider(ctx.keys.as_ref()).await.unwrap();
+    let keyed =
+        lumberroom_server::crypto::Digester::from_provider(ctx.keys.as_ref()).await.unwrap();
     assert!(keyed.is_keyed());
     assert_eq!(stored, keyed.digest(&open_text), "the stored digest is the keyed one");
     assert_ne!(
@@ -2154,7 +2637,8 @@ async fn a_proposal_loses_its_plaintext_once_its_memory_is_encrypted_or_forgotte
 
     // Linked to a private row: cleared at the link.
     let sealed = raw_proposal(&pool, &text, Some(&text)).await;
-    let private = write::run(&ctx, &text, "user:me", None, None, Some("private"), None).await.unwrap();
+    let private =
+        write::run(&ctx, &text, "user:me", None, None, Some("private"), None).await.unwrap();
     link_proposal(&pool, sealed, &private.id).await;
     let (content, quote, memory_id, _) = proposal_state(&pool, sealed).await;
     assert_eq!(content, "", "the plaintext stayed in the queue after the row was sealed");
@@ -2181,13 +2665,15 @@ async fn a_proposal_loses_its_plaintext_once_its_memory_is_encrypted_or_forgotte
 async fn forgetting_a_memory_the_queue_produced_or_targets_succeeds() {
     let (ctx, pool, _serial) = ctx_or_skip!();
     let text = format!("an ingested private fact {}", nonce("fk"));
-    let produced = write::run(&ctx, &text, "user:me", None, None, Some("private"), None).await.unwrap();
+    let produced =
+        write::run(&ctx, &text, "user:me", None, None, Some("private"), None).await.unwrap();
     let proposal = raw_proposal(&pool, &text, None).await;
     link_proposal(&pool, proposal, &produced.id).await;
 
-    let target = write::run(&ctx, "a fact a proposal wants to replace", "user:me", None, None, None, None)
-        .await
-        .unwrap();
+    let target =
+        write::run(&ctx, "a fact a proposal wants to replace", "user:me", None, None, None, None)
+            .await
+            .unwrap();
     let pinned = raw_proposal(&pool, "the replacement", None).await;
     sqlx::query("UPDATE ingest_proposal SET supersedes = $2 WHERE id = $1")
         .bind(pinned)
@@ -2240,12 +2726,28 @@ async fn no_foreign_key_into_memory_is_left_to_block_a_delete() {
 #[tokio::test]
 async fn deleting_a_correction_does_not_revive_a_row_the_caller_cannot_reach() {
     let (ctx, pool, _serial) = ctx_or_skip!();
-    let retired = write::run(&ctx, "the salary figure, the old one", "user:me", None, None, Some("private"), None)
-        .await
-        .unwrap();
-    let correction = write::run(&ctx, "the salary figure was corrected", "user:me", None, Some(&retired.id), None, None)
-        .await
-        .unwrap();
+    let retired = write::run(
+        &ctx,
+        "the salary figure, the old one",
+        "user:me",
+        None,
+        None,
+        Some("private"),
+        None,
+    )
+    .await
+    .unwrap();
+    let correction = write::run(
+        &ctx,
+        "the salary figure was corrected",
+        "user:me",
+        None,
+        Some(&retired.id),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(correction.sensitivity, Sensitivity::Open);
     assert_eq!(memory_links(&pool, &retired.id).await.1, Some(correction.id.clone()));
 
@@ -2273,7 +2775,8 @@ async fn deleting_a_correction_does_not_revive_a_row_the_caller_cannot_reach() {
 #[tokio::test]
 async fn deleting_the_middle_of_a_chain_splices_the_ends_together() {
     let (ctx, pool, _serial) = ctx_or_skip!();
-    let first = write::run(&ctx, "the port is 8080", "user:me", None, None, None, None).await.unwrap();
+    let first =
+        write::run(&ctx, "the port is 8080", "user:me", None, None, None, None).await.unwrap();
     let second = write::run(&ctx, "the port is 8443", "user:me", None, Some(&first.id), None, None)
         .await
         .unwrap();
@@ -2298,9 +2801,10 @@ async fn deleting_the_middle_of_a_chain_splices_the_ends_together() {
     );
 
     // The first row is retired, so a live search does not serve it beside the third.
-    let live = search::run(&ctx, "the port", Some(vec!["user:me".into()]), Some(10), None, None, None)
-        .await
-        .unwrap();
+    let live =
+        search::run(&ctx, "the port", Some(vec!["user:me".into()]), Some(10), None, None, None)
+            .await
+            .unwrap();
     assert!(live.hits.iter().any(|h| h.id == third.id));
     assert!(!live.hits.iter().any(|h| h.id == first.id), "two live versions of one fact");
 }
@@ -2309,16 +2813,19 @@ async fn deleting_the_middle_of_a_chain_splices_the_ends_together() {
 async fn a_write_only_grant_cannot_learn_whether_its_exact_sentence_is_stored() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
     let sentence = format!("the production database password is kept in {}", nonce("dedupe"));
-    let existing = write::run(&ctx, &sentence, "project:secret", None, None, None, None).await.unwrap();
+    let existing =
+        write::run(&ctx, &sentence, "project:secret", None, None, None, None).await.unwrap();
 
     let write_only = restricted(&ctx, &[], &["project:secret"]);
-    let probe = write::run(&write_only, &sentence, "project:secret", None, None, None, None).await.unwrap();
+    let probe =
+        write::run(&write_only, &sentence, "project:secret", None, None, None, None).await.unwrap();
     assert!(!probe.deduplicated, "deduplicated:true is a yes to an exact-content guess");
     assert_ne!(probe.id, existing.id, "and the id is the row's own");
 
     // The same sentence from a client that may read the namespace collapses, as before.
     let reader = restricted(&ctx, &["project:secret"], &["project:secret"]);
-    let again = write::run(&reader, &sentence, "project:secret", None, None, None, None).await.unwrap();
+    let again =
+        write::run(&reader, &sentence, "project:secret", None, None, None, None).await.unwrap();
     assert!(again.deduplicated);
 }
 
@@ -2336,14 +2843,28 @@ async fn a_private_write_is_refused_while_the_server_is_degraded_onto_the_hash_e
         "the service keys on this prefix"
     );
 
-    let refused = write::run(&ctx, "a private fact while degraded", "user:me", None, None, Some("private"), None)
-        .await
-        .unwrap_err();
+    let refused = write::run(
+        &ctx,
+        "a private fact while degraded",
+        "user:me",
+        None,
+        None,
+        Some("private"),
+        None,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(refused.kind.http_status(), 503);
-    assert!(refused.client_message().contains("fallback hash embedder"), "{}", refused.client_message());
+    assert!(
+        refused.client_message().contains("fallback hash embedder"),
+        "{}",
+        refused.client_message()
+    );
 
     // Open writes are unaffected: the sketch of an open row sits beside its plaintext anyway.
-    write::run(&ctx, "an open fact while degraded", "user:me", None, None, None, None).await.unwrap();
+    write::run(&ctx, "an open fact while degraded", "user:me", None, None, None, None)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -2352,67 +2873,130 @@ async fn an_open_ceiling_writer_cannot_replace_or_declassify_a_private_registry_
     let secret = nonce("regslot");
     ctx.repos
         .registry
-        .upsert(registry_write_at("user:me", "credentials.aws.root", &secret, Sensitivity::Private, &provenance()))
+        .upsert(registry_write_at(
+            "user:me",
+            "credentials.aws.root",
+            &secret,
+            Sensitivity::Private,
+            &provenance(),
+        ))
         .await
         .unwrap();
 
     let mut bot = narrow(&ctx, "user:me", Sensitivity::Open);
     bot.principal.registry_write = true;
-    let refused = registry::set(&bot, "user:me", "host", "credentials.aws.root", &serde_json::json!("poisoned"), None, None)
-        .await
-        .unwrap_err();
+    let refused = registry::set(
+        &bot,
+        "user:me",
+        "host",
+        "credentials.aws.root",
+        &serde_json::json!("poisoned"),
+        None,
+        None,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(refused.kind.http_status(), 403);
     let message = refused.client_message().to_string();
     assert!(!message.contains("private"), "the level is the thing being hidden: {message}");
     assert!(!message.contains(&secret), "{message}");
 
-    let row = sqlx::query("SELECT value, sensitivity, version FROM registry WHERE key = 'credentials.aws.root'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let row = sqlx::query(
+        "SELECT value, sensitivity, version FROM registry WHERE key = 'credentials.aws.root'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(row.get::<serde_json::Value, _>("value"), serde_json::json!(secret));
     assert_eq!(row.get::<&str, _>("sensitivity"), "private");
     assert_eq!(row.get::<i32, _>("version"), 1, "a refused write must not bump the version");
 
     // The owner's agents still read the owner's value.
-    let got = registry::get(&ctx, "host", "credentials.aws.root", Some("user:me"), None).await.unwrap();
+    let got =
+        registry::get(&ctx, "host", "credentials.aws.root", Some("user:me"), None).await.unwrap();
     assert_eq!(got.value, serde_json::json!(secret));
 
     // And the same bot writes an empty slot at open, which is all its grant was for.
-    registry::set(&bot, "user:me", "host", "machines.laptop.os", &serde_json::json!("macOS"), None, None)
-        .await
-        .unwrap();
+    registry::set(
+        &bot,
+        "user:me",
+        "host",
+        "machines.laptop.os",
+        &serde_json::json!("macOS"),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn raising_a_registry_keys_level_takes_its_history_with_it() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
     let secret = nonce("reghist");
-    registry::set(&ctx, "user:me", "credential-ref", "credentials.vault.root", &serde_json::json!("old-place"), None, None)
-        .await
-        .unwrap();
-    registry::set(&ctx, "user:me", "credential-ref", "credentials.vault.root", &serde_json::json!(secret), None, None)
-        .await
-        .unwrap();
+    registry::set(
+        &ctx,
+        "user:me",
+        "credential-ref",
+        "credentials.vault.root",
+        &serde_json::json!("old-place"),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    registry::set(
+        &ctx,
+        "user:me",
+        "credential-ref",
+        "credentials.vault.root",
+        &serde_json::json!(secret),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     // The same value, reclassified. Before this, the archive took an identical copy at open.
-    registry::set(&ctx, "user:me", "credential-ref", "credentials.vault.root", &serde_json::json!(secret), Some("private"), None)
-        .await
-        .unwrap();
+    registry::set(
+        &ctx,
+        "user:me",
+        "credential-ref",
+        "credentials.vault.root",
+        &serde_json::json!(secret),
+        Some("private"),
+        None,
+    )
+    .await
+    .unwrap();
 
     let mut open_reader = narrow(&ctx, "user:me", Sensitivity::Open);
     open_reader.principal.may_read_history = true;
-    let seen = registry::history(&open_reader, "credential-ref", "credentials.vault.root", Some("user:me"), None, None)
-        .await
-        .unwrap();
+    let seen = registry::history(
+        &open_reader,
+        "credential-ref",
+        "credentials.vault.root",
+        Some("user:me"),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     assert!(
         seen.entries.is_empty(),
         "an open ceiling read the private value out of the archive: {:?}",
         seen.entries.iter().map(|e| e.value.clone()).collect::<Vec<_>>()
     );
 
-    let all = registry::history(&ctx, "credential-ref", "credentials.vault.root", Some("user:me"), None, None)
-        .await
-        .unwrap();
+    let all = registry::history(
+        &ctx,
+        "credential-ref",
+        "credentials.vault.root",
+        Some("user:me"),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(all.entries.len(), 2);
     assert!(
         all.entries.iter().all(|e| e.sensitivity == Sensitivity::Private),
@@ -2420,12 +3004,27 @@ async fn raising_a_registry_keys_level_takes_its_history_with_it() {
     );
 
     // Lowering never lowers the archive.
-    registry::set(&ctx, "user:me", "credential-ref", "credentials.vault.root", &serde_json::json!("public-place"), Some("open"), None)
-        .await
-        .unwrap();
-    let after = registry::history(&ctx, "credential-ref", "credentials.vault.root", Some("user:me"), None, None)
-        .await
-        .unwrap();
+    registry::set(
+        &ctx,
+        "user:me",
+        "credential-ref",
+        "credentials.vault.root",
+        &serde_json::json!("public-place"),
+        Some("open"),
+        None,
+    )
+    .await
+    .unwrap();
+    let after = registry::history(
+        &ctx,
+        "credential-ref",
+        "credentials.vault.root",
+        Some("user:me"),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(after.entries.len(), 3);
     assert!(after.entries.iter().all(|e| e.sensitivity == Sensitivity::Private));
 }

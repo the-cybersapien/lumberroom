@@ -3,7 +3,9 @@
 //! Every line here matches `bin/lumberroom.mjs` character for character, padding included. The owner
 //! reads these and `scripts/policy-test.sh` greps them, so a widened column is a broken script.
 
-use crate::wire::{AliasRecord, ClientRecord, ClientStatsRow, HistoryEntry, Memory, StatsTotals, ToolStatsRow};
+use crate::wire::{
+    AliasRecord, ClientRecord, ClientStatsRow, HistoryEntry, Memory, StatsTotals, ToolStatsRow,
+};
 
 /// JavaScript's `padEnd`/`padStart`: pad to width, never truncate.
 fn pad_end(s: &str, width: usize) -> String {
@@ -63,10 +65,8 @@ pub fn tool_stats_line(row: &ToolStatsRow) -> String {
 }
 
 pub fn client_stats_line(row: &ClientStatsRow) -> String {
-    let ratio = row
-        .write_to_read_ratio
-        .map(|v| format!("{v:.2}"))
-        .unwrap_or_else(|| "n/a".to_string());
+    let ratio =
+        row.write_to_read_ratio.map(|v| format!("{v:.2}")).unwrap_or_else(|| "n/a".to_string());
     let unprompted = row
         .unprompted_write_rate
         .map(|v| format!("{:.0}%", v * 100.0))
@@ -102,7 +102,10 @@ pub fn candidate_line(
         Some(s) => format!("  {s:.3}"),
         None => String::new(),
     };
-    format!("  {n:>2}.{score}  {id}  [{namespace}]  {}", content.chars().take(100).collect::<String>())
+    format!(
+        "  {n:>2}.{score}  {id}  [{namespace}]  {}",
+        content.chars().take(100).collect::<String>()
+    )
 }
 
 /// One namespace, one directory. A colon in a path is legal on Linux and a nuisance everywhere.
@@ -167,7 +170,8 @@ pub fn order_chain(entries: &[HistoryEntry]) -> Vec<&HistoryEntry> {
         entries.iter().map(|e| (e.id.as_str(), e)).collect();
     let successors: std::collections::HashSet<&str> =
         entries.iter().filter_map(|e| e.superseded_by.as_deref()).collect();
-    let roots: Vec<&HistoryEntry> = entries.iter().filter(|e| !successors.contains(e.id.as_str())).collect();
+    let roots: Vec<&HistoryEntry> =
+        entries.iter().filter(|e| !successors.contains(e.id.as_str())).collect();
 
     let Some(root) = one_root(&roots) else {
         let mut all: Vec<&HistoryEntry> = entries.iter().collect();
@@ -189,7 +193,8 @@ pub fn order_chain(entries: &[HistoryEntry]) -> Vec<&HistoryEntry> {
         }
     }
     if ordered.len() < entries.len() {
-        let mut rest: Vec<&HistoryEntry> = entries.iter().filter(|e| !seen.contains(e.id.as_str())).collect();
+        let mut rest: Vec<&HistoryEntry> =
+            entries.iter().filter(|e| !seen.contains(e.id.as_str())).collect();
         by_date(&mut rest);
         ordered.extend(rest);
     }
@@ -412,7 +417,10 @@ mod tests {
     fn a_fact_that_ended_with_no_successor_says_so_rather_than_superseded() {
         let mut e = entry("1", "the trial", Some("2026-01-01T00:00:00Z"));
         e.occurred_until = Some("2026-03-01T00:00:00Z".to_string());
-        assert_eq!(history_line(&e), "the trial: 1 Jan 2026 until 1 Mar 2026, ended, nothing replaced it");
+        assert_eq!(
+            history_line(&e),
+            "the trial: 1 Jan 2026 until 1 Mar 2026, ended, nothing replaced it"
+        );
     }
 
     #[test]
@@ -451,8 +459,7 @@ mod tests {
         let a = entry("a", "a", Some("2026-08-01T00:00:00Z"));
         let b = entry("b", "b", Some("2026-08-02T00:00:00Z"));
         let entries = [a, b];
-        let ordered: Vec<&str> =
-            order_chain(&entries).into_iter().map(|e| e.id.as_str()).collect();
+        let ordered: Vec<&str> = order_chain(&entries).into_iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ordered, vec!["a", "b"]);
     }
 

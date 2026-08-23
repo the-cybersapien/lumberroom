@@ -18,7 +18,8 @@ use crate::domain::oauth::GrantProfile;
 /// this: the owner reads these two screens before any session exists. One path rather than a second
 /// copy of the file, because a mark that drifts between the consent screen and the console is a
 /// mark the owner has to think about.
-const MARK: &str = "<img class=\"glyph\" src=\"/console/logo.svg\" width=\"32\" height=\"32\" alt=\"\">";
+const MARK: &str =
+    "<img class=\"glyph\" src=\"/console/logo.svg\" width=\"32\" height=\"32\" alt=\"\">";
 
 /// The hidden fields that carry an authorization request through the login and consent POSTs.
 ///
@@ -105,11 +106,7 @@ fn shell(title: &str, body: &str) -> String {
 }
 
 fn hidden(name: &str, value: &str) -> String {
-    format!(
-        "<input type=\"hidden\" name=\"{}\" value=\"{}\">",
-        escape(name),
-        escape(value)
-    )
+    format!("<input type=\"hidden\" name=\"{}\" value=\"{}\">", escape(name), escape(value))
 }
 
 impl FlowFields<'_> {

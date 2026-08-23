@@ -192,7 +192,9 @@ impl Status {
                 "still running. Run this again later; a batch can take up to 24 hours"
             }
             Self::Completed => "complete. Run `ingest extract --batch` to split the results",
-            Self::Failed => "the provider failed the batch. Every chunk it did not return is a failed chunk",
+            Self::Failed => {
+                "the provider failed the batch. Every chunk it did not return is a failed chunk"
+            }
             Self::Expired => {
                 "the batch missed its window. spans/ survives, so `extract --retry-failed` resends"
             }
@@ -353,14 +355,22 @@ pub async fn run(args: &BatchArgs) -> Result<RunState> {
     write_run_state(&paths, &state, Some(&batch))?;
 
     crate::out(&format!("batch {id} submitted, status {}", status.as_str()));
-    crate::out(&format!("poll it with: lumberroom ingest extract --run {} --batch-status", args.run_id));
+    crate::out(&format!(
+        "poll it with: lumberroom ingest extract --run {} --batch-status",
+        args.run_id
+    ));
     crate::out("no --provider needed on that line: state.json remembers where this batch went");
     Ok(state)
 }
 
 /// Which chunks go into the batch. Copies `extract.rs`: the failed list under `--retry-failed`,
 /// otherwise every chunk with no `out/` file yet.
-fn pending_chunks(all: &[usize], state: &RunState, paths: &RunPaths, retry_failed: bool) -> Vec<usize> {
+fn pending_chunks(
+    all: &[usize],
+    state: &RunState,
+    paths: &RunPaths,
+    retry_failed: bool,
+) -> Vec<usize> {
     if retry_failed {
         state.failed.iter().map(|f| f.index).collect()
     } else {
@@ -483,7 +493,8 @@ async fn create(
     body: &Value,
     timeout_secs: u64,
 ) -> Result<Value> {
-    let mut req = http.post(endpoint).timeout(std::time::Duration::from_secs(timeout_secs)).json(body);
+    let mut req =
+        http.post(endpoint).timeout(std::time::Duration::from_secs(timeout_secs)).json(body);
     if let Some(key) = &p.key {
         req = req.bearer_auth(key);
     }
@@ -497,7 +508,12 @@ async fn create(
 
 /// `GET {endpoint}/{id}`. The results arrive inline on this same response; there is no download
 /// step and no file to fetch.
-async fn poll(http: &reqwest::Client, p: &Provider, batch: &BatchState, timeout_secs: u64) -> Result<Value> {
+async fn poll(
+    http: &reqwest::Client,
+    p: &Provider,
+    batch: &BatchState,
+    timeout_secs: u64,
+) -> Result<Value> {
     let url = format!("{}/{}", batch.endpoint.trim_end_matches('/'), batch.id);
     let mut req = http.get(&url).timeout(std::time::Duration::from_secs(timeout_secs));
     if let Some(key) = &p.key {
@@ -628,7 +644,13 @@ pub fn route_results(results: &[Value], expected: &[usize]) -> Routed {
 /// Returns nothing to fail on. A chunk whose file will not write becomes a failed chunk the same
 /// way a chunk whose body will not parse does, because bailing on the first bad write throws away
 /// the fetch of every chunk after it and the results expire.
-fn collect(paths: &RunPaths, state: &mut RunState, batch: &BatchState, status: &Status, body: &Value) {
+fn collect(
+    paths: &RunPaths,
+    state: &mut RunState,
+    batch: &BatchState,
+    status: &Status,
+    body: &Value,
+) {
     let empty: Vec<Value> = vec![];
     let results = body["results"].as_array().unwrap_or(&empty);
     if !status.has_results() {
@@ -750,9 +772,15 @@ fn confirm(p: &Provider, endpoint: &str, yes: bool) -> Result<()> {
         host_of(endpoint)
     ));
     if p.name == "openrouter" {
-        crate::out("OpenRouter writes batch inputs and results to Google Cloud Storage and deletes");
-        crate::out("them 30 days after the batch is created. A synchronous call leaves no copy at rest.");
-        crate::out("24h is the only completion window, and a submitted batch may not be cancellable.");
+        crate::out(
+            "OpenRouter writes batch inputs and results to Google Cloud Storage and deletes",
+        );
+        crate::out(
+            "them 30 days after the batch is created. A synchronous call leaves no copy at rest.",
+        );
+        crate::out(
+            "24h is the only completion window, and a submitted batch may not be cancellable.",
+        );
     } else {
         // The 30 days is OpenRouter's published figure and nobody else's. Quoting it at a provider
         // whose retention nobody has read is worse than saying the number is unknown.
@@ -760,7 +788,9 @@ fn confirm(p: &Provider, endpoint: &str, yes: bool) -> Result<()> {
             "{}'s retention for batch inputs is not recorded here. OpenRouter keeps them 30 days;",
             p.name
         ));
-        crate::out("read this provider's terms before sending a corpus. Turnaround may be a full day.");
+        crate::out(
+            "read this provider's terms before sending a corpus. Turnaround may be a full day.",
+        );
     }
     if p.key.is_none() {
         crate::out(&format!("no key is configured for {}, so this will be refused", p.name));
@@ -786,13 +816,7 @@ fn confirm(p: &Provider, endpoint: &str, yes: bool) -> Result<()> {
 
 /// The host out of a URL, without pulling in a URL parser for one line of consent text.
 fn host_of(url: &str) -> String {
-    url.split("://")
-        .nth(1)
-        .unwrap_or(url)
-        .split('/')
-        .next()
-        .unwrap_or(url)
-        .to_string()
+    url.split("://").nth(1).unwrap_or(url).split('/').next().unwrap_or(url).to_string()
 }
 
 #[cfg(test)]
@@ -815,7 +839,12 @@ mod tests {
     }
 
     fn item_body(index: usize) -> Value {
-        request_item(index, "system prompt", "user chunk", &provider_like("openai", true, false, json!({})))
+        request_item(
+            index,
+            "system prompt",
+            "user chunk",
+            &provider_like("openai", true, false, json!({})),
+        )
     }
 
     #[test]

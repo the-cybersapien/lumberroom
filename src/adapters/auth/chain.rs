@@ -81,9 +81,7 @@ impl Authenticator for ChainAuthenticator {
             }
         }
 
-        Err(shaped
-            .or(fault)
-            .unwrap_or_else(|| DomainError::forbidden("invalid credentials")))
+        Err(shaped.or(fault).unwrap_or_else(|| DomainError::forbidden("invalid credentials")))
     }
 }
 
@@ -195,7 +193,10 @@ mod tests {
         assert_ne!(wrong.client_message(), MISSING_CREDENTIAL);
         // Some clients send the header with an empty value on the first attempt. That is a client
         // with no credential, not a client with a bad one.
-        assert_eq!(c.authenticate(Some("   ")).await.unwrap_err().client_message(), MISSING_CREDENTIAL);
+        assert_eq!(
+            c.authenticate(Some("   ")).await.unwrap_err().client_message(),
+            MISSING_CREDENTIAL
+        );
     }
 
     #[tokio::test]
@@ -239,7 +240,10 @@ mod tests {
         let c = chain(
             vec![
                 Stub::rejects("token", "invalid bearer token"),
-                Stub::rejects("oauth", "this client is registered but not yet approved by the owner"),
+                Stub::rejects(
+                    "oauth",
+                    "this client is registered but not yet approved by the owner",
+                ),
             ],
             "oauth",
         );

@@ -8,14 +8,12 @@
 
 mod chain;
 mod metadata;
-mod opaque;
 mod oidc;
+mod opaque;
 mod token;
 
 pub use chain::ChainAuthenticator;
-pub use metadata::{
-    authorization_server_metadata, protected_resource_metadata, www_authenticate,
-};
+pub use metadata::{authorization_server_metadata, protected_resource_metadata, www_authenticate};
 pub use oidc::OidcAuthenticator;
 pub use opaque::OpaqueTokenAuthenticator;
 pub use token::{fingerprint, TokenAuthenticator};
@@ -117,9 +115,7 @@ pub fn bearer(header: Option<&str>) -> Result<&str> {
         .split_once(char::is_whitespace)
         .ok_or_else(|| DomainError::forbidden("Authorization header must be \"Bearer <token>\""))?;
     if !scheme.eq_ignore_ascii_case("bearer") || token.trim().is_empty() {
-        return Err(DomainError::forbidden(
-            "Authorization header must be \"Bearer <token>\"",
-        ));
+        return Err(DomainError::forbidden("Authorization header must be \"Bearer <token>\""));
     }
     Ok(token.trim())
 }

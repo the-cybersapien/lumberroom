@@ -40,10 +40,6 @@ impl Drop for DbGuard {
 /// and never releases.
 pub async fn lock_database(url: &str) -> Option<DbGuard> {
     let mut conn = sqlx::PgConnection::connect(url).await.ok()?;
-    sqlx::query("SELECT pg_advisory_lock($1)")
-        .bind(SUITE_LOCK)
-        .execute(&mut conn)
-        .await
-        .ok()?;
+    sqlx::query("SELECT pg_advisory_lock($1)").bind(SUITE_LOCK).execute(&mut conn).await.ok()?;
     Some(DbGuard { conn: Some(conn) })
 }

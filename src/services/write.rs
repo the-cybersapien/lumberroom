@@ -789,8 +789,28 @@ fn inner_separator(token: &str) -> bool {
 /// Sentence punctuation only. Interior punctuation is what makes an identifier an identifier, so it
 /// stays.
 fn trim_edges(token: &str) -> &str {
-    token.trim_matches(|c: char| matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | '"' | '\''
-        | '(' | ')' | '[' | ']' | '{' | '}' | '“' | '”' | '‘' | '’'))
+    token.trim_matches(|c: char| {
+        matches!(
+            c,
+            '.' | ','
+                | ';'
+                | ':'
+                | '!'
+                | '?'
+                | '"'
+                | '\''
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '“'
+                | '”'
+                | '‘'
+                | '’'
+        )
+    })
 }
 
 /// Explicit negations, normalised so that "does not" and "doesn't" count the same.

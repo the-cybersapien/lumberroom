@@ -37,7 +37,8 @@ fn item_from_row(r: &sqlx::postgres::PgRow) -> SealedItem {
         key_hmac: r.get("key_hmac"),
         // Base64 because the wire contract is JSON and the bytes are opaque here anyway. The client
         // decodes and decrypts; this server does neither.
-        ciphertext: base64::engine::general_purpose::STANDARD.encode(r.get::<Vec<u8>, _>("ciphertext")),
+        ciphertext: base64::engine::general_purpose::STANDARD
+            .encode(r.get::<Vec<u8>, _>("ciphertext")),
         alg: r.get("alg"),
         source_client: r.get("source_client"),
         created_at: r.get("created_at"),

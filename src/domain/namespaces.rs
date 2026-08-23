@@ -147,11 +147,7 @@ pub fn matches(pattern: &str, namespace: &str) -> bool {
 }
 
 pub fn allowed<'a>(patterns: &[String], namespaces: &'a [String]) -> Vec<String> {
-    namespaces
-        .iter()
-        .filter(|ns| patterns.iter().any(|p| matches(p, ns)))
-        .cloned()
-        .collect()
+    namespaces.iter().filter(|ns| patterns.iter().any(|p| matches(p, ns))).cloned().collect()
 }
 
 #[cfg(test)]
@@ -214,8 +210,13 @@ mod tests {
     #[test]
     fn rejects_everything_else() {
         for bad in [
-            "", "users:me", "user:", "project:", "user:me;drop table memory",
-            "project:has spaces", "global extra",
+            "",
+            "users:me",
+            "user:",
+            "project:",
+            "user:me;drop table memory",
+            "project:has spaces",
+            "global extra",
         ] {
             assert!(normalize(bad).is_err(), "should have rejected {bad:?}");
         }
@@ -234,7 +235,10 @@ mod tests {
 
     #[test]
     fn passes_an_existing_namespace_through() {
-        assert_eq!(project_namespace("project:already-slugged").unwrap(), "project:already-slugged");
+        assert_eq!(
+            project_namespace("project:already-slugged").unwrap(),
+            "project:already-slugged"
+        );
     }
 
     #[test]

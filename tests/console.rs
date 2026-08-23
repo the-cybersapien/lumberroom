@@ -11,7 +11,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
-use sqlx::PgPool;
 use lumberroom_server::adapters::auth;
 use lumberroom_server::adapters::embedding::HashEmbedder;
 use lumberroom_server::adapters::postgres;
@@ -24,6 +23,7 @@ use lumberroom_server::mcp::AppState;
 use lumberroom_server::ports::ingest::{IngestRepository, NewProposal, ProposalSource};
 use lumberroom_server::ports::OauthStore;
 use lumberroom_server::services::{bootstrap, ingest, write, Ctx, Repos};
+use sqlx::PgPool;
 
 mod common;
 
@@ -83,11 +83,14 @@ impl Harness {
     }
 
     /// A form POST, which is the only shape the console's write routes accept.
-    async fn post(&self, path: &str, fields: &[(&str, &str)], cookie: Option<&str>) -> (u16, String) {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap();
+    async fn post(
+        &self,
+        path: &str,
+        fields: &[(&str, &str)],
+        cookie: Option<&str>,
+    ) -> (u16, String) {
+        let client =
+            reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
         let mut req = client.post(format!("{}{path}", self.base)).form(fields);
         if let Some(c) = cookie {
             req = req.header("cookie", c);
@@ -293,9 +296,13 @@ fn nonce(label: &str) -> String {
 #[tokio::test]
 async fn a_stranger_is_sent_to_the_sign_in_form_rather_than_shown_a_page() {
     let h = harness_or_skip!();
-    for path in
-        ["/console", "/console/reading", "/console/registry", "/console/search?q=anything", "/console/queue"]
-    {
+    for path in [
+        "/console",
+        "/console/reading",
+        "/console/registry",
+        "/console/search?q=anything",
+        "/console/queue",
+    ] {
         let (status, body) = h.get_anonymous(path).await;
         assert_eq!(status, 303, "{path} answered {status} to a request with no session");
         assert!(
@@ -308,9 +315,17 @@ async fn a_stranger_is_sent_to_the_sign_in_form_rather_than_shown_a_page() {
 #[tokio::test]
 async fn the_console_is_mounted_and_answers_every_read_route() {
     let h = harness_or_skip!();
-    let fact = write::run(&h.ctx, "the office wifi is on the second router", "project:lumberroom", None, None, None, None)
-        .await
-        .unwrap();
+    let fact = write::run(
+        &h.ctx,
+        "the office wifi is on the second router",
+        "project:lumberroom",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     for path in [
         "/console/reading".to_string(),
@@ -327,7 +342,10 @@ async fn the_console_is_mounted_and_answers_every_read_route() {
 
     // The placeholder says the queue is absent rather than drawing an empty one.
     let (_, queue) = h.get("/console/queue").await;
-    assert!(queue.to_lowercase().contains("ingestion"), "the queue page has to say what it waits on");
+    assert!(
+        queue.to_lowercase().contains("ingestion"),
+        "the queue page has to say what it waits on"
+    );
 }
 
 #[tokio::test]
@@ -336,19 +354,37 @@ async fn a_private_fact_is_decrypted_for_the_owner_and_marked_private() {
     let secret = nonce("consoleprivate");
     // No explicit level. The seeded namespace rule is what classifies it, which is the product
     // claim: nobody classifies anything in the normal case.
-    let w = write::run(&h.ctx, &format!("the retainer is {secret}"), "personal:finance", None, None, None, None)
-        .await
-        .unwrap();
-    assert_eq!(w.sensitivity, Sensitivity::Private, "the seeded rule has to fire or this proves nothing");
+    let w = write::run(
+        &h.ctx,
+        &format!("the retainer is {secret}"),
+        "personal:finance",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        w.sensitivity,
+        Sensitivity::Private,
+        "the seeded rule has to fire or this proves nothing"
+    );
 
     let (status, body) = h.get(&format!("/console/fact/{}", w.id)).await;
     assert_eq!(status, 200);
-    assert!(body.contains(&secret), "the owner reads the plaintext, or the console is a locked box");
+    assert!(
+        body.contains(&secret),
+        "the owner reads the plaintext, or the console is a locked box"
+    );
     assert!(body.contains("Live entry, private"), "and the page has to say so");
 
     let (status, reading) = h.get("/console/reading").await;
     assert_eq!(status, 200);
-    assert!(reading.contains(&secret), "a private row the owner may read belongs in the reading view");
+    assert!(
+        reading.contains(&secret),
+        "a private row the owner may read belongs in the reading view"
+    );
     assert!(reading.contains("class=\"e private\""), "and it is marked there too");
 }
 
@@ -358,9 +394,15 @@ async fn a_sealed_item_is_counted_and_its_bytes_reach_no_page() {
     let h = harness_or_skip!();
     let blob = nonce("consolesealed");
     let b64 = base64::engine::general_purpose::STANDARD.encode(blob.as_bytes());
-    lumberroom_server::services::sealed::put(&h.ctx, "credentials:aws", "root-key", &b64, "aes-256-gcm/client-v1")
-        .await
-        .unwrap();
+    lumberroom_server::services::sealed::put(
+        &h.ctx,
+        "credentials:aws",
+        "root-key",
+        &b64,
+        "aes-256-gcm/client-v1",
+    )
+    .await
+    .unwrap();
 
     let (status, body) = h.get("/console/reading").await;
     assert_eq!(status, 200);
@@ -382,7 +424,8 @@ async fn hostile_content_in_a_fact_renders_as_text_and_not_as_markup() {
         "<script>alert('{marker}')</script> and an <img src=x onerror=\"steal()\"> \
          plus a \"quoted\" & ampersand"
     );
-    let w = write::run(&h.ctx, &payload, "project:lumberroom", None, None, None, None).await.unwrap();
+    let w =
+        write::run(&h.ctx, &payload, "project:lumberroom", None, None, None, None).await.unwrap();
 
     for path in [
         format!("/console/fact/{}", w.id),
@@ -393,7 +436,10 @@ async fn hostile_content_in_a_fact_renders_as_text_and_not_as_markup() {
         assert_eq!(status, 200, "{path} answered {status}");
         assert!(body.contains(&marker), "{path} dropped the content instead of escaping it");
         assert!(!body.contains("<script>alert"), "{path} rendered a script tag as markup");
-        assert!(!body.contains("onerror=\"steal()\""), "{path} rendered an event handler as markup");
+        assert!(
+            !body.contains("onerror=\"steal()\""),
+            "{path} rendered an event handler as markup"
+        );
         assert!(body.contains("&lt;script&gt;"), "{path} has to show the tag as text");
         assert!(body.contains("&amp;"), "{path} has to escape the ampersand");
     }
@@ -409,14 +455,10 @@ async fn hostile_content_in_a_fact_renders_as_text_and_not_as_markup() {
 
 /// One proposal in the queue, returned by id.
 async fn queued(h: &Harness, content: &str) -> uuid::Uuid {
-    let run = ingest::open_run(
-        &h.ctx,
-        h.ingest.as_ref(),
-        "test",
-        serde_json::json!({ "roots": [] }),
-    )
-    .await
-    .unwrap();
+    let run =
+        ingest::open_run(&h.ctx, h.ingest.as_ref(), "test", serde_json::json!({ "roots": [] }))
+            .await
+            .unwrap();
     let upsert = h
         .ingest
         .insert_proposal(
@@ -633,10 +675,7 @@ async fn stored_alias(h: &Harness, namespace: &str, alias: &str) -> Option<Strin
 }
 
 async fn alias_count(h: &Harness) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM entity_alias")
-        .fetch_one(&h.pool)
-        .await
-        .unwrap()
+    sqlx::query_scalar("SELECT count(*) FROM entity_alias").fetch_one(&h.pool).await.unwrap()
 }
 
 /// Sign in, read the form, post it, and find the row.
@@ -678,17 +717,19 @@ async fn the_owner_records_an_alias_from_the_page_and_it_reaches_the_store() {
         "the row has to be in entity_alias, lowercased"
     );
 
-    let (period_since, period_until): (Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>) =
-        sqlx::query_as(
-            "SELECT since, until FROM entity_alias
+    let (period_since, period_until): (
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+    ) = sqlx::query_as(
+        "SELECT since, until FROM entity_alias
               WHERE tenant_id = $1 AND namespace = $2 AND alias = $3",
-        )
-        .bind(&h.ctx.cfg.tenant_id)
-        .bind("project:lumen")
-        .bind("warden")
-        .fetch_one(&h.pool)
-        .await
-        .unwrap();
+    )
+    .bind(&h.ctx.cfg.tenant_id)
+    .bind("project:lumen")
+    .bind("warden")
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
     assert_eq!(period_since.map(|t| t.date_naive().to_string()).as_deref(), Some("2026-03-01"));
     assert_eq!(period_until.map(|t| t.date_naive().to_string()).as_deref(), Some("2026-06-01"));
 
@@ -924,7 +965,8 @@ async fn every_screen_refuses_a_request_with_no_session() {
 #[tokio::test]
 async fn the_mark_is_served_to_a_reader_with_no_session() {
     let h = harness_or_skip!();
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let client =
+        reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
     let res = client.get(format!("{}/console/logo.svg", h.base)).send().await.unwrap();
 
     let status = res.status().as_u16();
@@ -1043,18 +1085,45 @@ fn client_revoke_token(html: &str, id: &str) -> String {
     rest[start..start + end].to_string()
 }
 
-async fn client_row(h: &Harness, name: &str) -> (String, serde_json::Value, serde_json::Value, bool, bool, bool, bool, bool, bool, String, bool) {
-    let row: (String, serde_json::Value, serde_json::Value, bool, bool, bool, bool, bool, Option<chrono::DateTime<chrono::Utc>>, String, Option<chrono::DateTime<chrono::Utc>>) =
-        sqlx::query_as(
-            "SELECT client_id, grant_read, grant_write, registry_write, sealed_capable, may_delete,
+async fn client_row(
+    h: &Harness,
+    name: &str,
+) -> (String, serde_json::Value, serde_json::Value, bool, bool, bool, bool, bool, bool, String, bool)
+{
+    let row: (
+        String,
+        serde_json::Value,
+        serde_json::Value,
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
+        Option<chrono::DateTime<chrono::Utc>>,
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+    ) = sqlx::query_as(
+        "SELECT client_id, grant_read, grant_write, registry_write, sealed_capable, may_delete,
                     may_ingest, may_read_history, consented_at, registered_via, revoked_at
                FROM oauth_client WHERE client_name = $1",
-        )
-        .bind(name)
-        .fetch_one(&h.pool)
-        .await
-        .unwrap_or_else(|e| panic!("no client named {name} in the store: {e}"));
-    (row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8.is_some(), row.9, row.10.is_some())
+    )
+    .bind(name)
+    .fetch_one(&h.pool)
+    .await
+    .unwrap_or_else(|e| panic!("no client named {name} in the store: {e}"));
+    (
+        row.0,
+        row.1,
+        row.2,
+        row.3,
+        row.4,
+        row.5,
+        row.6,
+        row.7,
+        row.8.is_some(),
+        row.9,
+        row.10.is_some(),
+    )
 }
 
 #[tokio::test]
@@ -1254,7 +1323,11 @@ async fn a_client_secret_is_shown_once_and_the_store_keeps_only_a_hash() {
             .unwrap();
     let stored = stored.expect("a confidential client stored no hash");
     assert_ne!(stored, secret, "the secret is in the database in the clear");
-    assert_eq!(stored, lumberroom_server::domain::oauth::hash_token(&secret), "the hash is not this secret's");
+    assert_eq!(
+        stored,
+        lumberroom_server::domain::oauth::hash_token(&secret),
+        "the hash is not this secret's"
+    );
 
     let (_, later) = h.get("/console/clients").await;
     assert!(!later.contains(&secret), "the secret is readable from the list afterwards");
@@ -1300,8 +1373,9 @@ async fn revoking_a_client_from_the_page_revokes_it_in_the_store() {
 
     let (_, page) = h.get("/console/clients").await;
     let token = client_revoke_token(&page, &id);
-    let (status, _) =
-        h.post(&format!("/console/clients/{id}/revoke"), &[("csrf", &token)], Some(&h.cookie)).await;
+    let (status, _) = h
+        .post(&format!("/console/clients/{id}/revoke"), &[("csrf", &token)], Some(&h.cookie))
+        .await;
     assert_eq!(status, 303, "revoking should redirect so a refresh does not repeat it");
 
     let (.., revoked) = client_row(&h, "audit-doomed").await;
@@ -1337,10 +1411,8 @@ async fn a_token_minted_for_one_client_cannot_revoke_another() {
 #[tokio::test]
 async fn a_stranger_creates_no_client() {
     let h = harness_or_skip!();
-    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM oauth_client")
-        .fetch_one(&h.pool)
-        .await
-        .unwrap();
+    let before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oauth_client").fetch_one(&h.pool).await.unwrap();
     let (status, _) = h
         .post(
             "/console/clients/new",
@@ -1349,9 +1421,7 @@ async fn a_stranger_creates_no_client() {
         )
         .await;
     assert_ne!(status, 200);
-    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM oauth_client")
-        .fetch_one(&h.pool)
-        .await
-        .unwrap();
+    let after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oauth_client").fetch_one(&h.pool).await.unwrap();
     assert_eq!(after, before, "a request with no session created a client");
 }

@@ -37,7 +37,6 @@ pub struct Corpus {
     pub missing_sessions: Vec<String>,
 }
 
-
 /// LongMemEval stamps each session `2023/02/01 (Wed) 10:20`. Nothing standard parses that, and the
 /// weekday is decoration the date already implies.
 pub fn parse_haystack_date(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {

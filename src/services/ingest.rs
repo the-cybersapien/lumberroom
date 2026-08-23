@@ -452,11 +452,7 @@ pub fn approval_order(keyed: &[(Uuid, Option<DateTime<Utc>>)]) -> Vec<Uuid> {
 /// call. The proposal supplies content, namespace, tags and its supersession target, and no
 /// sensitivity override: a proposal that could choose its own level would be a way to write a
 /// private fact at open.
-pub async fn approve(
-    ctx: &Ctx,
-    repo: &dyn IngestRepository,
-    id: Uuid,
-) -> Result<ApproveOutcome> {
+pub async fn approve(ctx: &Ctx, repo: &dyn IngestRepository, id: Uuid) -> Result<ApproveOutcome> {
     let proposal = repo
         .proposal(ctx.tenant(), id, &reader(ctx))
         .await?
@@ -516,9 +512,8 @@ pub async fn approve(
 
     match written {
         Ok(outcome) => {
-            let memory_id = Uuid::parse_str(&outcome.id).map_err(|_| {
-                DomainError::internal("write returned an id that is not a uuid")
-            })?;
+            let memory_id = Uuid::parse_str(&outcome.id)
+                .map_err(|_| DomainError::internal("write returned an id that is not a uuid"))?;
             repo.mark_written(ctx.tenant(), id, memory_id).await?;
             Ok(ApproveOutcome {
                 id,
@@ -941,10 +936,8 @@ mod tests {
 
     #[test]
     fn echoes_answer_one_bit_per_probe_in_probe_order() {
-        let probe = |hash: &str| EmissionProbe {
-            content_sha256: hash.into(),
-            observed_at: Utc::now(),
-        };
+        let probe =
+            |hash: &str| EmissionProbe { content_sha256: hash.into(), observed_at: Utc::now() };
         let hit = |hash: &str| EmissionHit {
             content_sha256: hash.into(),
             memory_id: Uuid::nil(),
@@ -975,8 +968,12 @@ mod tests {
 
     #[test]
     fn the_fill_takes_the_earliest_observation_across_the_sources() {
-        let sources =
-            vec![dated(Some(day(8, 14))), dated(None), dated(Some(day(7, 2))), dated(Some(day(8, 1)))];
+        let sources = vec![
+            dated(Some(day(8, 14))),
+            dated(None),
+            dated(Some(day(7, 2))),
+            dated(Some(day(8, 1))),
+        ];
         assert_eq!(earliest_observation(&sources), Some(day(7, 2)));
     }
 

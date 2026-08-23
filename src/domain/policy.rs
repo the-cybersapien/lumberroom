@@ -75,11 +75,7 @@ pub struct NamespaceCeiling {
 /// Union rather than intersection across patterns: two entries matching one namespace is the
 /// caller having been granted both, and the more generous one is what they were granted.
 pub fn ceiling(grants: &[NamespaceGrant], namespace: &str) -> Option<Sensitivity> {
-    grants
-        .iter()
-        .filter(|g| namespaces::matches(&g.namespace, namespace))
-        .map(|g| g.max)
-        .max()
+    grants.iter().filter(|g| namespaces::matches(&g.namespace, namespace)).map(|g| g.max).max()
 }
 
 /// The globs alone, for the paths that still reason about namespaces only.
@@ -274,9 +270,6 @@ mod tests {
             Sensitivity::Private,
             "a tool that can downgrade classification is a tool that can leak by mistake"
         );
-        assert_eq!(
-            d.resolve_for_write("credentials:aws", None),
-            Sensitivity::Sealed
-        );
+        assert_eq!(d.resolve_for_write("credentials:aws", None), Sensitivity::Sealed);
     }
 }

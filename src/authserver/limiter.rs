@@ -144,12 +144,7 @@ impl LoginLimiter {
 
         by_key.entry(key.to_string()).or_default().push(now);
 
-        Some(Reservation {
-            limiter: self,
-            key: key.to_string(),
-            peer: peer.to_string(),
-            at: now,
-        })
+        Some(Reservation { limiter: self, key: key.to_string(), peer: peer.to_string(), at: now })
     }
 
     /// A poisoned lock means a panic inside a previous call. The counters are not worth propagating

@@ -21,7 +21,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use sqlx::PgPool;
 use lumberroom_server::adapters::auth;
 use lumberroom_server::adapters::embedding::HashEmbedder;
 use lumberroom_server::adapters::postgres;
@@ -33,6 +32,7 @@ use lumberroom_server::mcp::capability::TOOL_CAPABILITIES;
 use lumberroom_server::mcp::AppState;
 use lumberroom_server::ports::OauthStore;
 use lumberroom_server::services::{alias, bootstrap, write, Ctx, Repos};
+use sqlx::PgPool;
 
 mod common;
 
@@ -96,12 +96,7 @@ impl Harness {
     /// One JSON-RPC round trip, mirroring `bin/lumberroom.mjs`: the same accept header, the same
     /// initialize before every call. The transport runs stateless with `json_response`, so a reply
     /// arrives as JSON, and the SSE branch is here because the accept header allows it.
-    async fn rpc(
-        &self,
-        token: &str,
-        method: &str,
-        params: serde_json::Value,
-    ) -> serde_json::Value {
+    async fn rpc(&self, token: &str, method: &str, params: serde_json::Value) -> serde_json::Value {
         let res = reqwest::Client::new()
             .post(format!("{}/mcp", self.base))
             .bearer_auth(token)
@@ -166,8 +161,7 @@ impl Harness {
         name: &str,
         args: serde_json::Value,
     ) -> serde_json::Value {
-        self.call(token, "tools/call", serde_json::json!({ "name": name, "arguments": args }))
-            .await
+        self.call(token, "tools/call", serde_json::json!({ "name": name, "arguments": args })).await
     }
 }
 
@@ -195,11 +189,7 @@ fn message(result: &serde_json::Value) -> String {
     result["content"]
         .as_array()
         .map(|blocks| {
-            blocks
-                .iter()
-                .filter_map(|b| b["text"].as_str())
-                .collect::<Vec<_>>()
-                .join("\n")
+            blocks.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n")
         })
         .unwrap_or_default()
 }
@@ -405,10 +395,7 @@ async fn a_bare_grant_is_offered_only_the_open_tools() {
 async fn each_capability_adds_its_own_tools_and_nothing_else() {
     let h = harness_or_skip!();
     assert_eq!(h.tools(DELETE_TOKEN).await, expected(&["memory_forget"]));
-    assert_eq!(
-        h.tools(HISTORY_TOKEN).await,
-        expected(&["memory_history", "registry_history"])
-    );
+    assert_eq!(h.tools(HISTORY_TOKEN).await, expected(&["memory_history", "registry_history"]));
     assert_eq!(h.tools(REGISTRY_TOKEN).await, expected(&["alias_set", "registry_set"]));
 }
 
@@ -492,7 +479,8 @@ async fn the_history_capability_returns_the_versions_a_correction_retired() {
     let h = harness_or_skip!();
     let id = seed_chain(&h).await;
 
-    let result = h.tool_call(HISTORY_TOKEN, "memory_history", serde_json::json!({ "id": id })).await;
+    let result =
+        h.tool_call(HISTORY_TOKEN, "memory_history", serde_json::json!({ "id": id })).await;
     assert!(!refused(&result), "{}", message(&result));
     let versions = result["structuredContent"]["versions"].as_array().unwrap().clone();
     assert_eq!(versions.len(), 2, "the chain is the write and its correction: {versions:?}");
@@ -695,7 +683,10 @@ async fn a_key_that_is_not_canonical_is_refused_with_the_repair_named() {
     let text = message(&refusal);
     assert!(refused(&refusal), "{text}");
     assert!(text.contains("invalid registry key"), "{text}");
-    assert!(text.contains("Closest valid key"), "a rejection with no repair breeds a variant: {text}");
+    assert!(
+        text.contains("Closest valid key"),
+        "a rejection with no repair breeds a variant: {text}"
+    );
 
     let retried = h
         .tool_call(

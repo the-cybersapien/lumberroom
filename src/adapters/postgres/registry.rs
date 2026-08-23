@@ -302,7 +302,11 @@ impl RegistryRepository for PgRegistryRepository {
     /// Everything the caller may read, with the ceiling applied per namespace rather than once for
     /// the whole list: work notes and personal finance can both be private while a work agent may
     /// see one and never the other.
-    async fn list(&self, tenant: &str, readable: &[NamespaceCeiling]) -> Result<Vec<RegistryEntry>> {
+    async fn list(
+        &self,
+        tenant: &str,
+        readable: &[NamespaceCeiling],
+    ) -> Result<Vec<RegistryEntry>> {
         if readable.is_empty() {
             return Ok(vec![]);
         }
@@ -377,11 +381,7 @@ impl RegistryRepository for PgRegistryRepository {
         .bind(tenant)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
-            .iter()
-            .map(entry_from_row)
-            .filter(|e| !canonical::is_canonical(&e.key))
-            .collect())
+        Ok(rows.iter().map(entry_from_row).filter(|e| !canonical::is_canonical(&e.key)).collect())
     }
 }
 
@@ -401,7 +401,10 @@ mod tests {
 
     #[test]
     fn both_arms_of_the_alias_read_apply_the_ceiling() {
-        assert_eq!(GET_SQL.matches("sensitivity_rank(r.sensitivity) <= sensitivity_rank($3)").count(), 2);
+        assert_eq!(
+            GET_SQL.matches("sensitivity_rank(r.sensitivity) <= sensitivity_rank($3)").count(),
+            2
+        );
     }
 
     #[test]
@@ -493,9 +496,8 @@ mod tests {
 
     #[test]
     fn the_write_refuses_to_replace_a_row_stored_above_the_callers_ceiling() {
-        assert!(UPSERT_SQL.contains(
-            "WHERE sensitivity_rank(registry.sensitivity) <= sensitivity_rank($9)"
-        ));
+        assert!(UPSERT_SQL
+            .contains("WHERE sensitivity_rank(registry.sensitivity) <= sensitivity_rank($9)"));
         // The guard belongs to the update arm. On the insert arm there is no stored level to
         // compare and the clause would refuse every first write.
         let guard = UPSERT_SQL.find("WHERE sensitivity_rank").unwrap();
@@ -509,9 +511,11 @@ mod tests {
     fn the_archive_records_a_replaced_value_at_the_higher_of_the_two_levels() {
         // Raising a key's level must not leave its previous value readable at the old one: the
         // value the owner just classified is, more often than not, the value that was there.
-        assert!(HISTORY_LEVEL_MIGRATION.contains("sensitivity_rank(OLD.sensitivity) >= sensitivity_rank(NEW.sensitivity)"));
+        assert!(HISTORY_LEVEL_MIGRATION
+            .contains("sensitivity_rank(OLD.sensitivity) >= sensitivity_rank(NEW.sensitivity)"));
         assert!(HISTORY_LEVEL_MIGRATION.contains("UPDATE registry_history"));
-        assert!(HISTORY_LEVEL_MIGRATION.contains("CREATE OR REPLACE FUNCTION registry_archive_old_value()"));
+        assert!(HISTORY_LEVEL_MIGRATION
+            .contains("CREATE OR REPLACE FUNCTION registry_archive_old_value()"));
         assert!(!HISTORY_LEVEL_MIGRATION.contains("WHEN ("));
     }
 

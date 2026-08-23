@@ -117,7 +117,12 @@ fn refuse_empty(pairs: &[Pair]) -> Result<()> {
 /// A `same` verdict whose `keep` names neither row is discarded. The model has told us two rows are
 /// interchangeable and then named a third thing, which is not a finding, it is a mistake with a
 /// confident sentence attached.
-pub fn to_proposals(batch: &[Pair], verdicts: &[Verdict], model: &str, report: &mut PassReport) -> Vec<Value> {
+pub fn to_proposals(
+    batch: &[Pair],
+    verdicts: &[Verdict],
+    model: &str,
+    report: &mut PassReport,
+) -> Vec<Value> {
     let mut out = Vec::new();
     for v in verdicts {
         let Some(i) = pair_index(&v.pair, batch.len()) else {
@@ -137,8 +142,7 @@ pub fn to_proposals(batch: &[Pair], verdicts: &[Verdict], model: &str, report: &
                 }
                 let retire = if keep == p.a_id { p } else { p };
                 let retire_id = if keep == p.a_id { &p.b_id } else { &p.a_id };
-                let retire_content =
-                    if keep == p.a_id { &p.b_content } else { &p.a_content };
+                let retire_content = if keep == p.a_id { &p.b_content } else { &p.a_content };
                 let keep_content = if keep == p.a_id { &p.a_content } else { &p.b_content };
                 let _ = retire;
                 report.same += 1;
@@ -190,10 +194,8 @@ pub fn to_proposals(batch: &[Pair], verdicts: &[Verdict], model: &str, report: &
 /// Never zero: a run that finishes inside the same minute would otherwise fire again immediately.
 pub fn until_next(now: chrono::DateTime<chrono::Local>, hh: u32, mm: u32) -> std::time::Duration {
     use chrono::{Datelike, Duration, TimeZone};
-    let today = now
-        .timezone()
-        .with_ymd_and_hms(now.year(), now.month(), now.day(), hh, mm, 0)
-        .single();
+    let today =
+        now.timezone().with_ymd_and_hms(now.year(), now.month(), now.day(), hh, mm, 0).single();
     let mut target = match today {
         Some(t) => t,
         // A time that does not exist today, which is what a daylight-saving jump produces. Take
@@ -209,10 +211,8 @@ pub fn until_next(now: chrono::DateTime<chrono::Local>, hh: u32, mm: u32) -> std
 
 /// Parses `--at 04:25`.
 pub fn parse_at(raw: &str) -> Result<(u32, u32)> {
-    let (h, m) = raw
-        .trim()
-        .split_once(':')
-        .ok_or_else(|| err(format!("--at takes HH:MM, got {raw:?}")))?;
+    let (h, m) =
+        raw.trim().split_once(':').ok_or_else(|| err(format!("--at takes HH:MM, got {raw:?}")))?;
     let hh: u32 = h.parse().map_err(|_| err(format!("--at takes HH:MM, got {raw:?}")))?;
     let mm: u32 = m.parse().map_err(|_| err(format!("--at takes HH:MM, got {raw:?}")))?;
     if hh > 23 || mm > 59 {
@@ -294,7 +294,10 @@ async fn run(c: &Client, args: &Args) -> Result<()> {
     let (status, response) =
         c.http_request(reqwest::Method::POST, "/admin/cleanup/run", Some(body)).await?;
     if status != 200 {
-        return Err(err(format!("the pass failed ({status}): {}", crate::commands::compact(&response))));
+        return Err(err(format!(
+            "the pass failed ({status}): {}",
+            crate::commands::compact(&response)
+        )));
     }
 
     let report = &response["report"];
@@ -340,7 +343,8 @@ async fn run(c: &Client, args: &Args) -> Result<()> {
 
     let provider_name = args.value("provider").unwrap_or("openrouter");
     let model = args.value("model").unwrap_or(DEFAULT_MODEL);
-    let p = provider::resolve(provider_name, &c.file.borrow(), Some(model), args.value("base-url"))?;
+    let p =
+        provider::resolve(provider_name, &c.file.borrow(), Some(model), args.value("base-url"))?;
     if p.key.is_none() {
         return Err(err(format!(
             "provider {provider_name} has no key. Set one with `lumberroom ingest keys set \
@@ -386,7 +390,10 @@ async fn run(c: &Client, args: &Args) -> Result<()> {
             )
             .await?;
         if status != 200 {
-            return Err(err(format!("posting the proposals failed ({status}): {}", crate::commands::compact(&body))));
+            return Err(err(format!(
+                "posting the proposals failed ({status}): {}",
+                crate::commands::compact(&body)
+            )));
         }
         report.queued = body["queued"].as_u64().unwrap_or(0) as usize;
         report.already_known = body["already_known"].as_u64().unwrap_or(0) as usize;
@@ -414,11 +421,13 @@ async fn run(c: &Client, args: &Args) -> Result<()> {
 async fn list(c: &Client, args: &Args) -> Result<()> {
     let state = args.value("state").unwrap_or("proposed");
     let limit = args.int("limit", 50);
-    let (status, body) = c
-        .http_get(&format!("/admin/cleanup/proposals?state={state}&limit={limit}"))
-        .await?;
+    let (status, body) =
+        c.http_get(&format!("/admin/cleanup/proposals?state={state}&limit={limit}")).await?;
     if status != 200 {
-        return Err(err(format!("reading the queue failed ({status}): {}", crate::commands::compact(&body))));
+        return Err(err(format!(
+            "reading the queue failed ({status}): {}",
+            crate::commands::compact(&body)
+        )));
     }
     let rows = body["proposals"].as_array().cloned().unwrap_or_default();
     crate::out(&format!("{} {state}:", rows.len()));
@@ -441,7 +450,10 @@ async fn show(c: &Client, args: &Args) -> Result<()> {
     let id = args.positional_at(2).ok_or_else(|| err("usage: lumberroom cleanup show <id>"))?;
     let (status, body) = c.http_get(&format!("/admin/cleanup/proposals/{id}")).await?;
     if status != 200 {
-        return Err(err(format!("reading the proposal failed ({status}): {}", crate::commands::compact(&body))));
+        return Err(err(format!(
+            "reading the proposal failed ({status}): {}",
+            crate::commands::compact(&body)
+        )));
     }
     crate::out(&format!(
         "{}  {}  [{}]  via {}",
@@ -456,7 +468,9 @@ async fn show(c: &Client, args: &Args) -> Result<()> {
         let moved = match (m["current_content"].as_str(), m["superseded_by"].as_str()) {
             (None, _) => "  GONE",
             (_, Some(_)) => "  ALREADY RETIRED",
-            (Some(now), None) if now != m["seen_content"].as_str().unwrap_or("") => "  EDITED SINCE",
+            (Some(now), None) if now != m["seen_content"].as_str().unwrap_or("") => {
+                "  EDITED SINCE"
+            }
             _ => "",
         };
         crate::out(&format!(
@@ -492,9 +506,9 @@ async fn resolve(c: &Client, args: &Args) -> Result<()> {
     let id = args
         .positional_at(2)
         .ok_or_else(|| err("usage: lumberroom cleanup resolve <id> --keep <memory-id>"))?;
-    let keep = args
-        .value("keep")
-        .ok_or_else(|| err("--keep names which of the rows holds. `cleanup show <id>` lists them."))?;
+    let keep = args.value("keep").ok_or_else(|| {
+        err("--keep names which of the rows holds. `cleanup show <id>` lists them.")
+    })?;
     let (status, body) = c
         .http_request(
             reqwest::Method::POST,
@@ -503,7 +517,10 @@ async fn resolve(c: &Client, args: &Args) -> Result<()> {
         )
         .await?;
     if status != 200 {
-        return Err(err(format!("resolve refused ({status}): {}", crate::commands::compact(&body))));
+        return Err(err(format!(
+            "resolve refused ({status}): {}",
+            crate::commands::compact(&body)
+        )));
     }
     let retired = body["retired"].as_array().map(Vec::len).unwrap_or(0);
     crate::out(&format!("resolved {id}: kept {keep}, retired {retired}"));
@@ -511,13 +528,19 @@ async fn resolve(c: &Client, args: &Args) -> Result<()> {
 }
 
 async fn reject(c: &Client, args: &Args) -> Result<()> {
-    let id = args.positional_at(2).ok_or_else(|| err("usage: lumberroom cleanup reject <id> [--reason ...]"))?;
+    let id = args
+        .positional_at(2)
+        .ok_or_else(|| err("usage: lumberroom cleanup reject <id> [--reason ...]"))?;
     let body = match args.value("reason") {
         Some(r) => json!({ "reason": r }),
         None => json!({}),
     };
     let (status, body) = c
-        .http_request(reqwest::Method::POST, &format!("/admin/cleanup/proposals/{id}/reject"), Some(body))
+        .http_request(
+            reqwest::Method::POST,
+            &format!("/admin/cleanup/proposals/{id}/reject"),
+            Some(body),
+        )
         .await?;
     if status != 200 {
         return Err(err(format!("reject failed ({status}): {}", crate::commands::compact(&body))));
@@ -654,7 +677,8 @@ mod tests {
         // the first half while ignoring the second is how the wrong row gets retired.
         let batch = vec![pair()];
         let mut r = PassReport::default();
-        let out = to_proposals(&batch, &[verdict("pair 1", "same", Some("cccccccc"))], "qwen", &mut r);
+        let out =
+            to_proposals(&batch, &[verdict("pair 1", "same", Some("cccccccc"))], "qwen", &mut r);
         assert!(out.is_empty());
         assert_eq!(r.discarded, 1);
         assert_eq!(r.same, 0);
@@ -709,7 +733,8 @@ mod tests {
     fn a_verdict_nobody_asked_for_is_discarded_rather_than_guessed_at() {
         let batch = vec![pair()];
         let mut r = PassReport::default();
-        let out = to_proposals(&batch, &[verdict("pair 1", "probably the same", None)], "qwen", &mut r);
+        let out =
+            to_proposals(&batch, &[verdict("pair 1", "probably the same", None)], "qwen", &mut r);
         assert!(out.is_empty());
         assert_eq!(r.discarded, 1);
     }
@@ -718,7 +743,12 @@ mod tests {
     fn the_verdict_is_read_case_insensitively() {
         let batch = vec![pair()];
         let mut r = PassReport::default();
-        let out = to_proposals(&batch, &[verdict("pair 1", "  SAME  ", Some("aaaaaaaa-1111-4111-8111-111111111111"))], "qwen", &mut r);
+        let out = to_proposals(
+            &batch,
+            &[verdict("pair 1", "  SAME  ", Some("aaaaaaaa-1111-4111-8111-111111111111"))],
+            "qwen",
+            &mut r,
+        );
         assert_eq!(out.len(), 1);
     }
 
@@ -728,7 +758,12 @@ mod tests {
         // disagree often enough that a rationale without an author is not evaluable.
         let batch = vec![pair()];
         let mut r = PassReport::default();
-        let out = to_proposals(&batch, &[verdict("pair 1", "contradiction", None)], "qwen/qwen3.7-flash", &mut r);
+        let out = to_proposals(
+            &batch,
+            &[verdict("pair 1", "contradiction", None)],
+            "qwen/qwen3.7-flash",
+            &mut r,
+        );
         assert_eq!(out[0]["produced_by"], "qwen/qwen3.7-flash");
     }
 

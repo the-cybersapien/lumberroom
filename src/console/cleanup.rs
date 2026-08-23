@@ -136,17 +136,13 @@ pub async fn index(
         return closed();
     };
 
-    let proposals =
-        match service::list(&app.ctx(), app.state.cleanup.as_ref(), None, LIMIT).await {
-            Ok(rows) => rows,
-            Err(e) => return failed(&app, "the cleanup queue did not load", &e),
-        };
+    let proposals = match service::list(&app.ctx(), app.state.cleanup.as_ref(), None, LIMIT).await {
+        Ok(rows) => rows,
+        Err(e) => return failed(&app, "the cleanup queue did not load", &e),
+    };
 
     let csrf = |action: &str, id: &str| sessions.console_csrf(&session, action, id);
-    page(
-        StatusCode::OK,
-        listing_html(&proposals, &app.health(), &csrf, q.done.as_deref()),
-    )
+    page(StatusCode::OK, listing_html(&proposals, &app.health(), &csrf, q.done.as_deref()))
 }
 
 /// Carry out one proposal. Token first, then the kind, then the service.
@@ -217,13 +213,7 @@ pub async fn reject(
     if let Err(response) = decided(&app, &headers, REJECT_ACTION, &id, &form.csrf) {
         return response;
     }
-    match service::reject(
-        &app.ctx(),
-        app.state.cleanup.as_ref(),
-        &id,
-        trimmed(&form.reason),
-    )
-    .await
+    match service::reject(&app.ctx(), app.state.cleanup.as_ref(), &id, trimmed(&form.reason)).await
     {
         Ok(()) => done(Outcome::Rejected),
         Err(e) => refusal(&app, "that proposal was not rejected", &e),
@@ -644,12 +634,16 @@ fn decided_html(p: &Proposal) -> String {
 /// prints nothing rather than reaching the page as text.
 fn done_note(done: Option<&str>) -> String {
     let line = match done.unwrap_or_default() {
-        "applied" => "Applied. The rows it named moved, and a retired one is still readable through \
-                      its history.",
+        "applied" => {
+            "Applied. The rows it named moved, and a retired one is still readable through \
+                      its history."
+        }
         "resolved" => "Resolved. The row you kept holds, and the other retired into it.",
         "rejected" => "Rejected. The pass will not raise that cluster again.",
-        "returned" => "Back in the queue, waiting like any other finding. The note about why it was \
-                       refused is gone.",
+        "returned" => {
+            "Back in the queue, waiting like any other finding. The note about why it was \
+                       refused is gone."
+        }
         _ => return String::new(),
     };
     format!("<p class=\"cl-done\">{}</p>", escape(line))
@@ -664,7 +658,11 @@ fn similarity(value: Option<f64>) -> String {
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
-    if n == 1 { one.to_string() } else { many.to_string() }
+    if n == 1 {
+        one.to_string()
+    } else {
+        many.to_string()
+    }
 }
 
 /// The document, the chrome and the health line.
@@ -784,7 +782,11 @@ mod tests {
             decided_at: None,
             created_at: Utc::now(),
             members: vec![
-                member("aaaaaaaa-1111-4111-8111-111111111111", Disposition::Keep, "the port is 8787"),
+                member(
+                    "aaaaaaaa-1111-4111-8111-111111111111",
+                    Disposition::Keep,
+                    "the port is 8787",
+                ),
                 member("bbbbbbbb-2222-4222-8222-222222222222", Disposition::Retire, "port 8787"),
             ],
         }
@@ -830,8 +832,12 @@ mod tests {
     /// A contradiction refuses to apply inside the service, so the page must not offer the button.
     #[test]
     fn a_contradiction_gets_no_apply_button_and_the_page_says_why() {
-        let html =
-            listing_html(&[proposal(CleanupKind::Contradiction, "proposed")], &health(), &token, None);
+        let html = listing_html(
+            &[proposal(CleanupKind::Contradiction, "proposed")],
+            &health(),
+            &token,
+            None,
+        );
         assert!(!html.contains("/apply\""), "a contradiction cannot be applied: {html}");
         assert!(html.contains("/reject\""), "it can still be refused");
         assert!(html.contains("A contradiction names no survivor"));
@@ -845,7 +851,8 @@ mod tests {
             assert!(html.contains("/apply\""), "{kind} has something to apply");
         }
         // A delete reads differently from a retirement, and the button says which it is.
-        let stale = listing_html(&[proposal(CleanupKind::Stale, "proposed")], &health(), &token, None);
+        let stale =
+            listing_html(&[proposal(CleanupKind::Stale, "proposed")], &health(), &token, None);
         assert!(stale.contains("Apply, deleting"));
     }
 
@@ -918,9 +925,12 @@ mod tests {
     /// waiting one.
     #[test]
     fn a_rejected_finding_offers_the_way_back_and_nothing_else() {
-        for kind in
-            [CleanupKind::Exact, CleanupKind::Paraphrase, CleanupKind::Contradiction, CleanupKind::Stale]
-        {
+        for kind in [
+            CleanupKind::Exact,
+            CleanupKind::Paraphrase,
+            CleanupKind::Contradiction,
+            CleanupKind::Stale,
+        ] {
             let html = listing_html(&[proposal(kind, "rejected")], &health(), &token, None);
             assert_eq!(html.matches("<form").count(), 1, "{kind} draws one control: {html}");
             assert!(html.contains("/unreject\""), "and it is the one that returns it: {html}");
@@ -935,12 +945,8 @@ mod tests {
     /// The token on the way back is minted for that act and no other.
     #[test]
     fn the_way_back_carries_its_own_token() {
-        let html = listing_html(
-            &[proposal(CleanupKind::Paraphrase, "rejected")],
-            &health(),
-            &token,
-            None,
-        );
+        let html =
+            listing_html(&[proposal(CleanupKind::Paraphrase, "rejected")], &health(), &token, None);
         assert!(html.contains(&token(UNREJECT_ACTION, "11111111-1111-4111-8111-111111111111")));
         assert!(
             !html.contains(&token(REJECT_ACTION, "11111111-1111-4111-8111-111111111111")),
@@ -952,7 +958,12 @@ mod tests {
     /// that knew three states would drop those rows without saying so.
     #[test]
     fn a_closed_finding_is_shown_rather_than_dropped() {
-        let html = listing_html(&[proposal(CleanupKind::Contradiction, "obsolete")], &health(), &token, None);
+        let html = listing_html(
+            &[proposal(CleanupKind::Contradiction, "obsolete")],
+            &health(),
+            &token,
+            None,
+        );
         assert!(html.contains("Closed"));
         assert!(html.contains("the store answered these"));
         assert!(html.contains("both rows say the port is 8787"));
@@ -960,7 +971,8 @@ mod tests {
 
     #[test]
     fn each_member_is_named_with_its_disposition_and_links_to_the_row() {
-        let html = listing_html(&[proposal(CleanupKind::Paraphrase, "proposed")], &health(), &token, None);
+        let html =
+            listing_html(&[proposal(CleanupKind::Paraphrase, "proposed")], &health(), &token, None);
         assert!(html.contains("href=\"/console/fact/aaaaaaaa-1111-4111-8111-111111111111\""));
         assert!(html.contains("href=\"/console/fact/bbbbbbbb-2222-4222-8222-222222222222\""));
         assert!(html.contains(">keep<"));
@@ -1004,12 +1016,8 @@ mod tests {
     /// row, and the owner's click is what deletes memories. The page has to say which it is.
     #[test]
     fn a_finding_a_client_posted_names_the_client_and_one_the_server_produced_says_so() {
-        let own = listing_html(
-            &[proposal(CleanupKind::Paraphrase, "proposed")],
-            &health(),
-            &token,
-            None,
-        );
+        let own =
+            listing_html(&[proposal(CleanupKind::Paraphrase, "proposed")], &health(), &token, None);
         assert!(own.contains("this server's own pass"), "{own}");
 
         let mut posted = proposal(CleanupKind::Paraphrase, "proposed");
@@ -1041,7 +1049,12 @@ mod tests {
     #[test]
     fn the_page_fetches_nothing_and_runs_nothing() {
         for html in [
-            listing_html(&[proposal(CleanupKind::Paraphrase, "proposed")], &health(), &token, Some("applied")),
+            listing_html(
+                &[proposal(CleanupKind::Paraphrase, "proposed")],
+                &health(),
+                &token,
+                Some("applied"),
+            ),
             listing_html(&[], &health(), &token, None),
         ] {
             assert!(!html.contains("<script"), "no JavaScript");
@@ -1066,8 +1079,10 @@ mod tests {
 
     #[test]
     fn the_count_leads_with_what_is_still_waiting() {
-        let rows =
-            [proposal(CleanupKind::Paraphrase, "proposed"), proposal(CleanupKind::Exact, "applied")];
+        let rows = [
+            proposal(CleanupKind::Paraphrase, "proposed"),
+            proposal(CleanupKind::Exact, "applied"),
+        ];
         let html = listing_html(&rows, &health(), &token, None);
         assert!(html.contains("1 finding waiting of 2"), "{html}");
         assert_eq!(counted(0, 4), "nothing waiting, 4 decided");
@@ -1150,7 +1165,8 @@ mod tests {
             }
             // And none collides with the ingest queue's, which mints against the same label and the
             // same session over uuids drawn from a different table.
-            for other in ["approve", "reject", "unreject", "write", "alias-record", "alias-forget"] {
+            for other in ["approve", "reject", "unreject", "write", "alias-record", "alias-forget"]
+            {
                 assert_ne!(*a, other);
             }
         }

@@ -26,7 +26,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
-use sqlx::PgPool;
 use lumberroom_server::adapters::auth;
 use lumberroom_server::adapters::embedding::HashEmbedder;
 use lumberroom_server::adapters::postgres::{self, PgIngestRepository};
@@ -35,9 +34,12 @@ use lumberroom_server::crypto::kek::{EnvKeyProvider, KeyProvider};
 use lumberroom_server::domain::policy::NamespaceGrant;
 use lumberroom_server::domain::types::{Invocation, Principal};
 use lumberroom_server::mcp::AppState;
-use lumberroom_server::ports::ingest::{IngestRepository, NewProposal, ProposalFilter, ProposalSource};
+use lumberroom_server::ports::ingest::{
+    IngestRepository, NewProposal, ProposalFilter, ProposalSource,
+};
 use lumberroom_server::ports::OauthStore;
 use lumberroom_server::services::{bootstrap, ingest, search, write, Ctx, Repos};
+use sqlx::PgPool;
 
 mod common;
 
@@ -421,7 +423,8 @@ async fn approving_a_proposal_writes_it_through_the_write_path() {
     assert_eq!(stored.content, "Dana deploys lumberroom on an Oracle Ampere A1 instance");
     assert_eq!(stored.namespace, "user:me");
 
-    let proposal = h.repo.proposal(h.ctx.tenant(), id, &ingest::reader(&h.ctx)).await.unwrap().unwrap();
+    let proposal =
+        h.repo.proposal(h.ctx.tenant(), id, &ingest::reader(&h.ctx)).await.unwrap().unwrap();
     assert_eq!(proposal.state, "written");
     assert_eq!(proposal.memory_id, Some(memory_id));
     assert!(proposal.last_error.is_none());
@@ -465,7 +468,8 @@ async fn a_credential_shaped_proposal_is_refused_on_approval_and_says_why() {
     assert!(!refusal.contains("s3cr3tPassw0rd"), "the matched secret never travels: {refusal}");
     assert!(outcome.memory_id.is_none());
 
-    let proposal = h.repo.proposal(h.ctx.tenant(), id, &ingest::reader(&h.ctx)).await.unwrap().unwrap();
+    let proposal =
+        h.repo.proposal(h.ctx.tenant(), id, &ingest::reader(&h.ctx)).await.unwrap().unwrap();
     assert_eq!(proposal.state, "proposed", "a refused proposal stays in the queue");
     assert!(proposal.last_error.unwrap().contains("connection_string_password"));
     assert!(proposal.last_error_at.is_some());
@@ -603,11 +607,7 @@ async fn the_watermark_advances_to_the_earliest_unextracted_span() {
     assert_eq!(report.advanced, vec![("/p/big.jsonl".to_string(), 4_200)]);
     assert_eq!(
         report.held_back,
-        vec![ingest::HeldBack {
-            file: "/p/big.jsonl".into(),
-            held_at: 4_200,
-            ceiling: 20_000
-        }],
+        vec![ingest::HeldBack { file: "/p/big.jsonl".into(), held_at: 4_200, ceiling: 20_000 }],
         "a held-back file is named, or the owner learns nothing from the report"
     );
 
@@ -958,7 +958,12 @@ async fn a_fact_read_back_through_the_digest_returns_as_a_confirmation() {
 // -- the valid-time fill -------------------------------------------------------------------------
 
 /// One source row with the timestamp the span carried, or none.
-fn observed(file: &str, entry: &str, run_id: uuid::Uuid, at: Option<chrono::DateTime<Utc>>) -> ProposalSource {
+fn observed(
+    file: &str,
+    entry: &str,
+    run_id: uuid::Uuid,
+    at: Option<chrono::DateTime<Utc>>,
+) -> ProposalSource {
     ProposalSource { observed_at: at, ..source(file, entry, "owner_typed", run_id) }
 }
 
@@ -967,7 +972,8 @@ fn dated_fact(content: &str, src: ProposalSource) -> ingest::FactInput {
 }
 
 async fn queue(h: &Harness, fact: ingest::FactInput) -> ingest::FactOutcome {
-    let posted = ingest::post(&h.ctx, h.repo.as_ref(), "agent:claude-code", vec![fact]).await.unwrap();
+    let posted =
+        ingest::post(&h.ctx, h.repo.as_ref(), "agent:claude-code", vec![fact]).await.unwrap();
     posted.outcomes.into_iter().next().expect("one fact in, one outcome out")
 }
 
@@ -984,12 +990,14 @@ async fn an_approved_proposal_takes_the_earliest_observation_as_its_valid_time()
     let early = Utc::now() - Duration::days(200);
     let late = Utc::now() - Duration::days(60);
 
-    let first = queue(&h, dated_fact(content, observed("/p/late.jsonl", "e1", run, Some(late)))).await;
+    let first =
+        queue(&h, dated_fact(content, observed("/p/late.jsonl", "e1", run, Some(late)))).await;
     let id = match first {
         ingest::FactOutcome::Proposed { id, .. } => id,
         other => panic!("expected a proposal, got {other:?}"),
     };
-    let second = queue(&h, dated_fact(content, observed("/p/early.jsonl", "e2", run, Some(early)))).await;
+    let second =
+        queue(&h, dated_fact(content, observed("/p/early.jsonl", "e2", run, Some(early)))).await;
     assert!(
         matches!(second, ingest::FactOutcome::Reinforced { .. }),
         "the same fact twice is one proposal with two sources, got {second:?}"
@@ -1029,9 +1037,14 @@ async fn a_proposal_no_source_could_date_approves_with_no_valid_time() {
     let run = open_run(&h).await;
     let before = Utc::now();
 
-    let queued =
-        queue(&h, dated_fact("Dana prefers tabs over spaces zqxundatedzqx", observed("/p/a.jsonl", "e1", run, None)))
-            .await;
+    let queued = queue(
+        &h,
+        dated_fact(
+            "Dana prefers tabs over spaces zqxundatedzqx",
+            observed("/p/a.jsonl", "e1", run, None),
+        ),
+    )
+    .await;
     let id = match queued {
         ingest::FactOutcome::Proposed { id, .. } => id,
         other => panic!("expected a proposal, got {other:?}"),
@@ -1079,7 +1092,10 @@ async fn open_run_as(h: &Harness, token: &str) -> String {
         .post("/admin/ingest/runs", token, serde_json::json!({ "extractor": "agent:claude-code" }))
         .await;
     assert_eq!(status, 200, "{body}");
-    serde_json::from_str::<serde_json::Value>(&body).unwrap()["run_id"].as_str().unwrap().to_string()
+    serde_json::from_str::<serde_json::Value>(&body).unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
 /// The queue is read through the grant, in the query. A client granted one namespace lists that
@@ -1091,9 +1107,17 @@ async fn a_narrow_client_reads_and_decides_only_the_proposals_inside_its_grant()
     let h = harness_or_skip!();
     let run = open_run(&h).await;
     // The owner's own client queues one fact per namespace.
-    let mut theirs = fact("the owner's passport renews in 2031", "main_model", source("/p/o.jsonl", "e1", "main_model", run));
+    let mut theirs = fact(
+        "the owner's passport renews in 2031",
+        "main_model",
+        source("/p/o.jsonl", "e1", "main_model", run),
+    );
     theirs.namespace = "user:me".into();
-    let mut mine = fact("the gate script is scripts/deploy-check.sh", "main_model", source("/p/o.jsonl", "e2", "main_model", run));
+    let mut mine = fact(
+        "the gate script is scripts/deploy-check.sh",
+        "main_model",
+        source("/p/o.jsonl", "e2", "main_model", run),
+    );
     mine.namespace = "project:lumberroom".into();
     let report = ingest::post(&h.ctx, h.repo.as_ref(), "agent:claude-code", vec![theirs, mine])
         .await
@@ -1153,9 +1177,14 @@ async fn a_narrow_client_reads_and_decides_only_the_proposals_inside_its_grant()
 async fn a_proposal_is_hidden_from_a_grant_below_the_level_its_namespace_writes_at() {
     let h = harness_or_skip!();
     let run = open_run(&h).await;
-    let mut private = fact("the mortgage renews in March", "main_model", source("/p/o.jsonl", "e1", "main_model", run));
+    let mut private = fact(
+        "the mortgage renews in March",
+        "main_model",
+        source("/p/o.jsonl", "e1", "main_model", run),
+    );
     private.namespace = "personal:finance".into();
-    let report = ingest::post(&h.ctx, h.repo.as_ref(), "agent:claude-code", vec![private]).await.unwrap();
+    let report =
+        ingest::post(&h.ctx, h.repo.as_ref(), "agent:claude-code", vec![private]).await.unwrap();
     assert_eq!(report.proposals_new, 1, "{:?}", report.outcomes);
 
     let at_open = Ctx {
@@ -1166,21 +1195,29 @@ async fn a_proposal_is_hidden_from_a_grant_below_the_level_its_namespace_writes_
         },
         ..h.ctx.clone()
     };
-    let rows = ingest::list(&at_open, h.repo.as_ref(), ProposalFilter { limit: 50, ..Default::default() })
-        .await
-        .unwrap();
+    let rows =
+        ingest::list(&at_open, h.repo.as_ref(), ProposalFilter { limit: 50, ..Default::default() })
+            .await
+            .unwrap();
     assert!(rows.is_empty(), "a private-bound proposal reached an open grant: {rows:?}");
 
     let at_private = Ctx {
         principal: Principal {
-            read: vec![NamespaceGrant::new("personal:finance", lumberroom_server::domain::types::Sensitivity::Private)],
+            read: vec![NamespaceGrant::new(
+                "personal:finance",
+                lumberroom_server::domain::types::Sensitivity::Private,
+            )],
             ..owner_like("finance-private")
         },
         ..h.ctx.clone()
     };
-    let rows = ingest::list(&at_private, h.repo.as_ref(), ProposalFilter { limit: 50, ..Default::default() })
-        .await
-        .unwrap();
+    let rows = ingest::list(
+        &at_private,
+        h.repo.as_ref(),
+        ProposalFilter { limit: 50, ..Default::default() },
+    )
+    .await
+    .unwrap();
     assert_eq!(rows.len(), 1);
 }
 
@@ -1195,7 +1232,12 @@ async fn a_fact_for_a_namespace_outside_the_posters_grant_never_reaches_the_queu
         .post(
             "/admin/ingest/proposals",
             NARROW_TOKEN,
-            posted("the production KEK lives in 1Password under lumberroom-kek", "global", "owner_typed", &run),
+            posted(
+                "the production KEK lives in 1Password under lumberroom-kek",
+                "global",
+                "owner_typed",
+                &run,
+            ),
         )
         .await;
     assert_eq!(status, 200, "{body}");
@@ -1204,8 +1246,10 @@ async fn a_fact_for_a_namespace_outside_the_posters_grant_never_reaches_the_queu
     assert_eq!(v["outcomes"][0]["outcome"], "refused", "{body}");
     assert_eq!(v["outcomes"][0]["rule"], ingest::REFUSAL_OUTSIDE_GRANT, "{body}");
 
-    let rows: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM ingest_proposal").fetch_one(&h.pool).await.unwrap();
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM ingest_proposal")
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
     assert_eq!(rows, 0, "a refused fact left a row behind");
 }
 
@@ -1219,12 +1263,19 @@ async fn auto_approval_needs_the_posters_write_grant_and_the_queue_names_the_pos
 
     let run = open_run_as(&h, READER_TOKEN).await;
     let (status, body) = h
-        .post("/admin/ingest/proposals", READER_TOKEN, posted(content, "project:lumberroom", "owner_typed", &run))
+        .post(
+            "/admin/ingest/proposals",
+            READER_TOKEN,
+            posted(content, "project:lumberroom", "owner_typed", &run),
+        )
         .await;
     assert_eq!(status, 200, "{body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["outcomes"][0]["outcome"], "proposed", "{body}");
-    assert_eq!(v["outcomes"][0]["auto"], false, "a client with no write grant earned the badge: {body}");
+    assert_eq!(
+        v["outcomes"][0]["auto"], false,
+        "a client with no write grant earned the badge: {body}"
+    );
     let id = v["outcomes"][0]["id"].as_str().unwrap().to_string();
 
     let (status, body) = h.get(&format!("/admin/ingest/proposals/{id}"), READER_TOKEN).await;
@@ -1239,7 +1290,12 @@ async fn auto_approval_needs_the_posters_write_grant_and_the_queue_names_the_pos
         .post(
             "/admin/ingest/proposals",
             NARROW_TOKEN,
-            posted("the builder image carries g++ because onnxruntime links libstdc++", "project:lumberroom", "owner_typed", &run),
+            posted(
+                "the builder image carries g++ because onnxruntime links libstdc++",
+                "project:lumberroom",
+                "owner_typed",
+                &run,
+            ),
         )
         .await;
     assert_eq!(status, 200, "{body}");
@@ -1251,7 +1307,8 @@ async fn auto_approval_needs_the_posters_write_grant_and_the_queue_names_the_pos
 /// the caller's grant: an emission of a row the caller may not read is not an echo for it, and
 /// posting that content confirms nothing.
 #[tokio::test]
-async fn the_emission_check_answers_a_bit_per_probe_inside_the_grant_and_confirms_nothing_outside_it() {
+async fn the_emission_check_answers_a_bit_per_probe_inside_the_grant_and_confirms_nothing_outside_it(
+) {
     let h = harness_or_skip!();
     let content = "Dana runs the lumberroom server behind Cloudflare Tunnel";
     let written = write::run(&h.ctx, content, "user:me", None, None, None, None).await.unwrap();
@@ -1260,19 +1317,20 @@ async fn the_emission_check_answers_a_bit_per_probe_inside_the_grant_and_confirm
         .await
         .unwrap();
 
-    let probes = |texts: &[&str]| {
-        serde_json::json!({ "probes": texts.iter().map(|t| serde_json::json!({ "content": t })).collect::<Vec<_>>() })
-    };
+    let probes = |texts: &[&str]| serde_json::json!({ "probes": texts.iter().map(|t| serde_json::json!({ "content": t })).collect::<Vec<_>>() });
 
     // The full-grant client sees the echo; the narrow one, whose grant excludes user:me, does not.
-    let (status, body) = h.post("/admin/ingest/emissions/check", INGEST_TOKEN, probes(&[content, "nothing like it"])).await;
+    let (status, body) = h
+        .post("/admin/ingest/emissions/check", INGEST_TOKEN, probes(&[content, "nothing like it"]))
+        .await;
     assert_eq!(status, 200, "{body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["echoes"], serde_json::json!([true, false]), "{body}");
     assert!(v.get("hits").is_none(), "the old shape carried a memory id: {body}");
     assert!(!body.contains(&written.id), "a memory id reached the wire: {body}");
 
-    let (status, body) = h.post("/admin/ingest/emissions/check", NARROW_TOKEN, probes(&[content])).await;
+    let (status, body) =
+        h.post("/admin/ingest/emissions/check", NARROW_TOKEN, probes(&[content])).await;
     assert_eq!(status, 200, "{body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["echoes"], serde_json::json!([false]), "a row outside the grant answered: {body}");
@@ -1286,7 +1344,11 @@ async fn the_emission_check_answers_a_bit_per_probe_inside_the_grant_and_confirm
     // cannot read. It queues, in the one namespace the client holds.
     let run = open_run_as(&h, NARROW_TOKEN).await;
     let (status, body) = h
-        .post("/admin/ingest/proposals", NARROW_TOKEN, posted(content, "project:lumberroom", "main_model", &run))
+        .post(
+            "/admin/ingest/proposals",
+            NARROW_TOKEN,
+            posted(content, "project:lumberroom", "main_model", &run),
+        )
         .await;
     assert_eq!(status, 200, "{body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -1308,9 +1370,17 @@ async fn the_emission_check_answers_a_bit_per_probe_inside_the_grant_and_confirm
 #[tokio::test]
 async fn a_supersedes_target_outside_the_posters_grant_is_refused_the_same_as_an_unknown_one() {
     let h = harness_or_skip!();
-    let theirs = write::run(&h.ctx, "the owner's passport renews in 2031", "user:me", None, None, None, None)
-        .await
-        .unwrap();
+    let theirs = write::run(
+        &h.ctx,
+        "the owner's passport renews in 2031",
+        "user:me",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     let run = open_run_as(&h, NARROW_TOKEN).await;
     let mut body = posted("the passport renews in 2032", "project:lumberroom", "main_model", &run);
@@ -1328,15 +1398,22 @@ async fn a_supersedes_target_outside_the_posters_grant_is_refused_the_same_as_an
         assert_eq!(v["refused"], 1, "{body}");
         assert_eq!(v["outcomes"][0]["rule"], ingest::REFUSAL_SUPERSEDES_TARGET, "{body}");
     }
-    let rows: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM ingest_proposal").fetch_one(&h.pool).await.unwrap();
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM ingest_proposal")
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
     assert_eq!(rows, 0, "a refused supersession left a row behind");
 
     // The owner's own client, which holds the target, queues the same fact.
     let run = open_run(&h).await;
-    let mut fact = fact("the passport renews in 2032", "main_model", source("/p/o.jsonl", "e9", "main_model", run));
+    let mut fact = fact(
+        "the passport renews in 2032",
+        "main_model",
+        source("/p/o.jsonl", "e9", "main_model", run),
+    );
     fact.supersedes = Some(uuid::Uuid::parse_str(&theirs.id).unwrap());
-    let report = ingest::post(&h.ctx, h.repo.as_ref(), "agent:claude-code", vec![fact]).await.unwrap();
+    let report =
+        ingest::post(&h.ctx, h.repo.as_ref(), "agent:claude-code", vec![fact]).await.unwrap();
     assert_eq!(report.proposals_new, 1, "{:?}", report.outcomes);
 }
 
@@ -1349,12 +1426,22 @@ async fn a_supersedes_target_outside_the_posters_grant_is_refused_the_same_as_an
 async fn rejecting_a_private_bound_proposal_clears_its_plaintext_and_keeps_the_block() {
     let h = harness_or_skip!();
     let run = open_run(&h).await;
-    let mut private = fact("the mortgage renews in March", "owner_typed", source("/p/o.jsonl", "e1", "owner_typed", run));
+    let mut private = fact(
+        "the mortgage renews in March",
+        "owner_typed",
+        source("/p/o.jsonl", "e1", "owner_typed", run),
+    );
     private.namespace = "personal:finance".into();
     private.quote = Some("the mortgage renews in March".into());
-    let mut open = fact("the gate script is scripts/deploy-check.sh", "main_model", source("/p/o.jsonl", "e2", "main_model", run));
+    let mut open = fact(
+        "the gate script is scripts/deploy-check.sh",
+        "main_model",
+        source("/p/o.jsonl", "e2", "main_model", run),
+    );
     open.namespace = "project:lumberroom".into();
-    let report = ingest::post(&h.ctx, h.repo.as_ref(), "agent:claude-code", vec![private, open]).await.unwrap();
+    let report = ingest::post(&h.ctx, h.repo.as_ref(), "agent:claude-code", vec![private, open])
+        .await
+        .unwrap();
     assert_eq!(report.proposals_new, 2, "{:?}", report.outcomes);
     let ids: Vec<uuid::Uuid> = report
         .outcomes
@@ -1382,12 +1469,20 @@ async fn rejecting_a_private_bound_proposal_clears_its_plaintext_and_keeps_the_b
     assert!(quote.is_none(), "a rejected private-bound fact kept its quote");
     assert_eq!(fingerprint.len(), 64, "the fingerprint is what keeps the content blocked");
     let (_, content, _, _) = by_id(ids[1]);
-    assert_eq!(content, "the gate script is scripts/deploy-check.sh", "an open rejection stays readable");
+    assert_eq!(
+        content, "the gate script is scripts/deploy-check.sh",
+        "an open rejection stays readable"
+    );
 
     // The block holds without the text: the same fact posted again is Blocked, not proposed.
-    let mut again = fact("the mortgage renews in March", "main_model", source("/p/o.jsonl", "e3", "main_model", run));
+    let mut again = fact(
+        "the mortgage renews in March",
+        "main_model",
+        source("/p/o.jsonl", "e3", "main_model", run),
+    );
     again.namespace = "personal:finance".into();
-    let report = ingest::post(&h.ctx, h.repo.as_ref(), "agent:claude-code", vec![again]).await.unwrap();
+    let report =
+        ingest::post(&h.ctx, h.repo.as_ref(), "agent:claude-code", vec![again]).await.unwrap();
     assert_eq!(report.blocked, 1, "{:?}", report.outcomes);
 }
 
@@ -1400,7 +1495,8 @@ async fn sealing_a_memory_after_approval_clears_the_proposal_that_produced_it() 
     let content = "the gate script is scripts/deploy-check.sh";
     let mut open = fact(content, "main_model", source("/p/o.jsonl", "e2", "main_model", run));
     open.namespace = "project:lumberroom".into();
-    let report = ingest::post(&h.ctx, h.repo.as_ref(), "agent:claude-code", vec![open]).await.unwrap();
+    let report =
+        ingest::post(&h.ctx, h.repo.as_ref(), "agent:claude-code", vec![open]).await.unwrap();
     let id = match report.outcomes[0] {
         ingest::FactOutcome::Proposed { id, .. } => id,
         ref other => panic!("{other:?}"),
