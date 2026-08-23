@@ -39,7 +39,7 @@ sha2 = "0.10"
 base64 = "0.22"
 # CSPRNG bytes for the PKCE verifier and the OAuth state. getrandom rather than rand for the same
 # reason the server picked it: this is the only randomness here.
-getrandom = "0.3"
+getrandom = "0.4"
 # config.json's oauth.expires_at is an ISO-8601 instant the node CLI also reads and writes. std has
 # no calendar.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
