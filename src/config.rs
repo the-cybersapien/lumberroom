@@ -231,6 +231,19 @@ pub struct AuthConfig {
     pub required_scopes: Vec<String>,
     /// Claims carrying client identity, in precedence order.
     pub client_claims: Vec<String>,
+    /// The `sub` values this server accepts, from `OIDC_ALLOWED_SUBJECTS`.
+    ///
+    /// Without it, oidc mode authorizes the application and never the person holding it. The grant
+    /// is looked up by client id, that id is public, and the issuer signs a token for whoever signs
+    /// up, so a stranger who registers at the issuer and runs the code flow against the owner's
+    /// application id arrives with a token that validates and picks up the owner's grant.
+    /// `validate` requires a non-empty list in oidc mode for that reason: an empty one would mean
+    /// everyone.
+    ///
+    /// `sub`, not `email`. The subject is the issuer's stable identifier for an account, while an
+    /// email claim can arrive unverified, can be changed by the account holder, and is absent from
+    /// tokens issued without the profile scope.
+    pub allowed_subjects: Vec<String>,
 }
 
 /// The built-in authorization server.
@@ -745,6 +758,7 @@ pub fn load() -> Result<Config> {
             issuer,
             required_scopes: env_list("OIDC_REQUIRED_SCOPES", &[]),
             client_claims: env_list("OIDC_CLIENT_CLAIM", &["client_id", "azp", "sub"]),
+            allowed_subjects: env_list("OIDC_ALLOWED_SUBJECTS", &[]),
         },
         oauth: OauthConfig {
             owner_password_hash: env_opt("OWNER_PASSWORD_HASH"),
@@ -855,6 +869,51 @@ fn validate_cleanup(c: &CleanupConfig) -> Result<()> {
     Ok(())
 }
 
+/// What `AUTH_MODE=oidc` needs before the server will answer with an external issuer's tokens.
+/// Split out so a test can reach it without assembling a whole `Config`.
+fn validate_oidc(auth: &AuthConfig) -> Result<()> {
+    // Fail closed. An earlier build granted everything when no grants were configured, which meant
+    // any token the issuer signed held full access.
+    if auth.grants.is_empty() {
+        return Err(DomainError::validation(
+            "AUTH_MODE=oidc needs at least one client grant in AUTH_TOKENS. Without one, every \
+             token the issuer signs would be refused; with an unchecked default it would hold \
+             full access.",
+        ));
+    }
+    if auth.issuer.is_empty() {
+        return Err(DomainError::validation("AUTH_MODE=oidc needs OIDC_ISSUER"));
+    }
+    if auth.jwks_uri.is_empty() {
+        return Err(DomainError::validation(
+            "AUTH_MODE=oidc needs OIDC_JWKS_URI (or a derivable OIDC_ISSUER)",
+        ));
+    }
+    // The one check that authorizes a person rather than an application. Everything above is about
+    // which client the token names, and a client id is public: it sits in `~/.claude.json` and in
+    // the address bar of every sign-in. Anyone who can create an account at the issuer can run the
+    // code flow against it, so without a subject list the grant belongs to the issuer's whole user
+    // base.
+    if auth.allowed_subjects.is_empty() {
+        return Err(DomainError::validation(
+            "AUTH_MODE=oidc needs OIDC_ALLOWED_SUBJECTS. Grants are keyed on the client id, which \
+             is public, so any account at the issuer could present a valid token for it. List the \
+             `sub` claim of the accounts allowed in, comma separated. Find yours in the issuer's \
+             user detail page, or decode the `sub` of a token it already issued you.",
+        ));
+    }
+    // Defence in depth rather than the control: a scope carried by the issuer's default role admits
+    // the same stranger, which is why the subject list above is what actually decides.
+    if auth.required_scopes.is_empty() {
+        return Err(DomainError::validation(
+            "AUTH_MODE=oidc needs OIDC_REQUIRED_SCOPES. Without one, a token minted for any \
+             audience-matching purpose reaches the memory tools. Create a scope on the API \
+             resource, grant it to a role only you hold, and name it here.",
+        ));
+    }
+    Ok(())
+}
+
 /// The checks on one static bearer token. Split out so a test can reach them without assembling a
 /// whole `Config`.
 fn validate_static_token(client: &str, token: &str) -> Result<()> {
@@ -895,23 +954,7 @@ fn validate(cfg: &Config) -> Result<()> {
     }
 
     if cfg.auth.mode == AuthMode::Oidc {
-        // Fail closed. An earlier build granted everything when no grants were configured, which
-        // meant any token the issuer signed held full access.
-        if cfg.auth.grants.is_empty() {
-            return Err(DomainError::validation(
-                "AUTH_MODE=oidc needs at least one client grant in AUTH_TOKENS. Without one, every \
-                 token the issuer signs would be refused; with an unchecked default it would hold \
-                 full access.",
-            ));
-        }
-        if cfg.auth.issuer.is_empty() {
-            return Err(DomainError::validation("AUTH_MODE=oidc needs OIDC_ISSUER"));
-        }
-        if cfg.auth.jwks_uri.is_empty() {
-            return Err(DomainError::validation(
-                "AUTH_MODE=oidc needs OIDC_JWKS_URI (or a derivable OIDC_ISSUER)",
-            ));
-        }
+        validate_oidc(&cfg.auth)?;
     }
 
     if cfg.auth.mode == AuthMode::Oauth {
@@ -1303,5 +1346,70 @@ mod tests {
         assert!(check_min_occurred_age(MAX_MIN_OCCURRED_AGE_SECS + 1).is_err());
         let err = check_min_occurred_age(10 * MAX_MIN_OCCURRED_AGE_SECS).unwrap_err().to_string();
         assert!(err.contains("one year"), "{err}");
+    }
+
+    /// An oidc deployment that boots, so each test below changes exactly one thing.
+    fn oidc_auth() -> AuthConfig {
+        AuthConfig {
+            mode: AuthMode::Oidc,
+            resource_url: "https://memory.example.com/mcp".into(),
+            grants: vec![ClientGrant {
+                client: "app-id".into(),
+                token: None,
+                read: None,
+                write: None,
+                registry_write: false,
+                sealed_capable: false,
+                may_delete: false,
+                may_ingest: false,
+                may_read_history: false,
+            }],
+            issuer: "https://auth.example.com/oidc".into(),
+            audience: "https://memory.example.com/mcp".into(),
+            jwks_uri: "https://auth.example.com/oidc/jwks".into(),
+            required_scopes: vec!["memory.rw".into()],
+            client_claims: vec!["client_id".into()],
+            allowed_subjects: vec!["usr_1a2b3c".into()],
+        }
+    }
+
+    #[test]
+    fn the_shipped_oidc_shape_boots() {
+        assert!(validate_oidc(&oidc_auth()).is_ok());
+    }
+
+    /// The flaw this refusal exists for: a grant is keyed on the client id, and a client id is
+    /// public. Without a subject list, anyone who can sign up at the issuer holds the owner's grant.
+    #[test]
+    fn oidc_mode_refuses_to_boot_without_a_subject_allowlist() {
+        let mut auth = oidc_auth();
+        auth.allowed_subjects = vec![];
+        let err = validate_oidc(&auth).unwrap_err();
+        let msg = err.client_message();
+        assert!(msg.contains("OIDC_ALLOWED_SUBJECTS"), "the refusal has to name the setting: {msg}");
+        assert!(msg.contains("sub"), "and where to find the value: {msg}");
+    }
+
+    #[test]
+    fn oidc_mode_refuses_to_boot_without_a_required_scope() {
+        let mut auth = oidc_auth();
+        auth.required_scopes = vec![];
+        let err = validate_oidc(&auth).unwrap_err();
+        assert!(err.client_message().contains("OIDC_REQUIRED_SCOPES"));
+    }
+
+    #[test]
+    fn oidc_mode_still_refuses_an_empty_grant_list_and_a_missing_issuer() {
+        let mut no_grants = oidc_auth();
+        no_grants.grants = vec![];
+        assert!(validate_oidc(&no_grants).is_err());
+
+        let mut no_issuer = oidc_auth();
+        no_issuer.issuer = String::new();
+        assert!(validate_oidc(&no_issuer).is_err());
+
+        let mut no_jwks = oidc_auth();
+        no_jwks.jwks_uri = String::new();
+        assert!(validate_oidc(&no_jwks).is_err());
     }
 }

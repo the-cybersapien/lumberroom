@@ -30,8 +30,15 @@ In the Logto console:
 
 1. **API resources**, create one. Identifier: `https://memory.example.com/mcp`. That string is
    the audience, and it must match `MCP_RESOURCE_URL` exactly.
-2. Optionally add a scope, for example `memory.rw`, and grant it to the role your client uses.
+2. Add a scope, for example `memory.rw`. Put it on a role you assign to your own account, and take
+   it off the role Logto hands new sign-ups. A scope carried by the default role admits anyone who
+   registers.
 3. **Applications**, create a native or SPA application for Claude Code and note the client id.
+4. **Sign-in experience**, turn sign-up off. The application id is public: it sits in
+   `~/.claude.json` and in the address bar of every sign-in, and a loopback redirect needs no
+   server, so an account a stranger can create is an account that can run the flow against it.
+5. **Users**, open your own account and copy the user id. That string is the `sub` claim, and step
+   4 below is where the server learns to accept it and nothing else.
 
 ## 4. Point the server at it
 
@@ -44,12 +51,18 @@ OIDC_ISSUER=https://auth.example.com/oidc
 OIDC_AUDIENCE=https://memory.example.com/mcp
 OIDC_JWKS_URI=https://auth.example.com/oidc/jwks
 OIDC_REQUIRED_SCOPES=memory.rw
+OIDC_ALLOWED_SUBJECTS=usr_1a2b3c4d5e
 ```
+
+`OIDC_ALLOWED_SUBJECTS` is the line that authorizes a person. Everything above it establishes which
+application the token was minted for, and grants hang off that application id. Leave the list empty
+and the server refuses to boot, because an empty list would mean every account the issuer holds.
+List one `sub` per account you want in, comma separated.
 
 Keep `AUTH_TOKENS` in place, with the `client` names matching the Logto application ids you want
 to grant namespaces to. In `oidc` mode the token field is ignored and the entry becomes the
-namespace grant for that client. Leave the list empty to grant every authenticated client
-everything.
+namespace grant for that client. An empty list is refused at boot: a client with no entry is
+refused rather than defaulted, so an empty list would leave the server answering nobody.
 
 ```bash
 docker compose up -d server

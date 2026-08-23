@@ -23,6 +23,7 @@ pub struct OidcAuthenticator {
     jwks_uri: String,
     required_scopes: Vec<String>,
     client_claims: Vec<String>,
+    allowed_subjects: Vec<String>,
     grants: HashMap<String, ClientGrant>,
     cache: Arc<RwLock<Option<(JwkSet, Instant)>>>,
     http: reqwest::Client,
@@ -36,6 +37,7 @@ impl OidcAuthenticator {
             jwks_uri: cfg.auth.jwks_uri.clone(),
             required_scopes: cfg.auth.required_scopes.clone(),
             client_claims: cfg.auth.client_claims.clone(),
+            allowed_subjects: cfg.auth.allowed_subjects.clone(),
             grants: cfg.auth.grants.iter().map(|g| (g.client.clone(), g.clone())).collect(),
             cache: Arc::new(RwLock::new(None)),
             http: reqwest::Client::builder()
@@ -72,6 +74,27 @@ impl OidcAuthenticator {
             DomainError::forbidden(format!("client {client} has no namespace grant configured"))
         })
     }
+
+    /// Authorize the account, not the application.
+    ///
+    /// Everything else on this path establishes which application the token was minted for, and an
+    /// application id is public: it is in the client's own config file and in the address bar of
+    /// every sign-in. A stranger who creates an account at the issuer and runs the code flow
+    /// against that id gets a token whose `iss`, `aud` and `client_id` all check out, and then
+    /// picks up whatever grant the owner configured for it. The subject is the only claim in the
+    /// token that says who was at the keyboard.
+    ///
+    /// The message never says whether the subject was absent or merely unlisted, and it never
+    /// prints the subject, so a caller cannot use the refusal to enumerate who is allowed in.
+    fn check_subject(&self, claims: &serde_json::Value) -> Result<String> {
+        let subject = claims.get("sub").and_then(|v| v.as_str()).unwrap_or("");
+        if !subject.is_empty() && self.allowed_subjects.iter().any(|s| s == subject) {
+            return Ok(subject.to_string());
+        }
+        Err(DomainError::forbidden(
+            "this account is not allowed on this server. Add its subject to OIDC_ALLOWED_SUBJECTS.",
+        ))
+    }
 }
 
 #[async_trait]
@@ -104,6 +127,16 @@ impl Authenticator for OidcAuthenticator {
             .map_err(|e| DomainError::forbidden(format!("token rejected: {e}")))?;
         let claims = data.claims;
 
+        // Before the scopes and before the grant. A scope can ride in on the issuer's default role,
+        // and a grant is keyed on an application id anyone can copy; this is the check that reads
+        // who signed in.
+        let subject = self.check_subject(&claims).inspect_err(|_| {
+            tracing::warn!(
+                subject = claims.get("sub").and_then(|v| v.as_str()).unwrap_or("(absent)"),
+                "refused a token from a subject that is not in OIDC_ALLOWED_SUBJECTS"
+            );
+        })?;
+
         let scopes: Vec<String> = claims
             .get("scope")
             .or_else(|| claims.get("scp"))
@@ -128,6 +161,7 @@ impl Authenticator for OidcAuthenticator {
 
         let client = client_from_claims(&claims, &self.client_claims);
         let grant = self.grant_for(&client)?;
+        tracing::debug!(subject = %subject, client = %client, "resolved an oidc principal");
 
         Ok(Principal {
             client,
@@ -190,6 +224,7 @@ mod tests {
             jwks_uri: "https://id.example.com/oidc/jwks".into(),
             required_scopes: vec![],
             client_claims: vec!["client_id".into()],
+            allowed_subjects: vec!["usr_owner".into()],
             grants: grants.into_iter().map(|g| (g.client.clone(), g)).collect(),
             cache: Arc::new(RwLock::new(None)),
             http: reqwest::Client::new(),
@@ -232,6 +267,49 @@ mod tests {
         assert_eq!(g.write_grants(), vec![NamespaceGrant::open("global")]);
         assert!(!g.effective_sealed_capable());
         assert!(!g.effective_may_delete());
+    }
+
+    /// The flaw this closes: the grant is keyed on the client id, the client id is public, and the
+    /// issuer signs a token for whoever signs up. A stranger running the code flow against the
+    /// owner's application id used to arrive with the owner's grant.
+    #[test]
+    fn a_token_from_an_unlisted_subject_is_refused_even_though_it_names_a_granted_client() {
+        let a = authenticator(vec![grant("browser", None)]);
+        let stranger = serde_json::json!({"client_id": "browser", "sub": "usr_stranger"});
+        let err = a.check_subject(&stranger).unwrap_err();
+        assert_eq!(err.kind.http_status(), 403);
+        assert!(
+            !err.client_message().contains("usr_stranger"),
+            "the refusal must not echo the subject back and confirm what was tried"
+        );
+        assert!(
+            a.grant_for("browser").is_ok(),
+            "the client itself is granted, which is why the subject is the only thing refusing this"
+        );
+    }
+
+    #[test]
+    fn a_token_with_no_subject_claim_is_refused_rather_than_read_as_a_match() {
+        let a = authenticator(vec![grant("browser", None)]);
+        assert!(a.check_subject(&serde_json::json!({"client_id": "browser"})).is_err());
+        assert!(a.check_subject(&serde_json::json!({"sub": ""})).is_err());
+        assert!(a.check_subject(&serde_json::json!({"sub": 7})).is_err());
+    }
+
+    #[test]
+    fn the_listed_subject_is_let_through() {
+        let a = authenticator(vec![grant("browser", None)]);
+        let owner = serde_json::json!({"client_id": "browser", "sub": "usr_owner"});
+        assert_eq!(a.check_subject(&owner).unwrap(), "usr_owner");
+    }
+
+    /// An empty list is a boot error in `config::validate`, never a wildcard. This pins the reading
+    /// on the other side of that check, so the two cannot drift into meaning opposite things.
+    #[test]
+    fn an_empty_subject_list_admits_nobody() {
+        let mut a = authenticator(vec![grant("browser", None)]);
+        a.allowed_subjects = vec![];
+        assert!(a.check_subject(&serde_json::json!({"sub": "usr_owner"})).is_err());
     }
 
     #[test]

@@ -141,6 +141,7 @@ mod tests {
                 jwks_uri: "https://id.example.com/oidc/jwks".into(),
                 required_scopes: vec!["memory.read".into()],
                 client_claims: vec!["client_id".into()],
+                allowed_subjects: vec!["usr_test".into()],
             },
             oauth: OauthConfig {
                 owner_password_hash: None,
