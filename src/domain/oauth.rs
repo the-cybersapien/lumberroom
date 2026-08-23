@@ -379,6 +379,35 @@ fn is_base64url(s: &str) -> bool {
     s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// How many redirect URIs one client may register. The list is walked on every authorize.
+pub const MAX_REDIRECT_URIS: usize = 8;
+/// Per URI. Browsers cap a URL near this, and every registered URI is stored and compared on each
+/// authorize, so a longer one is a storage cost with no client that could use it.
+pub const MAX_REDIRECT_URI: usize = 2048;
+
+/// The whole list as one check: at least one, at most `MAX_REDIRECT_URIS`, none longer than
+/// `MAX_REDIRECT_URI`, each structurally valid. `/oauth/register` and the console's client form
+/// both store what passes here, so the two cannot disagree about what a redirect list may hold.
+pub fn validate_redirect_uris(uris: &[String]) -> Result<()> {
+    if uris.is_empty() {
+        return Err(DomainError::validation("redirect_uris must hold at least one URI"));
+    }
+    if uris.len() > MAX_REDIRECT_URIS {
+        return Err(DomainError::validation(format!("at most {MAX_REDIRECT_URIS} redirect URIs")));
+    }
+    for uri in uris {
+        if uri.len() > MAX_REDIRECT_URI {
+            return Err(DomainError::validation(format!(
+                "a redirect URI is longer than {MAX_REDIRECT_URI} characters"
+            )));
+        }
+        validate_redirect_uri(uri).map_err(|e| {
+            DomainError::validation(format!("{uri}: {}", e.client_message()))
+        })?;
+    }
+    Ok(())
+}
+
 /// Structural check at registration time. Must reject: a non-absolute URI, a fragment, plain
 /// http to a non-loopback host, and anything that is not http/https or a private-use scheme.
 ///
@@ -723,6 +752,21 @@ mod tests {
     fn userinfo_in_a_redirect_uri_is_refused() {
         assert!(validate_redirect_uri("https://user@lumberroom.example/cb").is_err());
         assert!(validate_redirect_uri("https://user:pw@lumberroom.example/cb").is_err());
+    }
+
+    #[test]
+    fn the_redirect_list_is_capped_in_count_and_length_wherever_it_is_validated() {
+        let ok: Vec<String> = vec!["https://lumberroom.example/cb".into()];
+        assert!(validate_redirect_uris(&ok).is_ok());
+        assert!(validate_redirect_uris(&[]).is_err(), "an empty list registers nothing");
+        let many: Vec<String> =
+            (0..=MAX_REDIRECT_URIS).map(|i| format!("https://lumberroom.example/cb{i}")).collect();
+        assert!(validate_redirect_uris(&many).is_err(), "one over the count cap");
+        let long = vec![format!("https://lumberroom.example/{}", "a".repeat(MAX_REDIRECT_URI))];
+        assert!(validate_redirect_uris(&long).is_err(), "one over the length cap");
+        let bad = vec!["https://lumberroom.example/cb#frag".to_string()];
+        let e = validate_redirect_uris(&bad).unwrap_err();
+        assert!(e.client_message().contains("#frag"), "the refusal names the URI: {}", e.client_message());
     }
 
     #[test]

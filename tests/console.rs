@@ -422,7 +422,7 @@ async fn queued(h: &Harness, content: &str) -> uuid::Uuid {
         .insert_proposal(
             &h.ctx.cfg.tenant_id,
             NewProposal {
-                fingerprint: ingest::fingerprint(content),
+                fingerprint: ingest::fingerprint(&h.ctx, content).await.unwrap(),
                 content: content.into(),
                 namespace: "project:lumberroom".into(),
                 tags: vec![],
@@ -431,6 +431,7 @@ async fn queued(h: &Harness, content: &str) -> uuid::Uuid {
                 quote: None,
                 auto: false,
                 extractor: "test".into(),
+                posted_by: "test".into(),
                 source: ProposalSource {
                     source_key: format!("/p/a.jsonl#{content}"),
                     file_path: "/p/a.jsonl".into(),
@@ -465,6 +466,25 @@ async fn state_of(h: &Harness, id: uuid::Uuid) -> String {
         .fetch_one(&h.pool)
         .await
         .unwrap()
+}
+
+/// The owner's click on Approve writes into a namespace the poster may have no grant on, so the row
+/// has to distinguish what the poster said about itself from what the server recorded. `speaker` and
+/// `auto` are the poster's own words, and the auto gate compares two fields the same request
+/// supplied.
+#[tokio::test]
+async fn the_queue_page_separates_what_the_poster_claimed_from_the_credential_it_arrived_on() {
+    let h = harness_or_skip!();
+    queued(&h, &format!("the deploy box runs {}", nonce("provenance"))).await;
+
+    let (status, html) = h.get("/console/queue").await;
+    assert_eq!(status, 200);
+    assert!(html.contains("claimed: owner_typed"), "the speaker is the poster's own word");
+    assert!(html.contains("posted by test"), "the credential is what the server knows: {html}");
+    assert!(
+        html.contains("what the posting client said about itself"),
+        "and the page says which is which"
+    );
 }
 
 #[tokio::test]
@@ -1105,6 +1125,75 @@ async fn the_advanced_view_replaces_the_shape_rather_than_merging_with_it() {
         !reg && !sealed && !hist,
         "the full shape's capabilities survived a form that did not tick them"
     );
+}
+
+/// `/oauth/register` refuses these shapes, and a client the owner typed in reaches `/authorize` by
+/// the same path a self-registered one does. One form checking and the other not is how a fragment
+/// or a plain-http host ends up stored on the surface nobody thought to look at.
+#[tokio::test]
+async fn the_clients_form_refuses_a_redirect_uri_that_registration_would_refuse() {
+    let h = harness_or_skip!();
+    let (_, html) = h.get("/console/clients").await;
+    let csrf = client_form_csrf(&html);
+
+    for (label, uri) in [
+        ("fragment", "https://claude.ai/cb#frag"),
+        ("plain http off the loopback", "http://claude.ai/cb"),
+        ("javascript", "javascript:alert(1)"),
+        ("not absolute", "/callback"),
+        ("userinfo", "https://user:pw@claude.ai/cb"),
+    ] {
+        let name = format!("audit-redirect-{label}");
+        let (status, body) = h
+            .post(
+                "/console/clients/new",
+                &[
+                    ("csrf", &csrf),
+                    ("name", &name),
+                    ("preset", "read-only"),
+                    ("redirect_uris", uri),
+                ],
+                Some(&h.cookie),
+            )
+            .await;
+        assert_eq!(status, 400, "{label} was accepted: {uri}");
+        assert!(body.contains("redirect_uri"), "{label} was refused without saying why");
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM oauth_client WHERE client_name = $1")
+                .bind(name.as_str())
+                .fetch_one(&h.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 0, "{label} was refused and the client was written anyway");
+    }
+}
+
+#[tokio::test]
+async fn a_loopback_redirect_uri_is_still_accepted_from_the_clients_form() {
+    let h = harness_or_skip!();
+    let (_, html) = h.get("/console/clients").await;
+    let csrf = client_form_csrf(&html);
+    let (status, _) = h
+        .post(
+            "/console/clients/new",
+            &[
+                ("csrf", &csrf),
+                ("name", "audit-redirect-loopback"),
+                ("preset", "read-only"),
+                ("redirect_uris", "http://127.0.0.1:7711/callback, https://claude.ai/cb"),
+            ],
+            Some(&h.cookie),
+        )
+        .await;
+    assert_eq!(status, 200, "a CLI's loopback listener is the shape RFC 8252 allows");
+    let uris: Vec<String> =
+        sqlx::query_scalar("SELECT redirect_uris FROM oauth_client WHERE client_name = $1")
+            .bind("audit-redirect-loopback")
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    assert_eq!(uris, ["http://127.0.0.1:7711/callback", "https://claude.ai/cb"]);
 }
 
 #[tokio::test]

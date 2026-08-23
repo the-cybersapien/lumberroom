@@ -225,6 +225,24 @@ pub async fn create(
         .split(|c| c == ',' || c == '\n')
         .filter_map(|s| trimmed(s).map(str::to_string))
         .collect();
+    // The same checks `/oauth/register` runs, count and length included. A URI typed here reaches
+    // `/authorize` by the same path a registered one does, so a client the owner issued by hand
+    // should not be the one way a fragment, a plain-http host or an oversized list gets stored.
+    if !redirect_uris.is_empty() {
+        if let Err(e) = crate::domain::oauth::validate_redirect_uris(&redirect_uris) {
+            let message = e.client_message().to_string();
+            return listing(
+                &app,
+                sessions,
+                &session,
+                None,
+                Some(&message),
+                StatusCode::BAD_REQUEST,
+                None,
+            )
+            .await;
+        }
+    }
 
     let client_id = match crate::domain::oauth::random_token(24) {
         Ok(id) => id,

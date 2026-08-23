@@ -71,11 +71,13 @@ impl Authenticator for OpaqueTokenAuthenticator {
             ));
         }
 
-        // Reads and writes are separate axes, so a write-only or read-only client is legitimate.
-        // Both empty is not: it is a consented row that somehow lost its grant, and admitting it
-        // would produce a principal that authenticates and then fails every operation with a
-        // confusing 403 instead of a clear one here.
-        if client.read.is_empty() && client.write.is_empty() {
+        // Reads and writes are separate axes, so a write-only or read-only client is legitimate,
+        // and so is a client that holds neither and may ingest: the console's Ingest bot preset
+        // is exactly that shape, and the ingest routes are opened by the capability rather than
+        // by a namespace. All three empty is a consented row that somehow lost its grant, and
+        // admitting it would produce a principal that authenticates and then fails every
+        // operation with a confusing 403 instead of a clear one here.
+        if client.read.is_empty() && client.write.is_empty() && !client.may_ingest {
             return Err(DomainError::forbidden(
                 "this client holds no namespace grant",
             ));
@@ -311,6 +313,17 @@ mod tests {
         c.write = vec![];
         let err = auth(store(token("c1"), Some(c))).authenticate(HEADER).await.unwrap_err();
         assert_eq!(err.kind.http_status(), 403);
+    }
+
+    #[tokio::test]
+    async fn admits_an_ingest_only_client_that_holds_no_namespace() {
+        let mut c = client("c1");
+        c.read = vec![];
+        c.write = vec![];
+        c.may_ingest = true;
+        let p = auth(store(token("c1"), Some(c))).authenticate(HEADER).await.unwrap();
+        assert!(p.may_ingest);
+        assert!(p.read.is_empty() && p.write.is_empty(), "the capability widens no namespace");
     }
 
     #[tokio::test]
