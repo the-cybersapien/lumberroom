@@ -21,15 +21,38 @@ and never repeated.
 remains into spans and chunks, and writes `worklist.json`. Deterministic, reads only, advances
 nothing. Prints the exclusion table every time; read it, do not skip past it.
 
-**Extraction** turns each chunk into zero or more candidate facts. Two ways to run it:
+**Extraction** turns each chunk into zero or more candidate facts. Three ways to run it:
 
 - Mode A, `/lumberroom-ingest` inside a Claude Code session: the skill dispatches one subagent per chunk
   and each writes `out/chunk-NN.json`. No provider key, no network call the owner didn't already
   trust the session with.
 - Mode B, `lumberroom ingest extract --provider <name>`: the CLI calls an OpenAI-compatible endpoint (or
   Anthropic) directly. Needed for a corpus too large to dispatch as subagents.
+- Mode C, `lumberroom ingest extract --run <id> --batch`: the same chunks and the same prompt as Mode B,
+  posted as one job the provider answers within a day. Around half the per-token price where a
+  provider publishes a discount.
 
-Both modes fill the same `out/` directory in the same shape, so `submit` cannot tell which one ran.
+All three fill the same `out/` directory in the same shape, so `submit` cannot tell which one ran.
+
+`--batch` covers the whole of Mode C's lifecycle: it submits a run that has no batch, polls one that
+is still running, and splits a finished one into `out/`. `--batch-status` asks and creates nothing,
+`--batch-fetch` splits and refuses while the job is still running, and `--retry-failed` on a spent
+batch sends a second one for the chunks that failed. The id lands in `state.json`, so a scheduler
+can call `--batch` on a timer and a lost `out/` costs a re-fetch rather than a re-send. OpenRouter's
+endpoint is built in; anyone else declares theirs at `ingest.providers.<name>.batch.endpoint` in
+`~/.config/lumberroom/config.json`, and a provider with no entry gets an error rather than a fall back to
+the synchronous path.
+
+**What the owner agrees to when he types `--batch`.** The spans leave the machine and sit in the
+provider's object storage until the batch is deleted. OpenRouter writes batch inputs and results to
+Google Cloud Storage and keeps them 30 days, which is a different exposure from a synchronous call
+where the spans live in the request path. 24h is the only completion window on offer, so one round
+of tuning the prompt costs a day: calibrate with Mode A or Mode B first. The confirmation prints the
+destination host and the retention whatever `--yes` says.
+
+No batch has gone to a real provider. The lifecycle runs against a stub in
+`scripts/ingest-test.sh` step 7 and in the crate's own tests; what neither settles is whether
+OpenRouter's replies carry the fields this code reads out of them.
 
 **`submit`** reads `out/`, posts every candidate fact to the server, and only then advances the
 watermark for each file it read from. A run that dies between `plan` and `submit` has moved nothing;
@@ -70,9 +93,12 @@ entries    91,204 seen, 87,331 excluded
            system 5,910 · sensitive 218 · ingest_fence 96
 speakers   owner_typed 619 · main_model 2,701 · subagent 553
 spans      1,204 cut into 34 chunks
-fences     1 closed by end marker, 0 by run record, 0 by bound
+fences     96 entries dropped, 0 closed without an end marker
 unknown    entry types: 0   attachment subtypes: nested_memory 12
 ```
+
+If the tripwire scan drops a span before it ever reaches a chunk file, a `tripwire` line appears
+between `spans` and `fences` naming the count and the rule; a clean run prints nothing there.
 
 Nothing on it is a total to compute by hand; every exclusion is counted by the rule that made it.
 Three lines matter before scaling past the first run:
@@ -96,12 +122,44 @@ should be trusted until that is fixed.
 ## Where things live
 
 The run directory: `${XDG_STATE_HOME:-~/.local/state}/lumberroom/ingest/<run-id>/`, holding
-`worklist.json`, `state.json`, `spans/` and `out/`. Mode 0600, never inside a repo. `spans/` holds
-excerpts of real transcript text in plaintext on disk; that is an accepted cost, not an oversight,
-and it is why `lumberroom ingest clean --run <id>` exists and why `lumberroom ingest run` (the cron path) deletes
-`spans/` and `out/` on a clean exit. `plan` also sweeps run directories older than
-`INGEST_RUN_RETENTION_DAYS` (default 7) at the top of every invocation, so a scheduled run that is
-never manually cleaned still stops accumulating.
+`worklist.json`, `state.json`, `spans/` and `out/`. Directories 0700, files 0600 from the moment
+each is created, never inside a repo. `spans/` holds excerpts of real transcript text in plaintext
+on disk; that is an accepted cost, not an oversight, and it is why `lumberroom ingest clean --run <id>`
+exists and why `lumberroom ingest run` (the cron path) deletes `spans/` and `out/` on a clean exit.
+`plan` also sweeps run directories older than `INGEST_RUN_RETENTION_DAYS` (default 7) at the top of
+every invocation, so a scheduled run that is never manually cleaned still stops accumulating.
+
+The queue table on the server holds each proposal's text in the clear while it waits, whatever
+namespace it is bound for. That is the one retention this design accepts: the owner reads the text
+from the queue and approval writes it through the ordinary write path, so nothing sealed can stand
+in for it until he decides. Every other state clears it. Approval into a namespace that encrypts
+blanks the proposal's text in the same statement (migration 000018), sealing the memory later does
+the same (000022), forgetting the memory does the same, and rejecting a fact bound for a namespace
+above `open` blanks it on the spot. The fingerprint stays in every case, so a rejected fact stays
+blocked without its sentence being kept.
+
+## The ingest fence
+
+Three markers, each `lumberroom-ingest-<begin|run|end>:<run-id>`, the literal prefix immediately
+followed by the run's uuid with no separator. `plan` prints the begin marker to this session's own
+transcript before it walks anything, so the conversation this ingest run happens in never eats
+itself; `lumberroom ingest run` prints the end marker on every exit path once a run id exists; the
+skill's subagent dispatch (Mode A) prints the run marker, since a subagent needs to open and close
+its own fence around one chunk's worth of conversation rather than the whole session's.
+
+Both parsers bind a marker to that trailing uuid rather than matching the prefix as a bare
+substring: a begin marker parses only when the next 36 characters are a valid uuid, and a close
+marker only ends the fence that uuid opened, not any fence. A line that merely quotes the marker
+text (a grep hit over this repository, a fetched page, a README) has no uuid after it and falls
+through to ordinary parsing instead of opening a fence with nothing in the file able to close it;
+counted under `unknown` as `fence_marker:begin_no_uuid` when that happens, and `close_mismatch`
+when a close marker's uuid does not match the fence it would close.
+
+A fence still open when a file's read ceiling arrives holds that file's watermark at the byte
+offset where it opened, not at the ceiling: everything from there on was excluded as fenced content
+and never became a span, so advancing past it would drop those bytes permanently the moment a real
+run's end marker finally closes the fence on a line this walk never reached. The next `plan` re-reads
+from that offset, which costs a second read of the fenced region and nothing else.
 
 The provider key, for Mode B only: `~/.config/lumberroom/config.json`, under `ingest.providers.<name>`,
 written by `lumberroom ingest keys set <provider>` reading from stdin. That file is created at 0600 and the
@@ -125,6 +183,8 @@ leave them for the next retention sweep to age out on the server side.
 
 ## What is deferred
 
-Codex parsing, corpus-wide ingestion beyond the first project, Mode C (batch extraction), and
-supersession from an offline extractor are all out of scope for the first run and named as such in
-`docs/specs/phase-6-ingestion.md` §13. Do not read their absence as a bug in what is here.
+Codex parsing, corpus-wide ingestion beyond the first project, and supersession from an offline
+extractor are all out of scope for the first run and named as such in
+`docs/specs/phase-6-ingestion.md` §13. Do not read their absence as a bug in what is here. Mode C
+was on this list and has come off it: it is built and reachable, and the entry above says what it
+still owes.
