@@ -29,8 +29,12 @@ alongside it, so switching modes does not break the CLI or the hooks. A flow has
 server: [`scripts/oauth-flow-test.sh`](scripts/oauth-flow-test.sh) passed 43 assertions across 13
 steps, in both acceptance gates recorded in [VERIFY.md](VERIFY.md).
 
-Sections 1 to 4 are common to both. Section 5 is the OAuth runbook. Section 8 is the KEK, which
-you need before any `private` write can land.
+**Behind a proxy you already run.** The host has its own nginx on 80 and 443 terminating TLS, and
+lumberroom sits behind it on `127.0.0.1:8787`. Install with `--behind-proxy` and Caddy never starts.
+Either auth mode works. Section 3b is the runbook.
+
+Sections 1 to 4 are common to all three. Section 5 is the OAuth runbook. Section 8 is the KEK,
+which you need before any `private` write can land.
 
 ---
 
@@ -127,6 +131,37 @@ invisible until something else sourced the file.
 Step 5 runs only in oauth mode, and it needs `lumberroom-server hash-password` inside the image. That
 subcommand exists. If the install is running non-interactively, it stops with instructions rather
 than guessing a password.
+
+## 3b. Behind an existing reverse proxy
+
+The host already terminates TLS on 80 and 443. Caddy stays off, the server keeps its
+`127.0.0.1:8787` bind, and your proxy reaches it there. No `--email`, since nothing asks ACME for a
+certificate.
+
+```bash
+sudo ./deploy/install.sh --domain memory.example.com --behind-proxy
+```
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8787;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_buffering off;          # tool responses stream
+    proxy_read_timeout 300s;
+    client_max_body_size 1m;
+}
+```
+
+`/readyz`, `/console` and `/oauth/*` ride the same upstream, so one block covers all of them. The
+login limiter reads the first entry of `X-Forwarded-For` and `$proxy_add_x_forwarded_for` appends
+to what arrived, so trust an incoming header only from an edge you control: `set_real_ip_from` the
+Cloudflare ranges, or set the header to `$remote_addr`.
+
+The Caddy notes in this file do not apply here, neither the access-log redaction nor `header_up`.
+Redact your own proxy log: drop the query string, or at least `q`, `ns`, `next` and `state`.
 
 ## 4. Verify on the box
 

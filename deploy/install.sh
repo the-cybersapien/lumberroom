@@ -7,6 +7,9 @@
 #
 # Flags:
 #   --domain <fqdn>          enable Caddy + automatic TLS on 443 (omit to run HTTP on 127.0.0.1 only)
+#   --behind-proxy           you already run a TLS proxy on this host. Needs --domain. Sets PUBLIC_URL
+#                            from it, leaves Caddy off and the firewall alone, and keeps the server on
+#                            127.0.0.1:8787 for your proxy to reach. See DEPLOY.md section 3b.
 #   --email <addr>           ACME contact address
 #   --auth-mode <mode>       token (default) | oauth | oidc. oauth needs --domain: PUBLIC_URL must
 #                            be https, and the server refuses to boot otherwise. See deploy/oauth.md.
@@ -30,6 +33,7 @@ set -euo pipefail
 umask 077
 
 DOMAIN=""
+BEHIND_PROXY=0
 EMAIL=""
 AUTH_MODE_FLAG=""
 KEK_PROVIDER_FLAG=""
@@ -43,6 +47,7 @@ COMPOSE=(docker compose)
 while [ $# -gt 0 ]; do
   case "$1" in
     --domain) DOMAIN="${2:?}"; shift 2 ;;
+    --behind-proxy) BEHIND_PROXY=1; shift ;;
     --email) EMAIL="${2:?}"; shift 2 ;;
     --auth-mode) AUTH_MODE_FLAG="${2:?}"; shift 2 ;;
     --kek-provider) KEK_PROVIDER_FLAG="${2:?}"; shift 2 ;;
@@ -50,7 +55,7 @@ while [ $# -gt 0 ]; do
     --no-backups) DO_BACKUPS=0; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
-    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 1 ;;
   esac
 done
@@ -63,6 +68,10 @@ case "$KEK_PROVIDER_FLAG" in
   ''|none|file|env) ;;
   *) echo "--kek-provider must be none, file or env, got: $KEK_PROVIDER_FLAG" >&2; exit 1 ;;
 esac
+if [ "$BEHIND_PROXY" = 1 ] && [ -z "$DOMAIN" ]; then
+  echo "--behind-proxy needs --domain: PUBLIC_URL is derived from it and there is nothing else to derive it from." >&2
+  exit 1
+fi
 if [ "$AUTH_MODE_FLAG" = "oauth" ] && [ -z "$DOMAIN" ]; then
   echo "--auth-mode oauth needs --domain: the built-in authorization server requires an https PUBLIC_URL, and the server refuses to boot without one." >&2
   exit 1
@@ -238,7 +247,14 @@ if [ -n "$DOMAIN" ]; then
     [ -n "$EMAIL" ] && env_set ACME_EMAIL "$EMAIL"
     info "domain set to $DOMAIN"
   fi
-  PROFILES=(--profile tls)
+  # --behind-proxy takes the same PUBLIC_URL and stops there. Starting Caddy would put a second
+  # thing on 80 and 443, which the operator's own proxy already holds.
+  if [ "$BEHIND_PROXY" = 1 ]; then
+    PROFILES=()
+    info "behind-proxy: Caddy stays off; the server listens on 127.0.0.1:8787 for your proxy"
+  else
+    PROFILES=(--profile tls)
+  fi
 else
   warn "no --domain: the server will listen on 127.0.0.1:8787 with no TLS."
   warn "Reach it over an SSH tunnel, or re-run with --domain once DNS points here."
@@ -418,6 +434,11 @@ fi
 say "8/9 firewall"
 if [ "$DO_FIREWALL" = 0 ]; then
   info "skipped (--no-firewall)"
+elif [ "$BEHIND_PROXY" = 1 ]; then
+  # Your proxy already holds 80 and 443, so whatever rule lets traffic reach it is already there.
+  # Adding one here would claim credit for a rule this script did not write.
+  info "behind-proxy: leaving the firewall alone. Your proxy already owns 80 and 443."
+  info "the server and Postgres stay on 127.0.0.1; nothing new needs opening."
 elif [ -n "$DOMAIN" ]; then
   if command -v ufw >/dev/null 2>&1; then
     run ufw allow 80/tcp
@@ -465,7 +486,20 @@ fi
 # ── next steps ────────────────────────────────────────────────────────────────
 say ""
 say "deployed."
-if [ -n "$DOMAIN" ]; then
+if [ "$BEHIND_PROXY" = 1 ]; then
+  info "endpoint: https://$DOMAIN/mcp, once your proxy forwards that host to 127.0.0.1:8787"
+  say ""
+  say "four things the server needs from your proxy:"
+  info "  Host: preserved, so the issuer and every redirect match what the client asked for"
+  info "  X-Forwarded-For: the client address"
+  info "  X-Forwarded-Proto: https"
+  info "  no response buffering on /mcp: tool responses stream, and a buffering proxy holds them to the end"
+  say ""
+  info "the login limiter keys on the first entry of X-Forwarded-For, so overwrite that header rather"
+  info "than appending to whatever arrived. A proxy that appends lets a caller put its own value first"
+  info "and take a fresh rate-limit bucket on every request."
+  info "runbook, with an nginx location block: DEPLOY.md section 3b"
+elif [ -n "$DOMAIN" ]; then
   info "endpoint: https://$DOMAIN/mcp"
   info "TLS certificate issuance takes up to a minute on first request; watch: docker compose logs -f caddy"
 else
