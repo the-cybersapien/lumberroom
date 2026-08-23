@@ -17,6 +17,20 @@
 //! of a fuzzy search would let "forget the old port number" take out the deploy notes sitting
 //! beside it. Candidates below the floor are not offered at all, and the dry run prints exactly
 //! what is in scope before anything goes.
+//!
+//! # What happens to the chain
+//!
+//! A row that retired another row cannot simply go: the retired row points at it. The first
+//! version cleared that pointer, which revived the retired row, in whatever namespace it sat and
+//! at whatever level, for a caller who might hold neither. A private fact the owner had corrected
+//! came back to life because a client with an open ceiling deleted the correction.
+//!
+//! Now the store is asked who points at the row, and the service decides under the caller's own
+//! grant. A doomed row with a successor has its predecessors spliced onto that successor, so they
+//! stay retired and the chain reads as one row shorter. A doomed row at the head of its chain
+//! revives its predecessors, and only the ones the caller could have deleted themselves; any other
+//! predecessor blocks the delete with the same message an unknown id gets, because naming the
+//! namespace would map a grant the caller was refused.
 
 use serde::Serialize;
 
@@ -24,7 +38,8 @@ use super::Ctx;
 use crate::adapters::auth::{can_read, can_write, filter_readable};
 use crate::domain::errors::{DomainError, Result};
 use crate::domain::namespaces;
-use crate::domain::types::{Memory, Sensitivity};
+use crate::domain::types::{Memory, Principal, Sensitivity};
+use crate::ports::memory::{ChainLink, ChainNeighbours, DeleteOutcome, DeletePlan};
 use crate::ports::{SearchQuery, Weights};
 
 /// How much of a row is quoted back in a dry run. Enough to recognise the fact, short enough that a
@@ -57,8 +72,64 @@ pub struct ForgetOutcome {
     pub rows: Vec<Doomed>,
     /// What deletion means for the levels in this batch, one line each.
     pub consequences: Vec<String>,
+    /// Rows a deleted row had retired that are live again, because the deleted row was the head
+    /// of its chain and the caller's grant covered each of them.
+    pub revived: Vec<String>,
+    /// Rows a deleted row had retired that now point at the deleted row's successor instead.
+    pub spliced: Vec<String>,
+    /// Rows that matched and were left alone: deleting one would have revived a row this caller
+    /// may not reach. On the by-id path this is a refusal rather than a list.
+    pub blocked: Vec<String>,
     /// Rendered for a confirmation prompt.
     pub text: String,
+}
+
+/// The chain edits a delete will make, or why it cannot be made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Plan {
+    Apply(DeletePlan),
+    /// A predecessor outside the caller's grant would come back to life.
+    Blocked,
+}
+
+/// Decide the chain edits for one row under this caller's grant. Pure, so the boundary cases can
+/// be pinned without a database.
+///
+/// With a successor, every predecessor is spliced onto it whatever its namespace: the row stays
+/// retired, which is policy-neutral, and the alternative leaves two live versions of one fact.
+/// Without one, a predecessor comes back to life, and that is a write at the predecessor's own
+/// level the caller has to hold both grants for.
+fn plan_for(principal: &Principal, neighbours: &ChainNeighbours) -> Plan {
+    let Some((_, successor)) = neighbours.row else {
+        return Plan::Apply(DeletePlan::default());
+    };
+    if let Some(successor) = successor {
+        return Plan::Apply(DeletePlan { revive: vec![], splice_to: Some(successor) });
+    }
+    let mut revive = Vec::with_capacity(neighbours.predecessors.len());
+    for link in &neighbours.predecessors {
+        if !reaches(principal, link) {
+            return Plan::Blocked;
+        }
+        revive.push(link.id);
+    }
+    Plan::Apply(DeletePlan { revive, splice_to: None })
+}
+
+/// The same two grants `deletable` needs, at the neighbour's own namespace and level.
+fn reaches(principal: &Principal, link: &ChainLink) -> bool {
+    can_read(principal, &link.namespace, link.sensitivity)
+        && can_write(principal, &link.namespace, link.sensitivity)
+}
+
+async fn plan(ctx: &Ctx, id: uuid::Uuid) -> Result<Plan> {
+    let neighbours = ctx.repos.memories.chain_neighbours(ctx.tenant(), id).await?;
+    Ok(plan_for(&ctx.principal, &neighbours))
+}
+
+/// The one refusal for "no such row", "not yours" and "would revive a row that is not yours".
+fn not_yours(id: &str) -> DomainError {
+    DomainError::not_found(format!("memory {id} does not exist or is not yours to delete"))
 }
 
 pub async fn by_id(
@@ -77,11 +148,13 @@ pub async fn by_id(
     // cannot read tells it that namespace exists.
     let mut row = match row {
         Some(m) if deletable(ctx, &m) => m,
-        _ => {
-            return Err(DomainError::not_found(format!(
-                "memory {id} does not exist or is not yours to delete"
-            )))
-        }
+        _ => return Err(not_yours(id)),
+    };
+    // Planned on the dry run too, so a preview that says "would delete" is not followed by a
+    // refusal on the real call.
+    let plan = match plan(ctx, uuid).await? {
+        Plan::Apply(p) => p,
+        Plan::Blocked => return Err(not_yours(id)),
     };
 
     // Decrypt for the preview only, and ignore a failure: the dry run then says the row could not
@@ -90,17 +163,19 @@ pub async fn by_id(
 
     let doomed = vec![to_doomed(&row, None)];
     if dry_run {
-        return Ok(outcome(true, doomed));
+        return Ok(outcome(true, doomed, Edits::planned(&plan), vec![]));
     }
 
-    if !ctx.repos.memories.delete(ctx.tenant(), uuid).await? {
+    let edits = match ctx.repos.memories.delete(ctx.tenant(), uuid, &plan).await? {
         // Lost a race with another delete. Nothing is wrong with the store, and the caller wanted
         // the row gone, which it is.
-        return Ok(outcome(false, vec![]));
-    }
-    record(ctx, &doomed, reason);
+        DeleteOutcome::Missing => return Ok(outcome(false, vec![], Edits::default(), vec![])),
+        DeleteOutcome::Deleted(e) => e,
+    };
+    let edits = Edits::from_chain(&edits);
+    record(ctx, &doomed, &edits, reason);
     super::bootstrap::clear_cache();
-    Ok(outcome(false, doomed))
+    Ok(outcome(false, doomed, edits, vec![]))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -132,7 +207,7 @@ pub async fn by_query(
     };
     let primary = filter_readable(&ctx.principal, &asked);
     if primary.is_empty() {
-        return Ok(outcome(dry_run, vec![]));
+        return Ok(outcome(dry_run, vec![], Edits::default(), vec![]));
     }
 
     let embedding = ctx.embedder.embed_query(query).await?;
@@ -166,34 +241,64 @@ pub async fn by_query(
     // Superseded rows are included on purpose: forgetting a fact means forgetting the corrections
     // of it too, and a caller cleaning up after a mistake would otherwise be left with history
     // pointing at nothing.
-    let doomed: Vec<Doomed> = hits
+    //
+    // Retired rows reach this process only because the caller may delete them, which `deletable`
+    // checks per row below. They are never returned as search results: a preview of a row the
+    // caller is about to delete is a different thing from a history read.
+    let candidates: Vec<Doomed> = hits
         .iter()
         .filter(|h| h.similarity >= floor)
         .filter(|h| deletable(ctx, &h.memory))
         .map(|h| to_doomed(&h.memory, Some(h.similarity)))
         .collect();
 
-    if dry_run || doomed.is_empty() {
-        return Ok(outcome(dry_run, doomed));
-    }
-
-    let mut gone = Vec::with_capacity(doomed.len());
-    for row in doomed {
+    // Each row is planned right before it goes, never all at once up front. Two rows of one chain
+    // can both match, and deleting the first changes what the second's neighbours are: a plan made
+    // before that would splice onto a row that no longer exists. The dry run plans every row
+    // against the store as it stands, which is the preview it can honestly give.
+    let mut gone = Vec::with_capacity(candidates.len());
+    let mut blocked = Vec::new();
+    let mut edits = Edits::default();
+    let mut failure = None;
+    for row in candidates {
         let Ok(uuid) = uuid::Uuid::parse_str(&row.id) else { continue };
-        match ctx.repos.memories.delete(ctx.tenant(), uuid).await {
-            Ok(true) => gone.push(row),
-            Ok(false) => {}
+        let plan = match plan(ctx, uuid).await? {
+            Plan::Apply(p) => p,
+            Plan::Blocked => {
+                blocked.push(row.id);
+                continue;
+            }
+        };
+        if dry_run {
+            edits.extend(&Edits::planned(&plan));
+            gone.push(row);
+            continue;
+        }
+        match ctx.repos.memories.delete(ctx.tenant(), uuid, &plan).await {
+            Ok(DeleteOutcome::Deleted(e)) => {
+                edits.extend(&Edits::from_chain(&e));
+                gone.push(row);
+            }
+            Ok(DeleteOutcome::Missing) => {}
             // Partial success is reported as partial success. Rolling the whole batch back would
-            // mean claiming rows still exist that do not.
+            // mean claiming rows still exist that do not, and the rows already gone are recorded
+            // below before the error goes back, so an audit line is never lost to a later row.
             Err(e) => {
                 tracing::error!(id = %row.id, error = %e.log_message(), "delete failed mid-batch");
-                return Err(e);
+                failure = Some(e);
+                break;
             }
         }
     }
-    record(ctx, &gone, reason);
+    if dry_run {
+        return Ok(outcome(true, gone, edits, blocked));
+    }
+    record(ctx, &gone, &edits, reason);
     super::bootstrap::clear_cache();
-    Ok(outcome(false, gone))
+    if let Some(e) = failure {
+        return Err(e);
+    }
+    Ok(outcome(false, gone, edits, blocked))
 }
 
 /// A sealed item, by the client-computed HMAC of its name.
@@ -231,16 +336,16 @@ pub async fn sealed_item(
         similarity: None,
     }];
     if dry_run {
-        return Ok(outcome(true, doomed));
+        return Ok(outcome(true, doomed, Edits::default(), vec![]));
     }
 
     let removed = ctx.sealed_store()?.delete(ctx.tenant(), &namespace, key_hmac).await?;
     if !removed {
-        return Ok(outcome(false, vec![]));
+        return Ok(outcome(false, vec![], Edits::default(), vec![]));
     }
-    record(ctx, &doomed, reason);
+    record(ctx, &doomed, &Edits::default(), reason);
     super::bootstrap::clear_cache();
-    Ok(outcome(false, doomed))
+    Ok(outcome(false, doomed, Edits::default(), vec![]))
 }
 
 /// A model that can silently delete memories is a worse failure than one that hoards them, so the
@@ -288,10 +393,38 @@ fn preview(content: &str) -> String {
     format!("{}…", flat.chars().take(PREVIEW_CHARS).collect::<String>())
 }
 
+/// The chain edits of a batch, as strings for the outcome.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Edits {
+    revived: Vec<String>,
+    spliced: Vec<String>,
+}
+
+impl Edits {
+    /// What a plan will do, for the dry run. The splice list is unknown until the store applies
+    /// it, so a dry run reports the revivals and says the rest will be spliced.
+    fn planned(plan: &DeletePlan) -> Self {
+        Self { revived: plan.revive.iter().map(|u| u.to_string()).collect(), spliced: vec![] }
+    }
+
+    fn from_chain(edits: &crate::ports::memory::ChainEdits) -> Self {
+        Self {
+            revived: edits.revived.iter().map(|u| u.to_string()).collect(),
+            spliced: edits.spliced.iter().map(|u| u.to_string()).collect(),
+        }
+    }
+
+    fn extend(&mut self, other: &Edits) {
+        self.revived.extend(other.revived.iter().cloned());
+        self.spliced.extend(other.spliced.iter().cloned());
+    }
+}
+
 /// Deletions are recorded so that "what happened to that fact" has an answer. The tool call itself
 /// is recorded by the transport like every other call; this line is what names the rows, which a
-/// per-call row cannot.
-fn record(ctx: &Ctx, rows: &[Doomed], reason: Option<&str>) {
+/// per-call row cannot. The rows a delete brought back to life get their own line, because a fact
+/// reappearing is the question that gets asked next.
+fn record(ctx: &Ctx, rows: &[Doomed], edits: &Edits, reason: Option<&str>) {
     for row in rows {
         tracing::warn!(
             id = %row.id,
@@ -303,12 +436,27 @@ fn record(ctx: &Ctx, rows: &[Doomed], reason: Option<&str>) {
             "memory deleted"
         );
     }
+    for id in &edits.revived {
+        tracing::warn!(id = %id, client = %ctx.principal.client, "memory revived by a delete");
+    }
+    for id in &edits.spliced {
+        tracing::info!(id = %id, client = %ctx.principal.client, "memory re-pointed by a delete");
+    }
 }
 
-fn outcome(dry_run: bool, rows: Vec<Doomed>) -> ForgetOutcome {
+fn outcome(dry_run: bool, rows: Vec<Doomed>, edits: Edits, blocked: Vec<String>) -> ForgetOutcome {
     let consequences = consequences(&rows);
-    let text = render(dry_run, &rows, &consequences);
-    ForgetOutcome { dry_run, count: rows.len(), rows, consequences, text }
+    let text = render(dry_run, &rows, &consequences, &edits, &blocked);
+    ForgetOutcome {
+        dry_run,
+        count: rows.len(),
+        rows,
+        consequences,
+        revived: edits.revived,
+        spliced: edits.spliced,
+        blocked,
+        text,
+    }
 }
 
 /// What deletion means, per level present in this batch. Said out loud because the three levels
@@ -337,13 +485,24 @@ fn consequences(rows: &[Doomed]) -> Vec<String> {
 }
 
 /// The dry run's whole job: print exactly what would go, in a form somebody can say yes to.
-fn render(dry_run: bool, rows: &[Doomed], consequences: &[String]) -> String {
+fn render(
+    dry_run: bool,
+    rows: &[Doomed],
+    consequences: &[String],
+    edits: &Edits,
+    blocked: &[String],
+) -> String {
     if rows.is_empty() {
-        return if dry_run {
+        let mut text = if dry_run {
             "Nothing matches. Nothing would be deleted.".to_string()
         } else {
             "Nothing matched. Nothing was deleted.".to_string()
         };
+        if !blocked.is_empty() {
+            text.push('\n');
+            text.push_str(&blocked_line(blocked));
+        }
+        return text;
     }
 
     let mut lines = Vec::new();
@@ -367,12 +526,111 @@ fn render(dry_run: bool, rows: &[Doomed], consequences: &[String]) -> String {
         lines.push(String::new());
         lines.push(line.clone());
     }
+    if !edits.revived.is_empty() {
+        lines.push(String::new());
+        lines.push(format!(
+            "{} {} row{} this had retired: {}",
+            if dry_run { "Would revive" } else { "Revived" },
+            edits.revived.len(),
+            if edits.revived.len() == 1 { "" } else { "s" },
+            edits.revived.join(", ")
+        ));
+    }
+    if !edits.spliced.is_empty() {
+        lines.push(String::new());
+        lines.push(format!(
+            "Re-pointed {} retired row{} at the successor, so they stay retired: {}",
+            edits.spliced.len(),
+            if edits.spliced.len() == 1 { "" } else { "s" },
+            edits.spliced.join(", ")
+        ));
+    }
+    if !blocked.is_empty() {
+        lines.push(String::new());
+        lines.push(blocked_line(blocked));
+    }
     lines.join("\n")
+}
+
+fn blocked_line(blocked: &[String]) -> String {
+    format!(
+        "Left alone {} row{} whose deletion would revive a row outside your grant: {}",
+        blocked.len(),
+        if blocked.len() == 1 { "" } else { "s" },
+        blocked.join(", ")
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::policy::NamespaceGrant;
+
+    fn principal(read: Vec<NamespaceGrant>, write: Vec<NamespaceGrant>) -> Principal {
+        let mut p = Principal::empty("browser");
+        p.read = read;
+        p.write = write;
+        p.may_delete = true;
+        p
+    }
+
+    fn link(ns: &str, level: Sensitivity) -> ChainLink {
+        ChainLink { id: uuid::Uuid::new_v4(), namespace: ns.into(), sensitivity: level }
+    }
+
+    fn head_with(predecessors: Vec<ChainLink>) -> ChainNeighbours {
+        ChainNeighbours { row: Some((None, None)), predecessors, successors: vec![] }
+    }
+
+    #[test]
+    fn a_row_with_no_chain_needs_no_edits() {
+        let p = principal(vec![], vec![]);
+        assert_eq!(plan_for(&p, &head_with(vec![])), Plan::Apply(DeletePlan::default()));
+        assert_eq!(plan_for(&p, &ChainNeighbours::default()), Plan::Apply(DeletePlan::default()));
+    }
+
+    #[test]
+    fn a_head_revives_only_predecessors_the_caller_could_delete() {
+        let p = principal(vec![NamespaceGrant::open("user:me")], vec![NamespaceGrant::open("user:me")]);
+        let mine = link("user:me", Sensitivity::Open);
+        let plan = plan_for(&p, &head_with(vec![mine.clone()]));
+        assert_eq!(plan, Plan::Apply(DeletePlan { revive: vec![mine.id], splice_to: None }));
+    }
+
+    #[test]
+    fn a_head_whose_predecessor_is_above_the_ceiling_blocks_the_delete() {
+        let p = principal(vec![NamespaceGrant::open("user:me")], vec![NamespaceGrant::open("user:me")]);
+        let private = link("user:me", Sensitivity::Private);
+        assert_eq!(plan_for(&p, &head_with(vec![private])), Plan::Blocked);
+    }
+
+    #[test]
+    fn a_head_whose_predecessor_is_in_another_namespace_blocks_the_delete() {
+        let p = principal(vec![NamespaceGrant::open("user:me")], vec![NamespaceGrant::open("user:me")]);
+        let foreign = link("personal:finance", Sensitivity::Open);
+        assert_eq!(plan_for(&p, &head_with(vec![foreign])), Plan::Blocked);
+    }
+
+    #[test]
+    fn a_read_grant_alone_does_not_let_a_delete_revive_a_row() {
+        let p = principal(vec![NamespaceGrant::open("user:me")], vec![]);
+        assert_eq!(plan_for(&p, &head_with(vec![link("user:me", Sensitivity::Open)])), Plan::Blocked);
+    }
+
+    #[test]
+    fn a_row_with_a_successor_splices_every_predecessor_onto_it_whatever_the_grant() {
+        let p = principal(vec![], vec![]);
+        let successor = uuid::Uuid::new_v4();
+        let neighbours = ChainNeighbours {
+            row: Some((None, Some(successor))),
+            predecessors: vec![link("personal:finance", Sensitivity::Private)],
+            successors: vec![link("user:me", Sensitivity::Open)],
+        };
+        assert_eq!(
+            plan_for(&p, &neighbours),
+            Plan::Apply(DeletePlan { revive: vec![], splice_to: Some(successor) })
+        );
+    }
 
     fn doomed(id: &str, level: Sensitivity) -> Doomed {
         Doomed {
@@ -386,10 +644,14 @@ mod tests {
         }
     }
 
+    fn plain(dry_run: bool, rows: &[Doomed]) -> String {
+        render(dry_run, rows, &consequences(rows), &Edits::default(), &[])
+    }
+
     #[test]
     fn a_dry_run_names_every_row_it_would_take() {
         let rows = vec![doomed("a", Sensitivity::Open), doomed("b", Sensitivity::Open)];
-        let text = render(true, &rows, &consequences(&rows));
+        let text = plain(true, &rows);
         assert!(text.starts_with("Would delete 2 rows:"));
         assert!(text.contains("- a [user:me, open] 0.93  The port is 8080"));
         assert!(text.contains("- b ["));
@@ -397,8 +659,22 @@ mod tests {
 
     #[test]
     fn a_dry_run_over_nothing_says_so_rather_than_printing_an_empty_list() {
-        assert!(render(true, &[], &[]).contains("Nothing would be deleted"));
-        assert!(render(false, &[], &[]).contains("Nothing was deleted"));
+        assert!(plain(true, &[]).contains("Nothing would be deleted"));
+        assert!(plain(false, &[]).contains("Nothing was deleted"));
+    }
+
+    #[test]
+    fn the_report_names_what_a_delete_revived_and_what_it_left_alone() {
+        let rows = vec![doomed("a", Sensitivity::Open)];
+        let edits = Edits { revived: vec!["p".into()], spliced: vec!["q".into(), "r".into()] };
+        let text = render(false, &rows, &consequences(&rows), &edits, &["z".to_string()]);
+        assert!(text.contains("Revived 1 row this had retired: p"), "{text}");
+        assert!(text.contains("Re-pointed 2 retired rows at the successor"), "{text}");
+        assert!(text.contains("Left alone 1 row whose deletion would revive a row outside your grant: z"), "{text}");
+
+        let empty = render(true, &[], &[], &Edits::default(), &["z".to_string()]);
+        assert!(empty.contains("Nothing would be deleted"), "{empty}");
+        assert!(empty.contains("Left alone 1 row"), "{empty}");
     }
 
     #[test]

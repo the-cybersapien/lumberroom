@@ -26,7 +26,9 @@ use crate::crypto::envelope::SealedContent;
 use crate::domain::errors::{DomainError, Result};
 use crate::domain::policy::{NamespaceCeiling, NamespaceGrant};
 use crate::domain::types::{ConflictCandidate, Memory, SearchHit, Sensitivity};
-use crate::ports::memory::Timeline;
+use crate::ports::memory::{
+    ChainEdits, ChainLink, ChainNeighbours, DeleteOutcome, DeletePlan, Timeline,
+};
 use crate::ports::{
     ConflictPair, DigestData, DigestQuery, Emission, MemoryRepository, NamespaceSummary,
     NeighbourQuery, NewMemory, RecentQuery, RegistrySummary, SearchQuery, Staleness,
@@ -874,6 +876,32 @@ fn split_ceilings(ceilings: &[NamespaceCeiling]) -> (Vec<String>, Vec<String>) {
     (namespaces, maxima)
 }
 
+/// The constraint name when a statement failed on a foreign key, SQLSTATE 23503.
+///
+/// A delete blocked by a reference is the caller's problem to look at, and "internal error" sends
+/// them to the server log for a fact the database already stated in one word.
+fn foreign_key_blocker(e: &sqlx::Error) -> Option<String> {
+    let db = e.as_database_error()?;
+    if db.code().as_deref() != Some("23503") {
+        return None;
+    }
+    Some(db.constraint().unwrap_or("a foreign key").to_string())
+}
+
+/// A foreign key tripped while a delete edited the chain: a neighbour appeared or vanished between
+/// the plan and the transaction. A conflict, so the caller plans again; anything else stays the
+/// internal error it is.
+fn chain_conflict(id: uuid::Uuid, e: sqlx::Error) -> DomainError {
+    match foreign_key_blocker(&e) {
+        Some(constraint) => DomainError::conflict(format!(
+            "memory {id} could not be deleted: {constraint} changed while the delete was being \
+             planned. Run the delete again."
+        ))
+        .with_source(e),
+        None => DomainError::from(e),
+    }
+}
+
 /// What `enc_alg` says, mapped onto the one label this build implements.
 ///
 /// The column is text and anything with database write access can set it. Recognised means the
@@ -1690,35 +1718,142 @@ impl MemoryRepository for PgMemoryRepository {
         Ok(())
     }
 
-    /// Hard delete, with the chain links around the row cleared first.
-    ///
-    /// `supersedes` and `superseded_by` are both foreign keys into this table, so deleting a row
-    /// that another row points at fails on the constraint. Clearing the links revives the row this
-    /// one had retired, which is the honest outcome: the correction is gone, so the fact it
-    /// corrected is live again and shows up in the review queue rather than vanishing with it.
-    async fn delete(&self, tenant: &str, id: uuid::Uuid) -> Result<bool> {
-        let mut tx = self.pool.begin().await?;
-        sqlx::query(
-            "UPDATE memory SET superseded_by = NULL, superseded_at = NULL
-              WHERE tenant_id = $1 AND superseded_by = $2",
+    async fn chain_neighbours(&self, tenant: &str, id: uuid::Uuid) -> Result<ChainNeighbours> {
+        let row = sqlx::query(
+            "SELECT supersedes, superseded_by FROM memory WHERE tenant_id = $1 AND id = $2",
         )
         .bind(tenant)
         .bind(id)
-        .execute(&mut *tx)
+        .fetch_optional(&self.pool)
         .await?;
-        sqlx::query("UPDATE memory SET supersedes = NULL WHERE tenant_id = $1 AND supersedes = $2")
+        let Some(row) = row else {
+            return Ok(ChainNeighbours::default());
+        };
+        let own = (
+            row.get::<Option<uuid::Uuid>, _>("supersedes"),
+            row.get::<Option<uuid::Uuid>, _>("superseded_by"),
+        );
+        // One statement for both directions. The direction column is what tells a predecessor
+        // from a successor. A row that is both (a two-row cycle, which the write path refuses)
+        // lands in `predecessors` once, because the boolean is tested first and the row is
+        // pushed to one bucket.
+        let links = sqlx::query(
+            "SELECT id, namespace, sensitivity, (superseded_by = $2) AS predecessor
+               FROM memory
+              WHERE tenant_id = $1 AND (superseded_by = $2 OR supersedes = $2)
+              ORDER BY created_at, id",
+        )
+        .bind(tenant)
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = ChainNeighbours { row: Some(own), ..Default::default() };
+        for r in &links {
+            let link = ChainLink {
+                id: r.get("id"),
+                namespace: r.get("namespace"),
+                // An unrecognised level reads as the most restrictive, the rule every row
+                // constructor in this file follows.
+                sensitivity: Sensitivity::parse(r.get::<&str, _>("sensitivity"))
+                    .unwrap_or(Sensitivity::Sealed),
+            };
+            if r.get::<Option<bool>, _>("predecessor").unwrap_or(false) {
+                out.predecessors.push(link);
+            } else {
+                out.successors.push(link);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Hard delete, with the chain edits the service planned applied first, all in one
+    /// transaction.
+    ///
+    /// `supersedes` and `superseded_by` are foreign keys into this table and stay `NO ACTION` on
+    /// purpose: an `ON DELETE SET NULL` on `superseded_by` would revive every row this one had
+    /// retired, in namespaces the caller may never have been granted, with no service in the loop
+    /// to say no. So the links are edited here, under the plan, and a predecessor the plan did not
+    /// account for makes the DELETE fail on the constraint. That failure is mapped to a conflict
+    /// rather than to an internal error, because it names the one thing the caller can do about
+    /// it, which is to look again.
+    ///
+    /// The doomed row is locked before the edits. Two deletes of one row then serialise, and the
+    /// loser finds nothing to delete and reports `Missing`.
+    async fn delete(
+        &self,
+        tenant: &str,
+        id: uuid::Uuid,
+        plan: &DeletePlan,
+    ) -> Result<DeleteOutcome> {
+        let mut tx = self.pool.begin().await?;
+        let doomed = sqlx::query(
+            "SELECT supersedes FROM memory WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+        )
+        .bind(tenant)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(doomed) = doomed else {
+            return Ok(DeleteOutcome::Missing);
+        };
+        let own_predecessor: Option<uuid::Uuid> = doomed.get("supersedes");
+
+        let mut edits = ChainEdits::default();
+        if !plan.revive.is_empty() {
+            let rows = sqlx::query(
+                "UPDATE memory SET superseded_by = NULL, superseded_at = NULL
+                  WHERE tenant_id = $1 AND superseded_by = $2 AND id = ANY($3)
+              RETURNING id",
+            )
             .bind(tenant)
             .bind(id)
-            .execute(&mut *tx)
+            .bind(&plan.revive)
+            .fetch_all(&mut *tx)
             .await?;
+            edits.revived = rows.iter().map(|r| r.get("id")).collect();
+        }
+        if let Some(successor) = plan.splice_to {
+            // `superseded_at` is kept. The predecessor was retired when it was retired; which row
+            // did the retiring is the only thing that changed.
+            let rows = sqlx::query(
+                "UPDATE memory SET superseded_by = $3
+                  WHERE tenant_id = $1 AND superseded_by = $2
+              RETURNING id",
+            )
+            .bind(tenant)
+            .bind(id)
+            .bind(successor)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| chain_conflict(id, e))?;
+            edits.spliced = rows.iter().map(|r| r.get("id")).collect();
+        }
+        // The successor's provenance link moves to whatever the doomed row had replaced, so a
+        // chain of three with the middle removed still reads as a chain of two.
+        let rows = sqlx::query(
+            "UPDATE memory SET supersedes = $3
+              WHERE tenant_id = $1 AND supersedes = $2
+          RETURNING id",
+        )
+        .bind(tenant)
+        .bind(id)
+        .bind(own_predecessor)
+        .fetch_all(&mut *tx)
+        .await?;
+        edits.relinked = rows.iter().map(|r| r.get("id")).collect();
+
         let deleted = sqlx::query("DELETE FROM memory WHERE tenant_id = $1 AND id = $2")
             .bind(tenant)
             .bind(id)
             .execute(&mut *tx)
-            .await?
+            .await
+            .map_err(|e| chain_conflict(id, e))?
             .rows_affected();
         tx.commit().await?;
-        Ok(deleted > 0)
+        Ok(match deleted {
+            0 => DeleteOutcome::Missing,
+            _ => DeleteOutcome::Deleted(edits),
+        })
     }
 
     /// The review queue, not a reaper. Matches the `memory_never_accessed` partial index.

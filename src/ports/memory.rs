@@ -44,9 +44,64 @@ impl Timeline {
 /// One row handed out, on its way to `recall_emission`.
 #[derive(Debug, Clone)]
 pub struct Emission {
-    /// `services::ingest::fingerprint` of the content as the client received it.
+    /// `crypto::Digester::digest` of the content as the client received it. The column keeps the
+    /// name it was given when the value was a plain SHA-256; it is now an HMAC under a key derived
+    /// from the KEK, so a dump holder cannot verify a guess against it.
     pub content_sha256: String,
     pub memory_id: uuid::Uuid,
+}
+
+/// A row on the supersession chain next to one about to be deleted: enough to apply the grant and
+/// nothing a caller could read content out of. The caller may not be able to read the row at all,
+/// which is the reason this is not a `Memory`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainLink {
+    pub id: uuid::Uuid,
+    pub namespace: String,
+    pub sensitivity: Sensitivity,
+}
+
+/// Both directions around one row, read in one query.
+///
+/// `find_by_id` sees the row's own `supersedes` and `superseded_by` and cannot see who points at
+/// it, and the rows pointing at it are the ones a delete changes.
+#[derive(Debug, Clone, Default)]
+pub struct ChainNeighbours {
+    /// The row's own links, or `None` when there is no such row.
+    pub row: Option<(Option<uuid::Uuid>, Option<uuid::Uuid>)>,
+    /// Rows this one retired: `superseded_by` points here.
+    pub predecessors: Vec<ChainLink>,
+    /// Rows that name this one as the fact they replaced: `supersedes` points here.
+    pub successors: Vec<ChainLink>,
+}
+
+/// What a delete may do to the chain around the doomed row. Decided by the service, which holds
+/// the principal, and applied by the store in the delete's own transaction.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeletePlan {
+    /// Predecessors whose `superseded_by` is cleared, making them live again. Every id here has
+    /// passed the caller's read and write grant at its own level.
+    pub revive: Vec<uuid::Uuid>,
+    /// Where every other predecessor is re-pointed: the doomed row's own successor. `None` when
+    /// the doomed row is the head of its chain, in which case any predecessor not in `revive` is a
+    /// foreign key the delete will trip over, and tripping is correct.
+    pub splice_to: Option<uuid::Uuid>,
+}
+
+/// What a delete changed besides the row.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ChainEdits {
+    pub revived: Vec<uuid::Uuid>,
+    pub spliced: Vec<uuid::Uuid>,
+    /// Successors whose `supersedes` now names the doomed row's predecessor, or nothing.
+    pub relinked: Vec<uuid::Uuid>,
+}
+
+#[derive(Debug, Clone)]
+pub enum DeleteOutcome {
+    /// No row by this id in this tenant. A delete that lost a race lands here too.
+    Missing,
+    Deleted(ChainEdits),
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +120,10 @@ pub struct SearchQuery {
     pub weights: Weights,
     /// Live rows only by default. History stays queryable, which is what makes the decision log a
     /// side effect rather than a feature to build.
+    ///
+    /// Retired rows come back with their content when this is set, so the caller checks
+    /// `Principal::may_read_history` first, the same duty `as_of` carries below. The two fields
+    /// open the same door and for a while only one of them was guarded.
     pub include_superseded: bool,
     /// What held at this instant, on the valid-time axis: the `occurred_at` and `occurred_until`
     /// pair, never `created_at`. The other question, what the store believed at an instant, is
@@ -365,9 +424,10 @@ pub trait MemoryRepository: Send + Sync {
     /// catch for a worse one.
     ///
     /// The hash arrives already computed, and that is the point. It has to be
-    /// `services::ingest::fingerprint` of the same content, because a second normaliser gives the
-    /// echo check a hash that can never meet a proposal's, which is how the earlier version of this
-    /// layer was built unreachable.
+    /// `crypto::Digester::digest` of the same content, because a second normaliser gives the echo
+    /// check a hash that can never meet a proposal's, which is how the earlier version of this
+    /// layer was built unreachable. The service also decides which rows are recorded at all:
+    /// encrypted rows are not, and a repository never sees their plaintext to hash.
     fn record_emissions(
         &self,
         tenant: &str,
@@ -379,9 +439,23 @@ pub trait MemoryRepository: Send + Sync {
     /// Repetition is confirmation. Set when a write restates a fact rather than contradicting it.
     async fn confirm(&self, tenant: &str, id: uuid::Uuid) -> Result<()>;
 
-    /// Hard delete. For a private row the wrapped DEK goes with it, so ciphertext in any older
-    /// backup is already unreadable.
-    async fn delete(&self, tenant: &str, id: uuid::Uuid) -> Result<bool>;
+    /// The chain around one row, for the service to plan a delete against. Ids and levels only.
+    async fn chain_neighbours(&self, tenant: &str, id: uuid::Uuid) -> Result<ChainNeighbours>;
+
+    /// Hard delete, with the chain edits in `plan` applied in the same transaction. For a private
+    /// row the wrapped DEK goes with it, so ciphertext in any older backup is already unreadable.
+    ///
+    /// A predecessor that is neither in `revive` nor covered by `splice_to` is a foreign key the
+    /// row cannot be deleted under. The store reports that as a `Conflict` and changes nothing,
+    /// which is what a neighbour that appeared between `chain_neighbours` and this call should
+    /// produce. Every other foreign key into the row was made `ON DELETE SET NULL` or `CASCADE` by
+    /// the migrations, and the store maps any that still refuses onto the same `Conflict`.
+    async fn delete(
+        &self,
+        tenant: &str,
+        id: uuid::Uuid,
+        plan: &DeletePlan,
+    ) -> Result<DeleteOutcome>;
 
     /// Live rows older than a threshold that were never retrieved. The review queue, not a reaper.
     async fn stale(&self, tenant: &str, older_than_days: i32, limit: i64) -> Result<Vec<Memory>>;

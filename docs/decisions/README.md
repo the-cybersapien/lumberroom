@@ -22,6 +22,8 @@ carries a marker pointing here.
 | [0009](0009-aliases-are-query-expansion.md) | Two names for one subject is an alias with valid time, and search expands over the group rather than walking a graph | 20 Aug 2026 | accepted, implemented |
 | [0010](0010-registry-history.md) | A registry upsert keeps the value it replaces, readable behind may_read_history and through no tool | 21 Aug 2026 | accepted, implemented |
 | [0011](0011-cleanup-proposes.md) | A periodic pass proposes cleanups and never acts, and the model half only ever sees rows at open | 21 Aug 2026 | accepted, verified |
+| [0012](0012-cli-distribution.md) | `lumberroom` ships as four raw binaries off a git tag, built from two places | 22 Aug 2026 | accepted, scripted; the darwin leg unverified |
+| [0013](0013-delete-splices-the-chain.md) | A delete splices the supersession chain and revives a predecessor only under the caller's grant | 23 Aug 2026 | accepted, implemented; not run live on this branch |
 
 **On "verified".** All four gates ran against a live server on 20 August 2026 and passed. An OAuth
 flow completed end to end, a private row was encrypted and read back, and a replayed refresh token
