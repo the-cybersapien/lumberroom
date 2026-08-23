@@ -49,7 +49,7 @@ fastembed = "6"
 jsonwebtoken = "11"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 subtle = "2"
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 # Owner password verification. Argon2id, so a stolen .env hash is not a password.
 argon2 = "0.5"
