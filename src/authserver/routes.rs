@@ -25,7 +25,7 @@ use axum::{Json, Router};
 use zeroize::Zeroize;
 
 use crate::adapters::auth::Authenticator;
-use crate::authserver::limiter::LoginLimiter;
+use crate::authserver::limiter::{self, LoginLimiter};
 use crate::authserver::pages::{self, ClientView, FlowFields};
 use crate::authserver::session::{OwnerSession, Sessions};
 use crate::config::Config;
@@ -51,10 +51,7 @@ const LOGIN_FAILURE_DELAY: Duration = Duration::from_millis(750);
 /// consent page, and the redirect list is walked on every authorize.
 const MAX_CLIENT_NAME: usize = 200;
 const MAX_SOFTWARE_FIELD: usize = 100;
-const MAX_REDIRECT_URIS: usize = 8;
-/// Per URI. Browsers cap a URL near this, and every registered URI is stored and compared on each
-/// authorize, so a longer one is a storage cost with no client that could use it.
-const MAX_REDIRECT_URI: usize = 2048;
+use crate::domain::oauth::{MAX_REDIRECT_URI, MAX_REDIRECT_URIS};
 
 /// Informational only. Authorization is the `GrantProfile` the owner picked, which no client can
 /// influence, so this string exists because RFC 6749 §5.1 has a field for it and clients display it.
@@ -194,15 +191,9 @@ async fn register(
         );
     }
 
-    let key = throttle_key(&headers, peer.map(|Extension(ConnectInfo(addr))| addr));
-    if !app.register_limiter.allow(&key, Instant::now()) {
-        tracing::warn!(key = %key, "registration throttled");
-        return registration_error(
-            StatusCode::TOO_MANY_REQUESTS,
-            "too_many_requests",
-            "too many registrations from this address. Wait a minute and try again.",
-        );
-    }
+    let addr = peer.map(|Extension(ConnectInfo(addr))| addr);
+    let key = throttle_key(&headers, addr);
+    let from = peer_key(addr);
 
     if req.redirect_uris.is_empty() {
         return registration_error(
@@ -311,13 +302,26 @@ async fn register(
         registered_via: "dcr".to_string(),
     };
 
+    // Throttled here rather than at the top of the handler. What this window meters is rows
+    // written, and taking the slot in the same breath as the insert is what stops a burst from
+    // writing a hundred `oauth_client` rows against a ceiling of five: reading a budget first and
+    // recording the row afterwards left every concurrent request seeing the same empty budget.
+    // A request that fails validation wrote nothing, so it never reaches this and costs nothing.
+    let Some(slot) = app.register_limiter.reserve(&key, &from, Instant::now()) else {
+        tracing::warn!(key = %key, "registration throttled");
+        return registration_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too_many_requests",
+            "too many registrations from this address. Wait a minute and try again.",
+        );
+    };
+
     if let Err(e) = app.store.register_client(record).await {
+        slot.release();
         return internal_json(&e);
     }
-    // Recorded on success, the reverse of the login limiter. `allow` only reads, and what this
-    // window meters is rows written: a rejected request wrote nothing, so it costs nothing, and a
-    // registration that landed is exactly the event to count.
-    app.register_limiter.record_failure(&key, Instant::now());
+    // Dropped rather than released: the row landed, and that is the event this window counts.
+    drop(slot);
 
     tracing::info!(
         client_id = %client_id,
@@ -426,8 +430,13 @@ async fn login(
         Err(response) => return response,
     };
 
-    let key = throttle_key(&headers, peer.map(|Extension(ConnectInfo(addr))| addr));
-    if !app.limiter.allow(&key, Instant::now()) {
+    let addr = peer.map(|Extension(ConnectInfo(addr))| addr);
+    let key = throttle_key(&headers, addr);
+    let from = peer_key(addr);
+    // Taken before the password check, not after it. The budget used to be read here and written
+    // once Argon2id and the failure delay had both finished, so everything arriving inside that
+    // window saw it empty.
+    let Some(slot) = app.limiter.reserve(&key, &from, Instant::now()) else {
         tracing::warn!(key = %key, "login throttled");
         return login_page(
             &client,
@@ -435,9 +444,10 @@ async fn login(
             StatusCode::TOO_MANY_REQUESTS,
             Some("Too many attempts. Wait a minute and try again."),
         );
-    }
+    };
 
     let Some(hash) = app.cfg.oauth.owner_password_hash.clone() else {
+        slot.release();
         // Config refuses to boot in oauth mode without a hash, so this is a mode that was switched
         // on somewhere else. No password means no consent, never open consent.
         return page(
@@ -450,14 +460,27 @@ async fn login(
         );
     };
 
+    // A throttle key is whatever the caller says it is, so the limiter alone does not bound how
+    // many hashes run at once. This does, and it answers rather than queueing.
+    let Some(work) = limiter::password_slot() else {
+        slot.release();
+        tracing::warn!(key = %key, "login refused: every password-check slot is busy");
+        return login_page(
+            &client,
+            &intent,
+            StatusCode::SERVICE_UNAVAILABLE,
+            Some("The server is busy checking another sign-in. Try again in a moment."),
+        );
+    };
+
     let password = form.password.clone().unwrap_or_default();
-    match verify_owner_password(hash, password).await {
-        Ok(true) => {}
+    match verify_owner_password(hash, password, work).await {
+        Ok(true) => slot.release(),
         Ok(false) => {
             // Constant work regardless of which check failed, and the message never says whether
-            // the client, the request or the password was the problem.
+            // the client, the request or the password was the problem. The reservation is dropped
+            // rather than released, which is what keeps the attempt on the budget.
             tokio::time::sleep(LOGIN_FAILURE_DELAY).await;
-            app.limiter.record_failure(&key, Instant::now());
             tracing::warn!(key = %key, client_id = %client.client_id, "failed owner login");
             return login_page(
                 &client,
@@ -1286,8 +1309,16 @@ fn internal_json(e: &DomainError) -> Response {
 /// A password hash is deliberately expensive, tens of milliseconds of CPU, and running it inline
 /// would stall every other request sharing the thread. The password is zeroized once the answer is
 /// known rather than left for the allocator.
-async fn verify_owner_password(hash: String, password: String) -> Result<bool> {
+///
+/// `work` travels into the blocking closure so the permit is held for as long as the memory is,
+/// rather than for as long as the caller waits.
+async fn verify_owner_password(
+    hash: String,
+    password: String,
+    work: tokio::sync::SemaphorePermit<'static>,
+) -> Result<bool> {
     tokio::task::spawn_blocking(move || {
+        let _work = work;
         let mut password = password;
         let parsed = PasswordHash::new(&hash).map_err(|e| {
             DomainError::internal(format!("OWNER_PASSWORD_HASH is not a valid PHC string: {e}"))
@@ -1369,7 +1400,7 @@ fn urlencode(value: &str) -> String {
 /// The key the login limiter counts against.
 ///
 /// Behind a reverse proxy the peer address is the proxy, so a forwarded address is preferred when
-/// present even though it cannot be verified. The global window in the limiter is what makes
+/// present even though it cannot be verified. The peer window in the limiter is what makes
 /// inventing one pointless. Truncated, because the key is a map key and the header is attacker
 /// supplied.
 fn throttle_key(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
@@ -1382,7 +1413,19 @@ fn throttle_key(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
     match peer {
         Some(addr) => format!("peer:{}", addr.ip()),
         // ConnectInfo is absent when the server was not built with it. The limiter still holds the
-        // global window, so an absent address degrades the accounting rather than removing it.
+        // peer window, so an absent address degrades the accounting rather than removing it.
+        None => "unknown".to_string(),
+    }
+}
+
+/// The socket the request arrived on, which no header can change.
+///
+/// The limiter's second window hangs off this. A caller inventing a forwarded address per request
+/// still arrives on one socket and spends one budget, and a caller on a different socket is not
+/// charged for that.
+fn peer_key(peer: Option<SocketAddr>) -> String {
+    match peer {
+        Some(addr) => addr.ip().to_string(),
         None => "unknown".to_string(),
     }
 }
@@ -1464,6 +1507,20 @@ mod tests {
         let peer: SocketAddr = "198.51.100.7:44000".parse().unwrap();
         assert_eq!(throttle_key(&HeaderMap::new(), Some(peer)), "peer:198.51.100.7");
         assert_eq!(throttle_key(&HeaderMap::new(), None), "unknown");
+    }
+
+    /// The limiter's second window hangs off this, and it has to ignore the header a caller can
+    /// write. Ports differ per connection, so the address alone is the key.
+    #[test]
+    fn the_peer_key_ignores_the_forwarded_header_and_the_source_port() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.9".parse().unwrap());
+        let one: SocketAddr = "198.51.100.7:44000".parse().unwrap();
+        let two: SocketAddr = "198.51.100.7:44001".parse().unwrap();
+        assert_eq!(peer_key(Some(one)), "198.51.100.7");
+        assert_eq!(peer_key(Some(two)), peer_key(Some(one)));
+        assert_ne!(peer_key(Some(one)), throttle_key(&headers, Some(one)));
+        assert_eq!(peer_key(None), "unknown");
     }
 
     #[test]
