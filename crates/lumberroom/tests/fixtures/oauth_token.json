@@ -1,0 +1,7 @@
+{
+  "access_token": "at_abc",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "refresh_token": "rt_def",
+  "scope": "memory.read memory.write"
+}

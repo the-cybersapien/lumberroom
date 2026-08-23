@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="lumberroom">
+  <title>lumberroom</title>
+  <!-- Three colours and no gradient, no stroke on the silhouette, no filter. The mark is served as
+       a favicon and drawn again at 24px in the console header, and every one of those costs edge
+       contrast at 16px. Coordinates sit on whole units so the shapes land on pixel boundaries at
+       16, 32 and 64. -->
+  <rect width="64" height="64" rx="12" fill="#f6f1e8"/>
+  <!-- The attic in one filled path: the gable, its eaves, then the two walls and the floor. Drawn
+       as a silhouette rather than an outline because a 1-unit stroke disappears at 16px. -->
+  <path d="M32 8 57 30 52 30 52 56 12 56 12 30 7 30Z" fill="#14345c"/>
+  <!-- The window, and the thread from it down to what is stored. -->
+  <circle cx="32" cy="23" r="5" fill="#f2a43a"/>
+  <path d="M32 28v4" stroke="#f6f1e8" stroke-width="1.5"/>
+  <!-- Three boxes, widening downward, 2 units apart so the gaps survive the 4x reduction. -->
+  <rect x="27" y="32" width="10" height="6" rx="1" fill="#f6f1e8"/>
+  <rect x="24" y="40" width="16" height="6" rx="1" fill="#f6f1e8"/>
+  <rect x="20" y="48" width="24" height="6" rx="1" fill="#f6f1e8"/>
+</svg>

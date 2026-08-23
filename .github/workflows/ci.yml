@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# dtolnay/rust-toolchain has no versioned releases to pin a major tag against; `@stable` names the
+# toolchain channel to install and is the action's own documented way to reference it. Every other
+# action below is pinned to a major version tag.
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev pkg-config g++
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Warnings are allowed for now: the workspace carries some clippy has not been run against
+      # yet. Tighten this to `-D warnings` once that backlog is clear.
+      - run: cargo clippy --all-targets --workspace
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: lumberroom
+          POSTGRES_PASSWORD: lumberroom
+          POSTGRES_DB: lumberroom
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lumberroom -d lumberroom"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # Points at the admin database. The integration suite creates and connects to
+      # lumberroom_rust_test itself; see tests/integration.rs.
+      DATABASE_URL: postgres://lumberroom:lumberroom@localhost:5432/lumberroom
+    steps:
+      - uses: actions/checkout@v4
+      - name: install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev pkg-config g++
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: server tests
+        run: cargo test -j 1 2>&1 | tee /tmp/server-test.log
+      - name: assert the integration suite actually ran
+        # A run with no reachable database skips rather than fails, so "0 tests run" reads as a
+        # pass unless something checks the count. This greps the block cargo prints for
+        # tests/integration.rs specifically: the line after "Running tests/integration.rs" that
+        # starts the binary's own report, and the "running N tests" header it opens with.
+        run: |
+          block=$(awk '/Running tests\/integration\.rs/{flag=1} flag{print} flag && /^test result:/{exit}' /tmp/server-test.log)
+          if [ -z "$block" ]; then
+            echo "no output block found for tests/integration.rs" >&2
+            exit 1
+          fi
+          count=$(echo "$block" | grep -oP 'running \K\d+(?= tests?)' | head -1)
+          if [ -z "$count" ] || [ "$count" -eq 0 ]; then
+            echo "tests/integration.rs reported 0 tests; the database service is not being reached" >&2
+            exit 1
+          fi
+          echo "tests/integration.rs ran $count tests"
+      - name: client tests
+        run: cargo test -j 1 -p lumberroom
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: build the runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2

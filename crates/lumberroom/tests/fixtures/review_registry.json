@@ -1,0 +1,36 @@
+{
+  "due_for_review": [
+    {
+      "namespace": "global",
+      "kind": "host",
+      "key": "host:db.prod",
+      "value": {"addr": "10.0.0.4"},
+      "provenance": {
+        "source_client": "cli",
+        "conv_id": null,
+        "confidence": 1.0,
+        "user_confirmed": true,
+        "valid_from": "2026-01-01T00:00:00Z"
+      },
+      "sensitivity": "open",
+      "version": 2
+    }
+  ],
+  "non_canonical": [
+    {
+      "namespace": "global",
+      "kind": "service",
+      "key": "Postgres Prod",
+      "value": "10.0.0.4",
+      "provenance": {
+        "source_client": "cli",
+        "conv_id": null,
+        "confidence": 1.0,
+        "user_confirmed": false,
+        "valid_from": "2026-01-01T00:00:00Z"
+      },
+      "sensitivity": "open",
+      "version": 1
+    }
+  ]
+}

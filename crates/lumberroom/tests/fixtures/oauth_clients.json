@@ -1,0 +1,24 @@
+{
+  "count": 1,
+  "clients": [
+    {
+      "client_id": "c_01H",
+      "client_name": "lumberroom",
+      "redirect_uris": ["http://127.0.0.1:8976/callback"],
+      "grant_types": ["authorization_code", "refresh_token"],
+      "registered_via": "dcr",
+      "software_id": "lumberroom",
+      "profile": "operator",
+      "read": ["*"],
+      "write": ["*"],
+      "registry_write": true,
+      "sealed_capable": true,
+      "may_delete": true,
+      "consented_at": "2026-08-19T12:00:00Z",
+      "created_at": "2026-08-19T11:59:00Z",
+      "last_used_at": "2026-08-20T08:00:00Z",
+      "revoked_at": null,
+      "confidential": false
+    }
+  ]
+}

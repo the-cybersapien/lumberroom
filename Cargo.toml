@@ -1,0 +1,115 @@
+[workspace]
+# The server stays the root package, so the Dockerfile, the image build and every existing path are
+# untouched. lumberroom is a second member rather than a cargo feature because features are
+# crate-wide: a client living in this crate would link fastembed and carry 209MB of model weights
+# into a tool that embeds nothing.
+members = ["crates/lumberroom"]
+resolver = "2"
+
+[package]
+name = "lumberroom-server"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+description = "Durable memory control plane. MCP server over Postgres and pgvector."
+license = "Apache-2.0"
+repository = "https://github.com/the-cybersapien/lumberroom"
+keywords = ["mcp", "memory", "postgres", "pgvector", "llm"]
+categories = ["database", "asynchronous"]
+# The server is a deployed binary, not a library anyone pulls from crates.io.
+publish = false
+# There are two binaries: the server and the build-time model prefetch.
+default-run = "lumberroom-server"
+
+[[bin]]
+name = "lumberroom-server"
+path = "src/main.rs"
+
+[dependencies]
+# MCP. Streamable HTTP server transport, mounted as an axum service.
+rmcp = { version = "3.1", features = ["server", "macros", "transport-streamable-http-server"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["limit"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+tokio-util = "0.7"
+
+# Storage. Every statement goes through query/query_as with .bind(); the compile-time macros stay
+# unused, so dynamic SQL built with format! fails to type-check instead of reaching the database.
+# The version must match the one pgvector resolves.
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
+pgvector = { version = "0.4", features = ["sqlx", "postgres"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Embeddings. bge-base-en-v1.5 q8, the model already measured on arm64.
+fastembed = "6"
+
+# Auth. jsonwebtoken validates an external issuer's JWTs; everything else here belongs to the
+# built-in authorization server (decision 0002).
+jsonwebtoken = "11"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+subtle = "2"
+sha2 = "0.10"
+hex = "0.4"
+# Owner password verification. Argon2id, so a stolen .env hash is not a password.
+argon2 = "0.5"
+# Signed authorization-server cookies, and the sealed-item key derivation.
+hmac = "0.12"
+base64 = "0.22"
+# Redirect URIs are compared exactly, but they are validated structurally before registration.
+url = "2"
+
+# Crypto for the private sensitivity level (Phase 3). getrandom rather than rand: the only
+# randomness this service needs is CSPRNG bytes, and it avoids the rand_core version split
+# between rand 0.9 and the RustCrypto stack.
+aes-gcm = "0.10"
+getrandom = "0.3"
+zeroize = { version = "1", features = ["derive"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+anyhow = "1"
+thiserror = "2"
+# Needed for dyn-dispatched async traits; native async-fn-in-trait is not dyn-safe.
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+
+[profile.release]
+# One binary on a small ARM box. Optimise for size and link-time work over compile speed.
+#
+# codegen-units = 4 rather than 1. At 1 the whole crate is a single unit, so codegen runs on one
+# core and seven idle; the compile is the slowest part of every build for that reason alone. The
+# cost of 4 is less inlining across unit boundaries, and thin LTO already recovers most of that at
+# link time, which is the argument for pairing them. It is a real cost rather than a free win, so
+# it wants measuring against the binary it replaces: size, and a run of the recall monitor.
+opt-level = 2
+lto = "thin"
+codegen-units = 4
+strip = true
+
+# The same binary, built for a person who is waiting rather than for a small ARM box.
+#
+# `inherits = "release"`, then undoes the three settings that make a release build slow to produce.
+# `codegen-units = 1` is the expensive one: it puts the whole crate in a single unit, so codegen has
+# no parallelism at all and seven of eight cores idle through the longest phase. A single unit and
+# thin LTO also make incremental compilation impossible, which is why it can only be switched on
+# once those are relaxed.
+#
+# Production is untouched. `cargo build --release` still reads the block above and produces exactly
+# the binary it did before. Nothing here reaches it: this profile is for scripts/dev.sh and for
+# nothing that ships.
+#
+# The binary it produces is slower at runtime and larger on disk. On a laptop, against a store this
+# size, neither costs anything anybody can feel.
+[profile.dev-release]
+inherits = "release"
+opt-level = 1
+lto = false
+codegen-units = 16
+incremental = true
+strip = false

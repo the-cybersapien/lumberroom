@@ -1,0 +1,23 @@
+{
+  "min_similarity": 0.9,
+  "pairs": [
+    {
+      "similarity": 0.9412,
+      "older": {
+        "id": "1111aaaa-0000-4a1b-8c3d-112233445566",
+        "namespace": "user:me",
+        "content": "The owner prefers tabs.",
+        "sensitivity": "open",
+        "created_at": "2026-02-01T09:00:00+00:00"
+      },
+      "newer": {
+        "id": "2222bbbb-0000-4a1b-8c3d-112233445566",
+        "namespace": "user:me",
+        "content": "The owner prefers spaces.",
+        "sensitivity": "open",
+        "created_at": "2026-07-01T09:00:00+00:00"
+      },
+      "resolve_with": "lumberroom supersede 1111aaaa-0000-4a1b-8c3d-112233445566 2222bbbb-0000-4a1b-8c3d-112233445566"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "client": "claude-code",
+  "mode": "token",
+  "token_fingerprint": "a1b2c3d4",
+  "read": ["user:me", "global"],
+  "write": ["user:me"],
+  "registry_write": true,
+  "sealed_capable": false,
+  "may_delete": true,
+  "scopes": ["memory.read", "memory.write"],
+  "tenant": "owner",
+  "embedder": "bge-base-en-v1.5"
+}

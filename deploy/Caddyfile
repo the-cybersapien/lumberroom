@@ -1,0 +1,58 @@
+# Automatic TLS from Let's Encrypt. Requires LUMBERROOM_DOMAIN to resolve to this box
+# and inbound 80 + 443 to be open (Caddy needs 80 for the ACME challenge).
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$LUMBERROOM_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	# MCP clients hold long POST/SSE connections; do not cut them short.
+	reverse_proxy server:8787 {
+		flush_interval -1
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+		# the login limiter keys on this; without it every request behind the proxy looks
+		# like it came from the same client, and one bad actor throttles everyone.
+		header_up X-Forwarded-For {remote_host}
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		# search and registry queries carry the query text, namespace and pagination cursor
+		# in q/ns/next; the OAuth flow carries the CSRF token in state. Redact all four
+		# before they reach a log file that outlives the request.
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					delete q
+					delete ns
+					delete next
+					delete state
+				}
+			}
+		}
+	}
+}
+
+# Uncomment together with the logto compose profile.
+# {$LOGTO_DOMAIN} {
+# 	reverse_proxy logto:3001
+# }
+# {$LOGTO_ADMIN_DOMAIN} {
+# 	reverse_proxy logto:3002
+# }
