@@ -14,6 +14,7 @@ rust-version = "1.83"
 description = "Durable memory control plane. MCP server over Postgres and pgvector."
 license = "Apache-2.0"
 repository = "https://github.com/the-cybersapien/lumberroom"
+homepage = "https://lumberroom.cloud"
 keywords = ["mcp", "memory", "postgres", "pgvector", "llm"]
 categories = ["database", "asynchronous"]
 # The server is a deployed binary, not a library anyone pulls from crates.io.

@@ -6,6 +6,7 @@ rust-version = "1.83"
 description = "Client for a lumberroom memory server. Runs on the machine holding the transcripts."
 license = "Apache-2.0"
 repository = "https://github.com/the-cybersapien/lumberroom"
+homepage = "https://lumberroom.cloud"
 keywords = ["mcp", "memory", "cli", "lumberroom"]
 categories = ["command-line-utilities"]
 
