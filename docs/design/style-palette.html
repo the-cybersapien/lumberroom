@@ -1,0 +1,2362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lumberroom console, style proposal: command-first</title>
+<style>
+/* ============================================================================
+   lumberroom console, command-first proposal.
+   One input line, answers inline. Light paper, three families doing real work.
+   Nothing here loads over the network. No build step.
+   ========================================================================= */
+:root{
+  color-scheme: light;
+
+  --paper:      #FBFAF8;
+  --panel:      #FFFFFF;
+  --panel-2:    #F3F1EC;
+  --rule:       #E4E1DA;
+  --rule-2:     #C8C3B8;
+  --rule-3:     #8E887B;
+
+  --ink:        #14161A;   /* fact text            17.9:1 on paper, 18.4:1 on panel */
+  --ink-2:      #52565C;   /* metadata              7.0:1 on paper, 7.3:1 on panel */
+  --ink-3:      #6E747B;   /* chrome, quiet labels  4.6:1 on paper, 4.8:1 on panel */
+  --ink-4:      #90959C;   /* rules and hairlines only, never text */
+
+  --accent:     #17439E;   /* focus, selection edge  9.0:1 on panel */
+  --sel:        #E7EDFB;
+  --warn-ink:   #7A4300;   /* 7.2:1 on its own background */
+  --warn-bg:    #FCF3E3;
+  --bad-ink:    #93131A;   /* 8.9:1 on panel */
+  --bad-bg:     #FBEDED;
+  --ok-ink:     #1F5C2E;   /* 7.9:1 on panel */
+
+  --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --serif: "Iowan Old Style", Charter, "Palatino Linotype", Georgia, serif;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{font-size:16px}
+body{
+  background:var(--paper);color:var(--ink);
+  font:400 15px/1.5 var(--sans);
+  -webkit-font-smoothing:antialiased;
+  font-variant-numeric:tabular-nums;
+}
+
+/* ---- submission chrome, not product ------------------------------------ */
+.doc{max-width:1460px;margin:0 auto;padding:0 28px 96px}
+.mast{
+  position:sticky;top:0;z-index:40;background:var(--paper);
+  border-bottom:1px solid var(--rule-2);
+  margin:0 -28px 26px;padding:12px 28px 0;
+}
+.mast .line1{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:10px}
+.mast .name{font:700 13px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase}
+.mast .sub{font:400 13px/1 var(--sans);color:var(--ink-3)}
+.mast .spacer{flex:1}
+.tabs{display:flex;gap:0;flex-wrap:wrap}
+.tabs button{
+  appearance:none;background:none;border:0;border-bottom:3px solid transparent;
+  font:500 13px/1 var(--sans);color:var(--ink-3);
+  padding:9px 13px;cursor:pointer;
+}
+.tabs button:hover{color:var(--ink)}
+.tabs button[aria-current="page"]{color:var(--ink);border-bottom-color:var(--accent);font-weight:700}
+.tabs button:focus-visible,a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.pane[hidden]{display:none}
+.paneHead{margin:6px 0 22px;max-width:78ch}
+.paneHead h2{font:700 22px/1.25 var(--sans);letter-spacing:-.01em;margin-bottom:6px}
+.paneHead p{font:400 15px/1.55 var(--serif);color:var(--ink-2)}
+
+/* a screen and its margin notes */
+.slot{margin:0 0 46px}
+.slot.narrow .frame{max-width:580px}
+.cap{font:700 11px/1 var(--mono);letter-spacing:.11em;text-transform:uppercase;color:var(--ink-3);margin:0 0 8px}
+.margin{display:grid;grid-template-columns:repeat(auto-fit,minmax(238px,1fr));gap:0 22px;
+  max-width:1400px;margin-top:15px;padding-top:13px;border-top:1px solid var(--rule-2)}
+.note{border-left:3px solid var(--rule-2);padding:2px 0 2px 11px;margin-bottom:16px}
+.note .t{font:700 11px/1.3 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:3px}
+.note p{font:400 13px/1.5 var(--sans);color:var(--ink-2)}
+.note.needs{border-left-color:var(--warn-ink)}
+.note.needs .t{color:var(--warn-ink)}
+.note code{font:400 12px/1 var(--mono);background:var(--panel-2);padding:1px 3px}
+
+/* ============================================================================
+   THE PRODUCT. Everything below .frame is the console itself.
+   ========================================================================= */
+.frame{background:var(--panel);border:1px solid var(--rule-2);box-shadow:0 1px 0 rgba(0,0,0,.03)}
+.frame.desk{width:100%;max-width:1400px;height:900px;display:flex;flex-direction:column;overflow:hidden}
+.frame.deskAuto{width:100%;max-width:1400px;display:flex;flex-direction:column}
+.frame.phone{width:390px;height:844px;display:flex;flex-direction:column;overflow:hidden;border-radius:14px}
+.scale{font:400 11px/1 var(--mono);color:var(--ink-4);margin-top:6px}
+
+/* ---- the command line, the whole navigation model ---------------------- */
+.cmd{display:flex;align-items:center;gap:10px;padding:14px 18px 13px;border-bottom:1px solid var(--rule)}
+.cmd .caret{font:700 19px/1 var(--mono);color:var(--accent)}
+.cmd .typed{font:400 19px/1.2 var(--mono);color:var(--ink);letter-spacing:-.01em;white-space:pre}
+.cmd .ghost{font:400 19px/1.2 var(--mono);color:var(--ink-4);white-space:pre}
+.cmd .bar{display:inline-block;width:9px;height:20px;background:var(--accent);vertical-align:-4px;margin-left:1px}
+.cmd .right{margin-left:auto;display:flex;align-items:center;gap:12px}
+.cmd .scope{font:700 11px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-2);border:1px solid var(--rule-2);padding:5px 8px}
+.cmd .scope.lens{color:var(--accent);border-color:var(--accent);background:var(--sel)}
+.cmd .hintk{font:400 12px/1 var(--mono);color:var(--ink-3)}
+
+/* body region */
+.body{flex:1;display:flex;min-height:0}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
+.rail{width:252px;border-left:1px solid var(--rule);padding:14px 16px;overflow:hidden;background:var(--paper)}
+
+/* section label: mono 11 bold, hairline over it */
+.lab{font:700 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);
+     padding:11px 18px 7px;border-top:1px solid var(--rule);display:flex;gap:10px;align-items:baseline}
+.lab:first-child{border-top:0}
+.lab .n{font-weight:400;color:var(--ink-3);letter-spacing:.04em}
+.rail .lab{padding:0 0 8px;border:0}
+
+/* ---- a fact row -------------------------------------------------------- */
+.rows{overflow:hidden}
+.r{display:grid;grid-template-columns:5px 156px minmax(0,1fr);align-items:baseline;
+   column-gap:12px;padding:4px 18px 4px 0;border-bottom:1px solid var(--rule)}
+.r .sens{align-self:stretch;min-height:20px}
+.r .ns{font:400 11.5px/1.55 var(--mono);color:var(--ink-3);white-space:nowrap}
+.r .txt{font:400 15px/1.35 var(--sans);color:var(--ink);display:flex;flex-wrap:wrap;align-items:baseline;gap:0 9px}
+.r .txt .ft{max-width:75ch}
+.r .prov{font:400 12px/1.4 var(--mono);color:var(--ink-2);white-space:nowrap}
+.r .txt .prov{margin-left:0}
+.r .txt .prov b{font-weight:700;color:var(--ok-ink)}
+/* sensitivity: bar presence, bar texture, a printed word, and row structure */
+.r[data-s="open"] .sens{background:none}
+.r[data-s="private"] .sens{background:var(--ink)}
+.r[data-s="sealed"] .sens{background:repeating-linear-gradient(135deg,var(--ink) 0 3px,transparent 3px 6px)}
+.tag{font:700 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;
+     border:1px solid var(--rule-3);color:var(--ink-2);padding:3px 5px;vertical-align:1px}
+.tag.sealed{border-style:dashed}
+.r[aria-current="true"]{background:var(--sel);box-shadow:inset 3px 0 0 var(--accent)}
+.r[aria-current="true"] .ns{color:var(--ink-2)}
+.sealedbody{font:400 13px/1.45 var(--mono);color:var(--ink-2);flex:1 1 100%}
+.sealedbody b{color:var(--ink);font-weight:700}
+
+/* the focused row grows real controls, this is floor 6 */
+.verbs{grid-column:3;display:flex;gap:7px;flex-wrap:wrap;padding:9px 0 3px}
+.vb{appearance:none;background:var(--panel);border:1px solid var(--rule-3);color:var(--ink);
+    font:500 13px/1 var(--sans);padding:7px 10px;cursor:pointer;display:inline-flex;gap:7px;align-items:center}
+.vb:hover{background:var(--panel-2)}
+.vb kbd{font:700 11px/1 var(--mono);color:var(--ink-2);border:1px solid var(--rule-2);background:var(--paper);padding:2px 4px}
+.vb.danger{border-color:var(--bad-ink);color:var(--bad-ink)}
+.vb.danger kbd{border-color:var(--bad-ink);color:var(--bad-ink)}
+.vb.go{border-color:var(--accent);color:var(--accent);font-weight:700}
+
+/* ---- rail blocks ------------------------------------------------------- */
+.inv{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;align-items:baseline}
+.inv .k{font:400 13px/1.6 var(--mono);color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.inv .v{font:400 13px/1.6 var(--mono);color:var(--ink-2);text-align:right}
+.inv .c{grid-column:1/-1;font:400 11px/1.4 var(--mono);color:var(--ink-3);padding:0 0 6px;border-bottom:1px solid var(--rule);margin-bottom:5px}
+.railfoot{margin-top:14px;padding-top:10px;border-top:1px solid var(--rule);font:400 12px/1.5 var(--mono);color:var(--ink-2)}
+
+/* ---- status line, job 7, on every screen ------------------------------- */
+.status{display:flex;gap:16px;align-items:center;flex-wrap:wrap;
+        padding:7px 18px;border-top:1px solid var(--rule);background:var(--paper);
+        font:400 12px/1.4 var(--mono);color:var(--ink-2)}
+.status .dot{width:7px;height:7px;background:var(--ok-ink);display:inline-block;margin-right:6px}
+.status .dot.bad{background:var(--bad-ink)}
+.status .dot.warn{background:var(--warn-ink)}
+.status .push{margin-left:auto}
+.status a{color:var(--accent)}
+.status.alert{background:var(--warn-bg);color:var(--warn-ink)}
+.status.alert a{color:var(--warn-ink);font-weight:700}
+
+/* ---- the palette drop, teaching state ---------------------------------- */
+.drop{border-bottom:1px solid var(--rule);background:var(--panel)}
+.vgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+.v{display:grid;grid-template-columns:11ch minmax(0,1fr);gap:12px;align-items:baseline;
+   padding:9px 18px;border-bottom:1px solid var(--rule);border-right:1px solid var(--rule)}
+.v .verb{font:700 15px/1.3 var(--mono);color:var(--ink)}
+.v .say{font:400 14px/1.4 var(--sans);color:var(--ink-2)}
+.v .say em{font-style:normal;font-family:var(--mono);font-size:13px;color:var(--ink)}
+.v[aria-current="true"]{background:var(--sel);box-shadow:inset 3px 0 0 var(--accent)}
+.recent{display:flex;gap:8px;flex-wrap:wrap;padding:10px 18px 12px}
+.chip{font:400 13px/1 var(--mono);border:1px solid var(--rule-2);background:var(--paper);
+      color:var(--ink-2);padding:6px 9px;cursor:pointer}
+.chip:hover{background:var(--panel-2);color:var(--ink)}
+
+/* ---- result bands ------------------------------------------------------ */
+.band{padding:12px 18px 5px 18px;border-top:1px solid var(--rule)}
+.band .h{font:700 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+.band .h b{color:var(--ink-2);font-weight:700}
+.nomatch{padding:11px 18px 14px;font:400 15px/1.5 var(--sans);color:var(--ink-2);border-top:1px solid var(--rule)}
+.withheld{display:grid;grid-template-columns:5px 156px minmax(0,1fr);column-gap:12px;
+          padding:6px 18px 6px 0;border-bottom:1px solid var(--rule);background:var(--panel-2)}
+.withheld .ns{font:400 12px/1.5 var(--mono);color:var(--ink-3)}
+.withheld .t{font:400 15px/1.4 var(--sans);color:var(--ink-3);text-decoration:line-through;
+             text-decoration-thickness:1px}
+.withheld .t span{text-decoration:none;font:400 12px/1 var(--mono);color:var(--ink-2);margin-left:9px}
+
+/* ---- inline panel (a fact, a client, a verdict) ------------------------ */
+.panel{border-top:1px solid var(--rule-2);padding:16px 18px 18px;background:var(--paper)}
+.panel h3{font:700 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin-bottom:9px}
+.claimtxt{font:400 21px/1.35 var(--serif);color:var(--ink);max-width:62ch}
+.provsent{font:400 14px/1.55 var(--sans);color:var(--ink-2);max-width:70ch;margin-top:8px}
+.provsent b{color:var(--ink);font-weight:600}
+.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:3px 14px;font:400 13px/1.6 var(--mono);margin-top:12px}
+.kv dt{color:var(--ink-3)}
+.kv dd{color:var(--ink)}
+.hist{margin-top:14px;border-top:1px solid var(--rule);padding-top:10px}
+.hist .iv{display:grid;grid-template-columns:16ch minmax(0,1fr);gap:12px;padding:4px 0;
+          font:400 13px/1.5 var(--mono);border-bottom:1px solid var(--rule)}
+.hist .iv:last-child{border-bottom:0}
+.hist .iv .val{font:400 15px/1.4 var(--sans);color:var(--ink)}
+.hist .iv.now .val{font-weight:700}
+.hist .iv .when{color:var(--ink-2)}
+
+/* ---- clauses and counters, job 2 --------------------------------------- */
+.two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0;border-top:1px solid var(--rule)}
+.two > div{padding:13px 18px 15px}
+.two > div + div{border-left:1px solid var(--rule)}
+.cl{display:grid;grid-template-columns:minmax(0,1fr) 9ch;gap:2px 12px;align-items:baseline;margin-top:7px}
+.cl .g{font:400 15px/1.6 var(--mono);color:var(--ink)}
+.cl .m{font:700 14px/1.6 var(--mono);color:var(--ink);text-align:right}
+.cl .m.none{font-weight:400;color:var(--ink-2)}
+.cl .m u{text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:3px}
+.cl .add{color:var(--accent)}
+.cl .g.add::before{content:"+ ";font-weight:700}
+.counts{display:flex;gap:22px;flex-wrap:wrap;margin-top:11px;padding-top:10px;border-top:1px solid var(--rule)}
+.counts div{font:400 12px/1.4 var(--mono);color:var(--ink-3)}
+.counts b{display:block;font:700 20px/1.2 var(--sans);color:var(--ink);letter-spacing:-.01em}
+.radius{border-top:1px solid var(--rule-2);background:var(--sel);padding:13px 18px 15px}
+.radius .n{font:700 20px/1.3 var(--sans);color:var(--ink)}
+.radius .bd{font:400 14px/1.6 var(--sans);color:var(--ink-2);max-width:74ch}
+.radius .bd b{color:var(--ink);font-weight:700}
+.pastebox{margin-top:11px;border:1px solid var(--rule-2);background:var(--panel);padding:11px 13px;
+          font:400 12.5px/1.6 var(--mono);color:var(--ink);white-space:pre;overflow-x:auto}
+.drift{border-left:4px solid var(--warn-ink);background:var(--warn-bg);color:var(--warn-ink);
+       padding:10px 13px;margin-top:12px;font:400 14px/1.5 var(--sans);max-width:76ch}
+.drift b{font-weight:700}
+
+/* read-only grid, clients against namespaces */
+.grid{width:100%;border-collapse:collapse;margin-top:8px}
+.grid th,.grid td{border:1px solid var(--rule);padding:6px 9px;text-align:left;
+                  font:400 13px/1.4 var(--mono);color:var(--ink)}
+.grid th{font:700 11px/1.3 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);background:var(--paper)}
+.grid td.none{color:var(--ink-2)}
+.grid td.ceil{font-weight:700}
+.grid td.ceil u{text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:3px}
+
+/* ---- queue ------------------------------------------------------------- */
+.qi{border-bottom:1px solid var(--rule);padding:13px 18px 15px}
+.qi .qh{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:9px}
+.qi .kind{font:700 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2)}
+.qi .qns{font:400 12px/1 var(--mono);color:var(--ink-3);margin-left:auto}
+.side{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0;border:1px solid var(--rule)}
+.side > div{padding:11px 13px}
+.side > div + div{border-left:1px solid var(--rule)}
+.side .t{font:400 19px/1.35 var(--serif);color:var(--ink)}
+.side .p{font:400 12px/1.5 var(--mono);color:var(--ink-2);margin-top:5px}
+.side .p b{color:var(--ok-ink);font-weight:700}
+.side .keep{background:var(--sel)}
+.sim{font:400 13px/1.5 var(--sans);color:var(--ink-2);margin-top:9px}
+.sim b{color:var(--ink);font-weight:700}
+
+/* ---- empty and health -------------------------------------------------- */
+.calm{padding:26px 22px 30px}
+.calm h3{font:400 24px/1.3 var(--serif);color:var(--ink);margin-bottom:6px}
+.calm p{font:400 15px/1.6 var(--sans);color:var(--ink-2);max-width:66ch}
+.figs{display:flex;gap:34px;flex-wrap:wrap;margin:20px 0 4px}
+.figs div{font:400 12px/1.4 var(--mono);color:var(--ink-3)}
+.figs b{display:block;font:700 27px/1.15 var(--sans);color:var(--ink);letter-spacing:-.02em}
+.cmdline{font:400 14px/1.7 var(--mono);color:var(--ink);background:var(--panel-2);
+         border-left:3px solid var(--rule-3);padding:9px 12px;margin-top:10px;display:block;overflow-x:auto;white-space:pre}
+.health{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--rule)}
+.health > div{padding:12px 18px 14px;border-bottom:1px solid var(--rule)}
+.health > div:nth-child(odd){border-right:1px solid var(--rule)}
+.health .hk{font:700 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin-bottom:6px}
+.health .hv{font:400 17px/1.4 var(--sans);color:var(--ink)}
+.health .hn{font:400 12.5px/1.5 var(--mono);color:var(--ink-2);margin-top:4px}
+.health .hv.bad{color:var(--bad-ink);font-weight:700}
+
+/* ---- phone ------------------------------------------------------------- */
+.frame.phone .cmd{padding:11px 14px}
+.frame.phone .cmd .typed,.frame.phone .cmd .ghost{font-size:17px}
+.frame.phone .r{grid-template-columns:5px minmax(0,1fr);padding:8px 14px 9px 0;row-gap:2px}
+.frame.phone .r .ns{grid-column:2;font-size:11.5px}
+.frame.phone .r .txt{grid-column:2;font-size:16px;flex-direction:column;align-items:flex-start;gap:2px}
+.frame.phone .r .verbs{grid-column:2}
+.frame.phone .lab,.frame.phone .band{padding-left:14px;padding-right:14px}
+.frame.phone .status{padding:7px 14px;font-size:11.5px}
+.frame.phone .panel{padding:14px}
+.frame.phone .claimtxt{font-size:19px}
+.tapbar{display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--rule);background:var(--paper);flex-wrap:wrap}
+.tapbar .vb{flex:1;justify-content:center;padding:12px 8px;font-size:14px}
+
+/* hold to confirm */
+.gate{border-top:3px solid var(--bad-ink);background:var(--bad-bg);padding:15px 14px 17px}
+.gate h4{font:700 15px/1.35 var(--sans);color:var(--bad-ink);margin-bottom:6px}
+.gate p{font:400 14px/1.5 var(--sans);color:var(--ink);max-width:60ch}
+.gate p code{font:400 13px/1 var(--mono)}
+.hold{position:relative;overflow:hidden;appearance:none;width:100%;margin-top:13px;
+      border:2px solid var(--bad-ink);background:var(--panel);color:var(--bad-ink);
+      font:700 15px/1 var(--sans);padding:15px 10px;cursor:pointer;touch-action:none}
+.hold .fill{position:absolute;inset:0 auto 0 0;width:0;background:var(--bad-bg);z-index:0}
+.hold .cap2{position:relative;z-index:1}
+.hold[data-done="1"]{border-color:var(--ok-ink);color:var(--ok-ink);cursor:default}
+.gate .out{font:400 13px/1.5 var(--mono);color:var(--ink-2);margin-top:9px}
+.after{border-top:3px solid var(--ok-ink);padding:15px 14px 17px}
+.after h4{font:700 15px/1.35 var(--sans);color:var(--ok-ink);margin-bottom:7px}
+.after p{font:400 15px/1.55 var(--sans);color:var(--ink);max-width:62ch}
+.after .kv{margin-top:11px}
+
+/* ---- error states ------------------------------------------------------ */
+.err{padding:22px 18px 24px}
+.err h3{font:400 22px/1.3 var(--serif);color:var(--ink);margin-bottom:7px}
+.err p{font:400 15px/1.6 var(--sans);color:var(--ink-2);max-width:66ch}
+.err .kv{margin-top:12px}
+
+/* ---- submission prose panels ------------------------------------------- */
+.say2{max-width:82ch}
+.say2 h3{font:700 15px/1.35 var(--sans);margin:22px 0 7px}
+.say2 p{font:400 15.5px/1.62 var(--serif);color:var(--ink);margin-bottom:11px}
+.say2 li{font:400 15.5px/1.6 var(--serif);color:var(--ink);margin:0 0 8px 20px}
+.say2 code{font:400 13.5px/1 var(--mono);background:var(--panel-2);padding:1px 4px}
+.thesis{border-left:4px solid var(--accent);padding:4px 0 4px 16px;margin-bottom:20px}
+.thesis p{font:400 20px/1.45 var(--serif);color:var(--ink);max-width:64ch}
+table.floors{border-collapse:collapse;width:100%;max-width:1400px;margin-top:12px}
+table.floors th,table.floors td{border:1px solid var(--rule);padding:9px 11px;text-align:left;vertical-align:top}
+table.floors th{font:700 11px/1.3 var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);background:var(--paper)}
+table.floors td{font:400 14px/1.5 var(--sans);color:var(--ink)}
+table.floors td:first-child{font:700 13px/1.5 var(--mono);color:var(--ink-3);width:3ch}
+table.floors td.res{font:400 13px/1.5 var(--mono);color:var(--ink-2);width:32%}
+
+
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="doc">
+
+<header class="mast">
+  <div class="line1">
+    <span class="name">lumberroom console</span>
+    <span class="sub">style proposal four of five: command-first</span>
+    <span class="spacer"></span>
+    <span class="sub">19 Aug 2026</span>
+  </div>
+  <nav class="tabs" id="tabs" aria-label="Submission index">
+    <button data-p="p0" aria-current="page">Thesis</button>
+    <button data-p="p1">Rest and arrivals</button>
+    <button data-p="p2">Typing</button>
+    <button data-p="p3">One fact</button>
+    <button data-p="p4">Grants</button>
+    <button data-p="p5">Lens</button>
+    <button data-p="p6">Queue</button>
+    <button data-p="p7">Health and errors</button>
+    <button data-p="p8">Phone</button>
+    <button data-p="p9">Floors</button>
+    <button data-p="p10">Downside</button>
+  </nav>
+</header>
+
+<!-- ======================================================== THESIS ====== -->
+<section class="pane" id="p0">
+  <div class="say2">
+    <div class="thesis">
+      <p>One input line owns the whole console, and its resting state is the answer to
+      "what does the store think it knows about me", so the empty box is never empty.</p>
+    </div>
+
+    <h3>What that buys, and what it costs</h3>
+    <p>Every other style in this set navigates by moving between places. This one navigates by
+    naming a thing. You type <code>port</code> and read the answer; you type
+    <code>as chatgpt: port</code> and read what ChatGPT would have got; you press <code>f</code> on
+    the row in front of you and the delete gate opens on that row. The verb and its object are
+    never more than one line apart, which is the defect that killed the last design: on the rejected
+    Inbox, a fact's provenance sat about 800 pixels from the fact.</p>
+
+    <p>Doing that in a browser rather than in <code>lumberroom search</code> earns its keep on four counts,
+    and three of them the terminal cannot reach at any price.
+    <b>The result row is the object.</b> The CLI prints a uuid you then paste into
+    <code>lumberroom forget</code>; here the row you are looking at is the row the verb acts on.
+    <b>The lens re-renders.</b> <code>as chatgpt:</code> runs the same query under another client's
+    ceilings and collapses the withheld rows to counted, struck lines, so the shape of what is
+    hidden stays on screen. No terminal command and no markdown file can express that.
+    <b>It is live and it stays open.</b> The resting screen is this week's arrivals against the
+    per-namespace inventory, and it is correct at the moment you glance at it.
+    <b>It is on the phone.</b> Job 4 happens on the device that wrote the thing, and there is no
+    terminal there.</p>
+
+    <h3>Jobs I optimised for, in order</h3>
+    <ul>
+      <li><b>Job 1, see what the store thinks it knows.</b> The resting state, with no query typed,
+        is the arrivals list and the namespace inventory side by side. This is the decision I would
+        defend against the other four styles.</li>
+      <li><b>Job 5, understand why the store thinks that.</b> One keystroke from any row. Provenance
+        as an English sentence, then the value history as intervals.</li>
+      <li><b>Job 4, get one thing out now.</b> Two taps and a held button on a phone, and the
+        after-state is the server's answer with the read history attached.</li>
+      <li><b>Job 8, what one client would get.</b> A prefix on the query rather than a screen, so
+        rehearsing a grant costs six characters.</li>
+      <li><b>Job 7, notice the store has stopped working.</b> One status line at the foot of every
+        screen, and a <code>status</code> verb that opens the full panel inline.</li>
+    </ul>
+
+    <h3>What I sacrificed, deliberately</h3>
+    <p><b>Job 6, triage, gets a list and not a workflow.</b> <code>review</code> renders the queue
+    inline like any other answer, and the verdicts are per item. No two-pane triage cockpit, no
+    progress counter, no ritual. If the owner turns out to clear thirty items a week, a different
+    style wins that job outright and this one should lose it.</p>
+
+    <p><b>Job 2, grant editing, breaks my own rule.</b> Clauses are typed into fields, not into the
+    command line. A namespace glob and a ceiling are the one place in this product where a typo is a
+    breach, so <code>grant chatgpt</code> opens a form and the command line steps aside. Saying that
+    plainly is more useful than a purist console that lets you type
+    <code>grant chatgpt personal:* sealed</code> and mean <code>personal:*</code> at open.</p>
+
+    <h3>How to read the mockups</h3>
+    <p>The white frames are the product. The notes ruled underneath each one are for the owner and
+    never appear on a screen the owner operates. A note ruled in amber names the numbered item in
+    the specification's capability ledger that the drawing rides on, so what is drawable and what is
+    buildable today stay apart. Desktop screens are drawn at 1400 by 900 against the owner's 1440 by
+    900, and phone screens at their true 390 by 844. Every row count below was counted in a
+    browser.</p>
+
+    <p>The store drawn here is the store that exists: 1,240 live rows, 86 retired, one connected
+    client. Where a list needed more rows than a screenshot could carry, the filler is named in the
+    closing panel.</p>
+  </div>
+</section>
+
+<!-- ================================================ REST AND ARRIVALS === -->
+<section class="pane" id="p1" hidden>
+  <div class="paneHead">
+    <h2>The resting state, which is job 1</h2>
+    <p>Nothing typed. The console opens on what arrived, against what is held. The command line
+    sits above it and takes over the same region the moment a key lands.</p>
+  </div>
+
+  <div class="slot">
+    <div>
+      <p class="cap">Job 1, arrivals and inventory, no query</p>
+      <div class="frame desk">
+
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span>
+          <span class="ghost">type to search, or a verb: review, grant, status, as</span>
+          <span class="bar" aria-hidden="true"></span>
+          <span class="right">
+            <span class="scope">console, full reach</span>
+            <span class="hintk">/ to type</span>
+          </span>
+        </div>
+
+        <div class="body">
+          <div class="main">
+            <div class="lab">Arrived since Monday <span class="n">31 facts, 22 shown, newest first</span></div>
+            <div class="rows">
+
+              <div class="r" data-s="open" aria-current="true">
+                <div class="sens"></div>
+                <div class="ns">user:me</div>
+                <div class="txt"><span class="ft">The port is 8787</span><span class="prov">claude-code-mac &middot; 19 Aug 14:22 &middot; <b>you confirmed</b></span></div>
+                <div class="verbs">
+                  <button class="vb go">Open <kbd>&#9166;</kbd></button>
+                  <button class="vb">Resolve against "The port is 8080" <kbd>r</kbd></button>
+                  <button class="vb danger">Delete <kbd>f</kbd></button>
+                </div>
+              </div>
+
+              <div class="r" data-s="private">
+                <div class="sens"></div><div class="ns">project:lumberroom</div>
+                <div class="txt"><span class="tag">private</span><span class="ft">Migration 003 pins ef_search at 100 on the database itself</span><span class="prov">claude-code-mac &middot; 19 Aug 13:58</span></div>
+              </div>
+
+              <div class="r" data-s="open">
+                <div class="sens"></div><div class="ns">project:lumberroom</div>
+                <div class="txt"><span class="ft">sqlx here runs without the compile-time macros</span><span class="prov">claude-code-mac &middot; 19 Aug 13:41</span></div>
+              </div>
+
+              <div class="r" data-s="private">
+                <div class="sens"></div><div class="ns">project:lumberroom</div>
+                <div class="txt"><span class="tag">private</span><span class="ft">Linking both test binaries at once gets the linker OOM-killed</span><span class="prov">claude-code-mac &middot; 19 Aug 11:07 &middot; <b>you confirmed</b></span></div>
+              </div>
+
+              <div class="r" data-s="private">
+                <div class="sens"></div><div class="ns">user:me</div>
+                <div class="txt"><span class="tag">private</span><span class="ft">I read documents adversarially and an aspirational claim costs trust</span><span class="prov">claude-code-mac &middot; 19 Aug 10:32 &middot; <b>you confirmed</b></span></div>
+              </div>
+
+              <div class="r" data-s="open">
+                <div class="sens"></div><div class="ns">project:lumberroom</div>
+                <div class="txt"><span class="ft">Phases 2 to 4 landed on 19 August, verification still pending</span><span class="prov">lumberroom &middot; 19 Aug 09:50</span></div>
+              </div>
+
+              <div class="r" data-s="open">
+                <div class="sens"></div><div class="ns">global</div>
+                <div class="txt"><span class="ft">Timezone is Asia/Kolkata</span><span class="prov">lumberroom &middot; 19 Aug 09:12</span></div>
+              </div>
+
+              <div class="r" data-s="private">
+                <div class="sens"></div><div class="ns">project:lumen</div>
+                <div class="txt"><span class="tag">private</span><span class="ft">Competitor logos go on the comparison pages, the founder's call</span><span class="prov">claude-code-mac &middot; 18 Aug 21:40 &middot; <b>you confirmed</b></span></div>
+              </div>
+
+              <div class="r" data-s="sealed">
+                <div class="sens"></div><div class="ns">credentials:cloudflare</div>
+                <div class="txt"><span class="tag sealed">sealed</span><span class="sealedbody"><b>148 bytes</b> under key <b>api.cloudflare.token</b>. Read it where the key is: <code>lumberroom unseal api.cloudflare.token --namespace credentials:cloudflare</code><span class="prov">lumberroom &middot; 18 Aug 19:03</span></span></div>
+              </div>
+
+              <div class="r" data-s="private">
+                <div class="sens"></div><div class="ns">project:lumberroom</div>
+                <div class="txt"><span class="tag">private</span><span class="ft">The builder image carries g++ because ONNX links libstdc++</span><span class="prov">claude-code-mac &middot; 18 Aug 18:26</span></div>
+              </div>
+
+              <div class="r" data-s="private">
+                <div class="sens"></div><div class="ns">personal:finance</div>
+                <div class="txt"><span class="tag">private</span><span class="ft">Emergency fund target is twelve months of expenses</span><span class="prov">lumberroom &middot; 18 Aug 17:55</span></div>
+              </div>
+
+              <div class="r" data-s="open">
+                <div class="sens"></div><div class="ns">project:lumen</div>
+                <div class="txt"><span class="ft">Lumen ships on Cloudflare Workers with D1 behind it</span><span class="prov">claude-code-mac &middot; 18 Aug 16:11</span></div>
+              </div>
+
+              <div class="r" data-s="private">
+                <div class="sens"></div><div class="ns">user:me</div>
+                <div class="txt"><span class="tag">private</span><span class="ft">No AI attribution in any commit or any document, ever</span><span class="prov">claude-code-mac &middot; 18 Aug 15:02 &middot; <b>you confirmed</b></span></div>
+              </div>
+
+              <div class="r" data-s="open">
+                <div class="sens"></div><div class="ns">project:lumberroom</div>
+                <div class="txt"><span class="ft">Migrations are forward-only, so an older image cannot boot back</span><span class="prov">claude-code-mac &middot; 18 Aug 14:37</span></div>
+              </div>
+
+              <div class="r" data-s="open">
+                <div class="sens"></div><div class="ns">global</div>
+                <div class="txt"><span class="ft">Preferred editor is Neovim, terminal is Ghostty</span><span class="prov">lumberroom &middot; 18 Aug 12:20</span></div>
+              </div>
+
+              <div class="r" data-s="private">
+                <div class="sens"></div><div class="ns">personal:health</div>
+                <div class="txt"><span class="tag">private</span><span class="ft">Resting heart rate sits around 58</span><span class="prov">lumberroom &middot; 18 Aug 09:44</span></div>
+              </div>
+
+              <div class="r" data-s="private">
+                <div class="sens"></div><div class="ns">project:lumberroom</div>
+                <div class="txt"><span class="tag">private</span><span class="ft">rmcp checks the Host header against a loopback-only allowlist</span><span class="prov">claude-code-mac &middot; 17 Aug 22:15 &middot; <b>you confirmed</b></span></div>
+              </div>
+
+              <div class="r" data-s="open">
+                <div class="sens"></div><div class="ns">user:me</div>
+                <div class="txt"><span class="ft">The port is 8080</span><span class="prov">lumberroom &middot; 17 Aug 20:31</span></div>
+              </div>
+
+              <div class="r" data-s="open">
+                <div class="sens"></div><div class="ns">project:lumberroom</div>
+                <div class="txt"><span class="ft">Postgres 16 with pgvector runs on 127.0.0.1:5432 in compose</span><span class="prov">claude-code-mac &middot; 17 Aug 19:48</span></div>
+              </div>
+
+              <div class="r" data-s="sealed">
+                <div class="sens"></div><div class="ns">credentials:aws</div>
+                <div class="txt"><span class="tag sealed">sealed</span><span class="sealedbody"><b>96 bytes</b> under key <b>deploy.access.key</b>. Read it where the key is: <code>lumberroom unseal deploy.access.key --namespace credentials:aws</code><span class="prov">lumberroom &middot; 17 Aug 16:02</span></span></div>
+              </div>
+
+              <div class="r" data-s="private">
+                <div class="sens"></div><div class="ns">personal:finance</div>
+                <div class="txt"><span class="tag">private</span><span class="ft">The index fund SIP runs on the 3rd of each month</span><span class="prov">lumberroom &middot; 17 Aug 11:19</span></div>
+              </div>
+
+              <div class="r" data-s="private">
+                <div class="sens"></div><div class="ns">project:lumen</div>
+                <div class="txt"><span class="tag">private</span><span class="ft">The household is two adults and no children</span><span class="prov">claude-code-mac &middot; 16 Aug 20:55</span></div>
+              </div>
+
+            </div>
+          </div>
+
+          <aside class="rail">
+            <div class="lab">Held, by namespace</div>
+            <div class="inv">
+              <div class="k">global</div><div class="v">61</div>
+              <div class="c">open reached &middot; last 19 Aug</div>
+              <div class="k">user:me</div><div class="v">214</div>
+              <div class="c">private reached &middot; last 19 Aug</div>
+              <div class="k">project:lumberroom</div><div class="v">486</div>
+              <div class="c">private reached &middot; last 19 Aug</div>
+              <div class="k">project:lumen</div><div class="v">297</div>
+              <div class="c">private reached &middot; last 18 Aug</div>
+              <div class="k">personal:finance</div><div class="v">92</div>
+              <div class="c">private reached &middot; last 18 Aug</div>
+              <div class="k">personal:health</div><div class="v">48</div>
+              <div class="c">private reached &middot; last 18 Aug</div>
+              <div class="k">credentials:cloudflare</div><div class="v">21</div>
+              <div class="c">sealed reached &middot; last 18 Aug</div>
+              <div class="k">credentials:aws</div><div class="v">21</div>
+              <div class="c">sealed reached &middot; last 17 Aug</div>
+            </div>
+            <div class="railfoot">
+              1,240 live &middot; 86 retired<br>
+              1 client connected<br>
+              <span style="color:var(--ink-3)">openwebui, hermes, claude-ai and chatgpt are not connected yet</span>
+            </div>
+          </aside>
+        </div>
+
+        <div class="status">
+          <span><span class="dot"></span>key verified</span>
+          <span>embedder bge-small-en-v1.5</span>
+          <span>db 3 ms</span>
+          <span>claude-code-mac wrote 9 minutes ago</span>
+          <span class="push"><a href="#">status</a> for the rest</span>
+        </div>
+      </div>
+      <p class="scale">Drawn 1400 &times; 900 and measured in a browser: all 22 facts sit above the
+      fold with the inventory beside them, and the last row ends 46 pixels clear of the status
+      line. The owner's 1440 buys width, not rows.</p>
+    </div>
+
+    <div class="margin">
+      <div class="note needs">
+        <div class="t">Needs ledger item 1</div>
+        <p>Newest first, filtered on both axes, keyset paged. <code>list_for_export</code> is oldest
+        first and ceilinged at open, so this list cannot be built from it. One port method, one
+        query, one route, no migration.</p>
+      </div>
+      <div class="note">
+        <div class="t">Answers today</div>
+        <p>The rail is <code>context_bootstrap</code>'s both-axes inventory. The status line is
+        <code>/readyz</code> plus <code>/statsz?by=client</code>.</p>
+      </div>
+      <div class="note needs">
+        <div class="t">Needs ledger item 14</div>
+        <p>"claude-code-mac wrote 9 minutes ago" needs the unwindowed last write per client.
+        <code>statsz</code> drops a client that stayed silent through the window, so silence reads
+        as an absence rather than a date.</p>
+      </div>
+      <div class="note">
+        <div class="t">Sensitivity, four channels</div>
+        <p>A left bar that is absent, solid or hatched; a printed word; and for sealed a different
+        row structure altogether. Greyscale keeps all four.</p>
+      </div>
+      <div class="note">
+        <div class="t">Focus grows controls</div>
+        <p>The current row carries buttons with their keys printed on them. Almost no chrome means
+        chrome that arrives where the cursor is, not chrome that is missing.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ TYPING == -->
+<section class="pane" id="p2" hidden>
+  <div class="paneHead">
+    <h2>What the empty box teaches, and what a query returns</h2>
+    <p>Discoverability is the standing risk in this style, so the box is never blank. Pressing
+    <kbd style="font:400 12px/1 var(--mono);border:1px solid var(--rule-2);padding:2px 5px">/</kbd>
+    opens a list of every verb with a working example against this owner's own store, plus the last
+    four things they ran. Nothing here has to be remembered to be found.</p>
+  </div>
+
+  <div class="slot">
+    <div>
+      <p class="cap">The command line, opened, nothing typed</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span>
+          <span class="bar" aria-hidden="true"></span>
+          <span class="right">
+            <span class="scope">console, full reach</span>
+            <span class="hintk">esc to close</span>
+          </span>
+        </div>
+
+        <div class="drop">
+          <div class="lab">Verbs <span class="n">arrow keys or click, enter to run</span></div>
+          <div class="vgrid">
+            <div class="v" aria-current="true">
+              <span class="verb">anything</span>
+              <span class="say">Search the store. <em>port</em>, <em>emergency fund</em>, <em>why g++</em></span>
+            </div>
+            <div class="v">
+              <span class="verb">as</span>
+              <span class="say">Run the same search as another client. <em>as claude-code-mac: port</em></span>
+            </div>
+            <div class="v">
+              <span class="verb">review</span>
+              <span class="say">Conflicts, stale rows, registry values due. <em>review</em></span>
+            </div>
+            <div class="v">
+              <span class="verb">grant</span>
+              <span class="say">Read or change what a client may see. <em>grant chatgpt</em></span>
+            </div>
+            <div class="v">
+              <span class="verb">clients</span>
+              <span class="say">Who is connected, who is waiting. <em>clients</em></span>
+            </div>
+            <div class="v">
+              <span class="verb">new</span>
+              <span class="say">What arrived, by namespace or by day. <em>new in personal:finance</em></span>
+            </div>
+            <div class="v">
+              <span class="verb">status</span>
+              <span class="say">Key, embedder, rates per client, store decay. <em>status</em></span>
+            </div>
+            <div class="v">
+              <span class="verb">id</span>
+              <span class="say">Jump straight to a row. <em>id 4f2c8a1e</em></span>
+            </div>
+          </div>
+          <div class="lab">You ran, recently</div>
+          <div class="recent">
+            <button class="chip">as claude-code-mac: aws</button>
+            <button class="chip">review</button>
+            <button class="chip">new in project:lumberroom</button>
+            <button class="chip">grant claude-code-mac</button>
+          </div>
+        </div>
+
+        <div class="lab">Behind this, still there <span class="n">arrivals, 31 since Monday</span></div>
+        <div class="rows">
+          <div class="r" data-s="open">
+            <div class="sens"></div><div class="ns">user:me</div>
+            <div class="txt"><span class="ft">The port is 8787</span><span class="prov">claude-code-mac &middot; 19 Aug 14:22 &middot; <b>you confirmed</b></span></div>
+          </div>
+          <div class="r" data-s="private">
+            <div class="sens"></div><div class="ns">project:lumberroom</div>
+            <div class="txt"><span class="tag">private</span><span class="ft">Migration 003 pins ef_search at 100 on the database itself</span><span class="prov">claude-code-mac &middot; 19 Aug 13:58</span></div>
+          </div>
+        </div>
+
+        <div class="status">
+          <span><span class="dot"></span>key verified</span>
+          <span>embedder bge-small-en-v1.5</span>
+          <span>db 3 ms</span>
+          <span class="push">hold <b style="font-family:var(--mono)">`</b> to print the scores the server returned</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="margin">
+      <div class="note">
+        <div class="t">The answer to the empty box</div>
+        <p>Eight verbs, each with an example built from a namespace this store holds. A new
+        owner reads the right column and never has to guess a syntax.</p>
+      </div>
+      <div class="note">
+        <div class="t">Parity, floor 6</div>
+        <p>Every verb row is a button. The examples are buttons too. Unplugging the keyboard costs
+        nothing but speed.</p>
+      </div>
+      <div class="note">
+        <div class="t">Answers today</div>
+        <p>Search is <code>memory_search</code> over <code>POST /mcp</code> with the console's own
+        token, the same call <code>bin/lumberroom.mjs</code> makes. No HTTP search route is needed.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slot">
+    <div>
+      <p class="cap">Typed: port</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span>
+          <span class="typed">port</span>
+          <span class="bar" aria-hidden="true"></span>
+          <span class="right">
+            <span class="scope">console, full reach</span>
+            <span class="hintk">9 rows</span>
+          </span>
+        </div>
+
+        <div class="band"><div class="h">Strong match <b>&middot; 2</b></div></div>
+        <div class="rows">
+          <div class="r" data-s="open" aria-current="true">
+            <div class="sens"></div><div class="ns">user:me</div>
+            <div class="txt"><span class="ft">The port is 8787</span><span class="prov">claude-code-mac &middot; 19 Aug 14:22 &middot; <b>you confirmed</b></span></div>
+            <div class="verbs">
+              <button class="vb go">Open <kbd>&#9166;</kbd></button>
+              <button class="vb">Resolve against "The port is 8080" <kbd>r</kbd></button>
+              <button class="vb">Confirm <kbd>c</kbd></button>
+              <button class="vb danger">Delete <kbd>f</kbd></button>
+            </div>
+          </div>
+          <div class="r" data-s="open">
+            <div class="sens"></div><div class="ns">user:me</div>
+            <div class="txt"><span class="ft">The port is 8080</span><span class="prov">lumberroom &middot; 17 Aug 20:31</span></div>
+          </div>
+        </div>
+
+        <div class="band"><div class="h">Partial match <b>&middot; 3</b></div></div>
+        <div class="rows">
+          <div class="r" data-s="open">
+            <div class="sens"></div><div class="ns">project:lumberroom</div>
+            <div class="txt"><span class="ft">Postgres 16 with pgvector runs on 127.0.0.1:5432 in compose</span><span class="prov">claude-code-mac &middot; 17 Aug 19:48</span></div>
+          </div>
+          <div class="r" data-s="private">
+            <div class="sens"></div><div class="ns">project:lumberroom</div>
+            <div class="txt"><span class="tag">private</span><span class="ft">rmcp checks the Host header against a loopback-only allowlist</span><span class="prov">claude-code-mac &middot; 17 Aug 22:15 &middot; <b>you confirmed</b></span></div>
+          </div>
+          <div class="r" data-s="open">
+            <div class="sens"></div><div class="ns">project:lumen</div>
+            <div class="txt"><span class="ft">Lumen ships on Cloudflare Workers with D1 behind it</span><span class="prov">claude-code-mac &middot; 18 Aug 16:11</span></div>
+          </div>
+        </div>
+
+        <div class="nomatch">
+          <b style="font:700 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);display:block;margin-bottom:6px">Nothing matched well</b>
+          Four more rows came back under the band. Hold <b style="font-family:var(--mono)">`</b> to
+          print the score and the similarity the server returned for each one.
+        </div>
+
+        <div class="status">
+          <span><span class="dot"></span>key verified</span>
+          <span>db 3 ms</span>
+          <span>searched as the console, which reads everything</span>
+          <span class="push">prefix <b style="font-family:var(--mono)">as chatgpt:</b> to see this as another client</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="margin">
+      <div class="note">
+        <div class="t">No cosine in the resting state</div>
+        <p>Three printed bands, the third saying "nothing matched well" in those words. Numbers
+        appear only under a held key and only the ones the route returns.</p>
+      </div>
+      <div class="note needs">
+        <div class="t">Not drawn, ledger item 10</div>
+        <p>No wording-against-meaning explanation of a hit anywhere in this proposal. The lexical
+        contribution is not returned by the search path, so the claim is not made.</p>
+      </div>
+      <div class="note">
+        <div class="t">The conflict is visible here</div>
+        <p>Both port rows land in the strong band, and the focused row offers the verdict inline.
+        Job 6 leaks into job 1 on purpose; most conflicts are noticed while reading.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========================================================== ONE FACT == -->
+<section class="pane" id="p3" hidden>
+  <div class="paneHead">
+    <h2>One fact, opened in place</h2>
+    <p>Enter on a row expands it under the row rather than routing to a page. Provenance arrives as
+    a sentence, and the value history as intervals. Escape collapses it and destroys nothing.</p>
+  </div>
+
+  <div class="slot">
+    <div>
+      <p class="cap">Job 5, and the job 9 widget inside it</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span>
+          <span class="typed">port</span>
+          <span class="right">
+            <span class="scope">console, full reach</span>
+            <span class="hintk">esc collapses</span>
+          </span>
+        </div>
+
+        <div class="band"><div class="h">Strong match <b>&middot; 2</b></div></div>
+        <div class="rows">
+          <div class="r" data-s="open" aria-current="true">
+            <div class="sens"></div><div class="ns">user:me</div>
+            <div class="txt"><span class="ft">The port is 8787</span><span class="prov">claude-code-mac &middot; 19 Aug 14:22 &middot; <b>you confirmed</b></span></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="claimtxt">The port is 8787</div>
+          <p class="provsent"><b>claude-code-mac</b> wrote this on <b>19 August at 14:22</b> while
+          working in project:lumberroom. <b>You confirmed it</b> forty minutes later. It replaced
+          <b>"The port is 8080"</b>, which lumberroom wrote on 2 August and nobody ever confirmed.</p>
+
+          <dl class="kv">
+            <dt>id</dt><dd>4f2c8a1e-73b5-4d0a-9c11-2ea5f8d61b07</dd>
+            <dt>namespace</dt><dd>user:me &middot; sensitivity open &middot; tags deploy, lumberroom</dd>
+            <dt>served</dt><dd>14 times, last on 19 Aug 15:40</dd>
+            <dt>retires</dt><dd>3fa9c2d0 &middot; "The port is 8080"</dd>
+          </dl>
+
+          <div class="hist">
+            <div class="lab" style="padding:0 0 7px">What this value has been</div>
+            <div class="iv now">
+              <span class="when">from 19 Aug</span>
+              <span class="val">8787 <span style="font:400 12px/1 var(--mono);color:var(--ink-2);margin-left:8px">claude-code-mac, confirmed</span></span>
+            </div>
+            <div class="iv">
+              <span class="when">02 Aug to 19 Aug</span>
+              <span class="val">8080 <span style="font:400 12px/1 var(--mono);color:var(--ink-2);margin-left:8px">lumberroom</span></span>
+            </div>
+            <div class="iv">
+              <span class="when">14 Jul to 02 Aug</span>
+              <span class="val">3000 <span style="font:400 12px/1 var(--mono);color:var(--ink-2);margin-left:8px">claude-code-mac</span></span>
+            </div>
+          </div>
+
+          <div class="verbs" style="grid-column:auto;padding-top:15px">
+            <button class="vb">Confirm again <kbd>c</kbd></button>
+            <button class="vb">Retire this, keep 8080 <kbd>s</kbd></button>
+            <button class="vb">Copy id <kbd>y</kbd></button>
+            <button class="vb danger">Delete <kbd>f</kbd></button>
+            <button class="vb">Close <kbd>esc</kbd></button>
+          </div>
+        </div>
+
+        <div class="status">
+          <span><span class="dot"></span>key verified</span>
+          <span>db 3 ms</span>
+          <span class="push">delete and retire each take a second act, and neither can be undone</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="margin">
+      <div class="note">
+        <div class="t">Answers today</div>
+        <p><code>GET /admin/memory/{id}</code> carries provenance, access count and the supersession
+        links, decrypted when the grant allows.</p>
+      </div>
+      <div class="note needs">
+        <div class="t">Not drawn, ledger item 7</div>
+        <p>"Served 14 times, last on 19 Aug 15:40" names no reader. The reading client beside
+        <code>last_accessed_at</code> needs a migration, so the sentence stops where the data
+        stops.</p>
+      </div>
+      <div class="note">
+        <div class="t">Job 9 is a widget</div>
+        <p>Intervals rather than events, from <code>include_superseded</code>, which the CLI never
+        sends. The chain is linear by construction, so no graph.</p>
+      </div>
+      <div class="note">
+        <div class="t">Provenance adjacency</div>
+        <p>The sentence sits directly under the claim, in the same column, capped at 70 characters.
+        The rejected design put it 800 pixels away in a 27-character column.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slot">
+    <div>
+      <p class="cap">A sealed row, opened. The server can count it and never read it</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span>
+          <span class="typed">aws</span>
+          <span class="right"><span class="scope">console, full reach</span></span>
+        </div>
+        <div class="band"><div class="h">Strong match <b>&middot; 1</b></div></div>
+        <div class="rows">
+          <div class="r" data-s="sealed" aria-current="true">
+            <div class="sens"></div><div class="ns">credentials:aws</div>
+            <div class="txt"><span class="tag sealed">sealed</span><span class="sealedbody"><b>96 bytes</b> under key <b>deploy.access.key</b><span class="prov">lumberroom &middot; 17 Aug 16:02</span></span></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="claimtxt" style="font-family:var(--mono);font-size:17px;color:var(--ink-2)">
+            96 bytes of ciphertext under <b style="color:var(--ink)">deploy.access.key</b>
+          </div>
+          <p class="provsent">This console holds no key for it and neither does the server. The store
+          can tell you it exists, how large it is and when it arrived. Read it on a machine that
+          holds the key:</p>
+          <code class="cmdline">lumberroom unseal deploy.access.key --namespace credentials:aws</code>
+          <dl class="kv">
+            <dt>namespace</dt><dd>credentials:aws &middot; sensitivity sealed</dd>
+            <dt>written</dt><dd>lumberroom, 17 Aug 16:02</dd>
+            <dt>served</dt><dd>never</dd>
+            <dt>readable by</dt><dd>clients that decrypt locally: claude-code-mac, hermes</dd>
+          </dl>
+          <div class="verbs" style="grid-column:auto;padding-top:15px">
+            <button class="vb">Copy the unseal command <kbd>y</kbd></button>
+            <button class="vb danger">Delete deploy.access.key <kbd>f</kbd></button>
+            <button class="vb">Close <kbd>esc</kbd></button>
+          </div>
+        </div>
+        <div class="status">
+          <span><span class="dot"></span>key verified</span>
+          <span class="push">deleting a sealed row destroys the only copy, and the confirm says the key out loud</span>
+        </div>
+      </div>
+    </div>
+    <div class="margin">
+      <div class="note">
+        <div class="t">No stand-in for content</div>
+        <p>No blurred text, no asterisks, no placeholder string. A sealed row is drawn as what it
+        is: a length, a key and the command that opens it elsewhere.</p>
+      </div>
+      <div class="note">
+        <div class="t">Answers today</div>
+        <p>The console's grant sets <code>sealedCapable: false</code>, so the redaction state is the
+        server's answer rather than a decision this interface made.</p>
+      </div>
+      <div class="note">
+        <div class="t">Private is not treated this way</div>
+        <p>A private row prints its content. It is encrypted at rest and bounded by grant, and the
+        owner is the one party it was never hidden from.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ GRANTS == -->
+<section class="pane" id="p4" hidden>
+  <div class="paneHead">
+    <h2>Who may see what, and what a change would admit</h2>
+    <p>This is where the style bends. Clauses go into fields, not into the command line, because a
+    glob and a ceiling are the one pair in this product where a typo is a breach.</p>
+  </div>
+
+  <div class="slot">
+    <div>
+      <p class="cap">Job 3, typed: clients</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span><span class="typed">clients</span>
+          <span class="right"><span class="scope">console, full reach</span><span class="hintk">2 rows</span></span>
+        </div>
+
+        <div class="lab">Connected</div>
+        <div class="qi">
+          <div class="qh">
+            <span style="font:600 18px/1.3 var(--sans)">claude-code-mac</span>
+            <span style="font:400 12px/1 var(--mono);color:var(--ink-2)">registered itself 2 Aug &middot; last call 9 minutes ago</span>
+          </div>
+          <p style="font:400 15px/1.55 var(--sans);color:var(--ink-2);max-width:74ch">
+            Reads global, user:me and every project up to private, and credentials up to sealed.
+            Writes everywhere except credentials. 412 reads and 96 writes in the last fourteen days.
+          </p>
+          <div class="verbs" style="grid-column:auto;padding-top:11px">
+            <button class="vb go">Open the grant <kbd>&#9166;</kbd></button>
+            <button class="vb">Rehearse a question as this client <kbd>l</kbd></button>
+            <button class="vb danger">Revoke <kbd>x</kbd></button>
+          </div>
+        </div>
+
+        <div class="lab">Waiting on you <span class="n">holds nothing until you decide</span></div>
+        <div class="qi" style="border-bottom:0">
+          <div class="qh">
+            <span style="font:600 18px/1.3 var(--sans)">chatgpt</span>
+            <span style="font:400 12px/1 var(--mono);color:var(--ink-2)">registered itself 19 Aug 08:04</span>
+          </div>
+          <dl class="kv" style="margin-top:2px">
+            <dt>client id</dt><dd>c_7d1a44b9e2</dd>
+            <dt>calls itself</dt><dd>ChatGPT connector</dd>
+            <dt>redirect</dt><dd>https://chatgpt.com/connector_platform_oauth_redirect</dd>
+            <dt>holds now</dt><dd>nothing</dd>
+          </dl>
+          <p style="font:400 15px/1.55 var(--sans);color:var(--ink-2);max-width:74ch;margin-top:11px">
+            Three presets, and you can edit the clauses after picking one.
+            <b style="color:var(--ink)">Narrow</b> reads global at open and writes nothing.
+            <b style="color:var(--ink)">Standard</b> reads global and user:me at open and writes user:me at open.
+            <b style="color:var(--ink)">Full</b> reads and writes everything up to sealed, and may delete.
+          </p>
+          <div class="verbs" style="grid-column:auto;padding-top:12px">
+            <button class="vb go">Approve as Narrow <kbd>1</kbd></button>
+            <button class="vb">Approve as Standard <kbd>2</kbd></button>
+            <button class="vb">Approve as Full <kbd>3</kbd></button>
+            <button class="vb">Edit clauses first <kbd>e</kbd></button>
+            <button class="vb danger">Refuse, and do not ask again <kbd>x</kbd></button>
+          </div>
+        </div>
+
+        <div class="status">
+          <span><span class="dot"></span>key verified</span>
+          <span>db 3 ms</span>
+          <span class="push">openwebui, hermes and claude-ai have not registered</span>
+        </div>
+      </div>
+    </div>
+    <div class="margin">
+      <div class="note">
+        <div class="t">Answers today</div>
+        <p><code>GET /oauth/clients</code> carries the grant, consent state and last used for OAuth
+        clients. The console's own token already carries <code>registry_write</code>, so the route
+        answers with no gate change.</p>
+      </div>
+      <div class="note needs">
+        <div class="t">Needs ledger item 4</div>
+        <p>Approve and refuse out of band, and revoke at all. <code>revoke_client</code> is
+        implemented and nothing calls it; today revocation is one UPDATE in psql.</p>
+      </div>
+      <div class="note">
+        <div class="t">Two rows, not seven</div>
+        <p>No bearer client appears in this list, because listing them needs item 14. The console
+        and the CLI are therefore absent, and that absence is honest rather than tidy.</p>
+      </div>
+      <div class="note">
+        <div class="t">Approve is destructive too</div>
+        <p>Approving hands a stranger reach, so it takes the same second act as a delete. The keys
+        above open the confirm, they do not commit.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slot">
+    <div>
+      <p class="cap">Job 2, typed: grant claude-code-mac, with one clause added and not yet committed</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span><span class="typed">grant claude-code-mac</span>
+          <span class="right"><span class="scope">console, full reach</span><span class="hintk">tab moves between fields</span></span>
+        </div>
+
+        <div class="two">
+          <div>
+            <div class="lab" style="padding:0 0 4px">May read</div>
+            <div class="cl">
+              <span class="g">global</span><span class="m">open</span>
+              <span class="g">user:me</span><span class="m">private</span>
+              <span class="g">project:*</span><span class="m">private</span>
+              <span class="g">credentials:*</span><span class="m"><u>sealed</u></span>
+              <span class="g add">personal:finance</span><span class="m add">private</span>
+              <span class="g" style="color:var(--ink-2)">personal:health</span><span class="m none">none</span>
+            </div>
+          </div>
+          <div>
+            <div class="lab" style="padding:0 0 4px">May write</div>
+            <div class="cl">
+              <span class="g">global</span><span class="m">open</span>
+              <span class="g">user:me</span><span class="m">private</span>
+              <span class="g">project:*</span><span class="m">private</span>
+              <span class="g" style="color:var(--ink-2)">credentials:*</span><span class="m none">none</span>
+              <span class="g" style="color:var(--ink-2)">personal:*</span><span class="m none">none</span>
+            </div>
+            <div class="counts">
+              <div><b>412</b>reads, 14 days</div>
+              <div><b>96</b>writes, 14 days</div>
+              <div><b>0</b>refusals</div>
+              <div style="font-size:12px">may delete <b style="font:600 15px/1.3 var(--sans)">no</b></div>
+              <div style="font-size:12px">decrypts sealed <b style="font:600 15px/1.3 var(--sans)">yes</b></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="radius">
+          <div class="n">This change admits 92 more facts.</div>
+          <p class="bd">All 92 sit in <b>personal:finance</b>, and none of them are sealed. Nothing
+          in personal:health, credentials:aws or credentials:cloudflare becomes readable. The client
+          would go from <b>1,127</b> readable facts to <b>1,219</b> of the 1,240 you hold.</p>
+          <div class="lab" style="padding:11px 0 4px;border:0">Three of the 92</div>
+          <div class="rows" style="border:1px solid var(--rule);background:var(--panel)">
+            <div class="r" data-s="private">
+              <div class="sens"></div><div class="ns">personal:finance</div>
+              <div class="txt"><span class="tag">private</span><span class="ft">Emergency fund target is twelve months of expenses</span><span class="prov">lumberroom &middot; 18 Aug</span></div>
+            </div>
+            <div class="r" data-s="private">
+              <div class="sens"></div><div class="ns">personal:finance</div>
+              <div class="txt"><span class="tag">private</span><span class="ft">The index fund SIP runs on the 3rd of each month</span><span class="prov">lumberroom &middot; 17 Aug</span></div>
+            </div>
+            <div class="r" data-s="private" style="border-bottom:0">
+              <div class="sens"></div><div class="ns">personal:finance</div>
+              <div class="txt"><span class="tag">private</span><span class="ft">The 2025 tax filing went through the old accountant</span><span class="prov">claude-code-mac &middot; 04 Aug</span></div>
+            </div>
+          </div>
+          <div class="verbs" style="grid-column:auto;padding-top:14px">
+            <button class="vb go">Commit this grant <kbd>&#9166;</kbd></button>
+            <button class="vb">Rehearse a question first <kbd>l</kbd></button>
+            <button class="vb">Drop the added clause <kbd>esc</kbd></button>
+          </div>
+        </div>
+
+        <div class="status">
+          <span><span class="dot"></span>key verified</span>
+          <span>nothing has changed on the server yet</span>
+          <span class="push">commit takes a second act</span>
+        </div>
+      </div>
+    </div>
+    <div class="margin">
+      <div class="note needs">
+        <div class="t">Needs ledger item 2</div>
+        <p>Every number in the blue block. The digest's grant-filtered count run over a grant passed
+        in as an argument, sharing that SQL rather than copying it, guarded on
+        <code>reads_whole_store</code>. One port method, one query, one route, no migration.</p>
+      </div>
+      <div class="note needs">
+        <div class="t">Needs ledger item 5</div>
+        <p>Per-clause editing outside the consent POST. <code>set_client_grant</code> already takes
+        clause lists, so the store is ready and the route is missing. The three presets stay as
+        presets over it.</p>
+      </div>
+      <div class="note">
+        <div class="t">Floor 5, measured</div>
+        <p>The ungranted marker prints the word <code>none</code> at 7.3:1. The widest grant prints
+        <code>sealed</code> at 18.4:1 with an underline. The safest cell is the quiet one.</p>
+      </div>
+      <div class="note">
+        <div class="t">Above the fold</div>
+        <p>Read clauses, write clauses and the fourteen-day counts occupy the first 210 pixels
+        together, before the preview begins.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slot">
+    <div>
+      <p class="cap">Job 2, the bearer case. Typed: grant lumberroom</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span><span class="typed">grant lumberroom</span>
+          <span class="right"><span class="scope">read only here</span></span>
+        </div>
+
+        <div class="two">
+          <div>
+            <div class="lab" style="padding:0 0 4px">May read</div>
+            <div class="cl">
+              <span class="g">*</span><span class="m"><u>sealed</u></span>
+            </div>
+            <div class="lab" style="padding:13px 0 4px;border:0">May write</div>
+            <div class="cl">
+              <span class="g">*</span><span class="m"><u>sealed</u></span>
+            </div>
+            <p style="font:400 13px/1.5 var(--sans);color:var(--ink-2);margin-top:7px">No namespace
+            is excluded, on either axis.</p>
+          </div>
+          <div>
+            <div class="lab" style="padding:0 0 4px">Where this grant lives</div>
+            <p style="font:400 15px/1.55 var(--sans);color:var(--ink);max-width:56ch">
+              In <b style="font-family:var(--mono);font-size:13.5px">AUTH_TOKENS</b>, in
+              <b style="font-family:var(--mono);font-size:13.5px">/etc/lumberroom/lumberroom.env</b> on the box
+              you own. This console cannot change it, on purpose: a console that could rewrite these
+              would put the server in charge of its own access control. Edit the file and restart.
+            </p>
+            <div class="counts">
+              <div><b>38</b>reads, 14 days</div>
+              <div><b>11</b>writes, 14 days</div>
+              <div style="font-size:12px">may delete <b style="font:600 15px/1.3 var(--sans)">yes</b></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>The clause block to paste</h3>
+          <div class="pastebox">{ "client": "lumberroom", "token": "...",
+  "read":  [{ "namespace": "*", "max": "sealed" }],
+  "write": [{ "namespace": "*", "max": "private" }],
+  "mayDelete": true, "sealedCapable": true, "registryWrite": true }</div>
+
+          <div class="drift">
+            <b>This does not match what the server is enforcing.</b> The block above is the one you
+            copied on 11 August, which caps writes at private. The live grant writes up to
+            <b>sealed</b> in every namespace. Either the file was edited by hand, or the paste never
+            landed and the server has not restarted since.
+          </div>
+
+          <div class="lab" style="padding:15px 0 4px;border:0">The same grant as a grid, against the namespaces you hold</div>
+          <table class="grid">
+            <thead><tr><th>namespace</th><th>lumberroom reads</th><th>lumberroom writes</th><th>claude-code-mac reads</th><th>claude-code-mac writes</th></tr></thead>
+            <tbody>
+              <tr><td>global</td><td class="ceil"><u>sealed</u></td><td class="ceil"><u>sealed</u></td><td>open</td><td>open</td></tr>
+              <tr><td>user:me</td><td class="ceil"><u>sealed</u></td><td class="ceil"><u>sealed</u></td><td>private</td><td>private</td></tr>
+              <tr><td>project:lumberroom</td><td class="ceil"><u>sealed</u></td><td class="ceil"><u>sealed</u></td><td>private</td><td>private</td></tr>
+              <tr><td>personal:finance</td><td class="ceil"><u>sealed</u></td><td class="ceil"><u>sealed</u></td><td class="none">none</td><td class="none">none</td></tr>
+              <tr><td>credentials:aws</td><td class="ceil"><u>sealed</u></td><td class="ceil"><u>sealed</u></td><td class="ceil"><u>sealed</u></td><td class="none">none</td></tr>
+            </tbody>
+          </table>
+          <p style="font:400 13px/1.5 var(--sans);color:var(--ink-2);margin-top:8px;max-width:70ch">
+            Five namespaces of the eight you hold. The grid reads and never edits, because a glob
+            overlaps and nests and this table cannot express that.
+          </p>
+        </div>
+
+        <div class="status">
+          <span><span class="dot"></span>key verified</span>
+          <span class="push">this screen writes nothing</span>
+        </div>
+      </div>
+    </div>
+    <div class="margin">
+      <div class="note needs">
+        <div class="t">Needs ledger item 14</div>
+        <p>Everything on this screen. No route renders a bearer client's parsed grant, so the CLI,
+        the console and every header-only surface appear in no list today. One route, one query, no
+        migration.</p>
+      </div>
+      <div class="note">
+        <div class="t">Decision 0003 drew this line</div>
+        <p>Bearer grants stay authoritative in the file. The console shows them, names the file, and
+        offers the block. Half the job, and the half that carries the value.</p>
+      </div>
+      <div class="note">
+        <div class="t">The drift flag</div>
+        <p>Compares the live grant against the clause block last previewed. It is one warning
+        paragraph in one place, not a band across every screen.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== LENS == -->
+<section class="pane" id="p5" hidden>
+  <div class="paneHead">
+    <h2>The lens is a prefix, not a screen</h2>
+    <p>Six characters turn any question into a rehearsal. The rows change, and what the client would
+    not have seen collapses into counted lines that stay on the page, so the shape of the hole is
+    visible even when its contents are not.</p>
+  </div>
+
+  <div class="slot">
+    <div>
+      <p class="cap">Job 8, typed: as claude-code-mac: fund</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span>
+          <span class="typed">as claude-code-mac: fund</span>
+          <span class="right">
+            <span class="scope lens">seeing as claude-code-mac</span>
+            <span class="hintk">esc drops the lens</span>
+          </span>
+        </div>
+
+        <div class="band">
+          <div class="h">claude-code-mac would get <b>1 of 6</b> rows</div>
+        </div>
+        <div class="rows">
+          <div class="r" data-s="open" aria-current="true">
+            <div class="sens"></div><div class="ns">project:lumberroom</div>
+            <div class="txt"><span class="ft">Deploy runs from the lumberroom-builder image, funded on the Hetzner box</span><span class="prov">claude-code-mac &middot; 12 Aug</span></div>
+          </div>
+        </div>
+
+        <div class="band"><div class="h">Withheld by grant <b>&middot; 5</b></div></div>
+        <div class="withheld">
+          <div></div><div class="ns">personal:finance</div>
+          <div class="t">4 rows <span>not granted at any ceiling</span></div>
+        </div>
+        <div class="withheld">
+          <div></div><div class="ns">personal:health</div>
+          <div class="t">1 row <span>not granted at any ceiling</span></div>
+        </div>
+        <div style="padding:11px 18px 14px">
+          <div class="verbs" style="grid-column:auto;padding:0">
+            <button class="vb">Show me the 5, as myself <kbd>o</kbd></button>
+            <button class="vb">Change this grant <kbd>g</kbd></button>
+            <button class="vb">Drop the lens <kbd>esc</kbd></button>
+          </div>
+        </div>
+
+        <div class="status">
+          <span><span class="dot"></span>key verified</span>
+          <span>this rehearsal did not age any row</span>
+          <span class="push">the lens reads and never writes</span>
+        </div>
+      </div>
+    </div>
+    <div class="margin">
+      <div class="note needs">
+        <div class="t">Needs ledger item 3</div>
+        <p>Three couplings, not one. Substitute the lens ceilings at
+        <code>filter_readable</code> in <code>search::run</code> and again inside
+        <code>other_namespaces</code>, suppress <code>touch_accessed</code> so a rehearsal does not
+        age the store, then resolve a client id to a grant across two authorities. Plus the
+        <code>reads_whole_store</code> guard and one route.</p>
+      </div>
+      <div class="note">
+        <div class="t">Why "did not age any row" is on screen</div>
+        <p>Without the touch suppression, every rehearsal corrupts the staleness detector and job
+        4's read history. The line is there so the owner can tell the suppression is on.</p>
+      </div>
+      <div class="note">
+        <div class="t">Counted, not blanked</div>
+        <p>Namespace and count survive the withholding. The owner can open the five as themselves,
+        which is a different act with a different verb.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slot narrow">
+    <div>
+      <p class="cap">Edge one: a lens with no question</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span><span class="typed">as claude-code-mac:</span>
+          <span class="bar" aria-hidden="true"></span>
+          <span class="right"><span class="scope lens">seeing as claude-code-mac</span></span>
+        </div>
+        <div class="calm" style="padding:18px 18px 20px">
+          <h3>No question yet, so here is its reach.</h3>
+          <p>Ask something and this becomes the answer that client would have got.</p>
+          <div class="inv" style="margin-top:16px">
+            <div class="k">global</div><div class="v">61 of 61</div>
+            <div class="c">up to open</div>
+            <div class="k">user:me</div><div class="v">214 of 214</div>
+            <div class="c">up to private</div>
+            <div class="k">project:lumberroom</div><div class="v">486 of 486</div>
+            <div class="c">up to private</div>
+            <div class="k">project:lumen</div><div class="v">297 of 297</div>
+            <div class="c">up to private</div>
+            <div class="k">personal:finance</div><div class="v">0 of 92</div>
+            <div class="c">not granted</div>
+            <div class="k">personal:health</div><div class="v">0 of 48</div>
+            <div class="c">not granted</div>
+            <div class="k">credentials:aws</div><div class="v">21 of 21</div>
+            <div class="c">up to sealed, and it decrypts locally</div>
+            <div class="k">credentials:cloudflare</div><div class="v">21 of 21</div>
+            <div class="c">up to sealed, and it decrypts locally</div>
+          </div>
+        </div>
+        <div class="status"><span><span class="dot"></span>key verified</span>
+          <span class="push">1,100 of 1,240 readable</span></div>
+      </div>
+    </div>
+    <div class="margin">
+      <div class="note">
+        <div class="t">An empty lens still answers</div>
+        <p>Naming a client without a question is a reasonable thing to type, so it returns the
+        reach rather than an error or a blank pane.</p>
+      </div>
+      <div class="note needs">
+        <div class="t">Needs ledger item 2</div>
+        <p>The per-namespace visible counts are the same count-over-a-grant call the blast radius
+        uses.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slot narrow">
+    <div>
+      <p class="cap">Edge two: the lens pointed at this console</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span><span class="typed">as lumberroom-ui: port</span>
+          <span class="right"><span class="scope lens">seeing as lumberroom-ui</span></span>
+        </div>
+        <div class="calm" style="padding:18px 18px 20px">
+          <h3>lumberroom-ui is this console, and it reads everything.</h3>
+          <p>Its grant is <b style="font-family:var(--mono);font-size:13.5px">*</b> up to sealed, so
+          this rehearsal withholds nothing and matches what you already see. That is the widest
+          grant in the system and it is why the console cannot demonstrate policy against itself.
+          Point the lens at a client that is narrower than you are.</p>
+          <div class="verbs" style="grid-column:auto;padding-top:14px">
+            <button class="vb go">Rehearse as claude-code-mac instead <kbd>&#9166;</kbd></button>
+            <button class="vb">Run it as myself <kbd>esc</kbd></button>
+          </div>
+        </div>
+        <div class="status"><span><span class="dot"></span>key verified</span>
+          <span class="push">nothing withheld</span></div>
+      </div>
+    </div>
+    <div class="margin">
+      <div class="note">
+        <div class="t">Not a bug, an answer</div>
+        <p>A lens that quietly returns the same rows reads as a broken build. This says why, and
+        offers the client that would show something.</p>
+      </div>
+      <div class="note">
+        <div class="t">Where the widest grant is stated</div>
+        <p>The console holds more reach than any client it inspects. The owner should read that
+        sentence at least once, and this is where it lands.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================= QUEUE == -->
+<section class="pane" id="p6" hidden>
+  <div class="paneHead">
+    <h2>Triage is a verb, not a place</h2>
+    <p><code>review</code> renders inline like any other answer, and the queue ends where the answer
+    ends. This is the job I gave the least, and the closing panel says so.</p>
+  </div>
+
+  <div class="slot">
+    <div>
+      <p class="cap">Job 6, typed: review. The verdict on the first item is chosen and not yet committed</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span><span class="typed">review</span>
+          <span class="right"><span class="scope">console, full reach</span><span class="hintk">3 items</span></span>
+        </div>
+
+        <div class="lab">Conflicts <span class="n">1 pair above 0.90</span></div>
+        <div class="qi">
+          <div class="qh">
+            <span class="kind">Two rows say different things</span>
+            <span class="qns">user:me</span>
+          </div>
+          <div class="side">
+            <div class="keep">
+              <div class="t">The port is 8787</div>
+              <div class="p">claude-code-mac &middot; 19 Aug 14:22 &middot; <b>you confirmed</b> &middot; served 14 times</div>
+            </div>
+            <div>
+              <div class="t">The port is 8080</div>
+              <div class="p">lumberroom &middot; 17 Aug 20:31 &middot; never confirmed &middot; served twice</div>
+            </div>
+          </div>
+          <p class="sim">They read as the same claim, <b>0.94</b> alike. The newer one is the one you
+          confirmed.</p>
+          <div class="verbs" style="grid-column:auto;padding-top:11px">
+            <button class="vb go">Keep 8787, retire 8080 <kbd>1</kbd></button>
+            <button class="vb">Keep 8080, retire 8787 <kbd>2</kbd></button>
+            <button class="vb">Skip, it returns tomorrow <kbd>s</kbd></button>
+          </div>
+
+          <div class="gate" style="margin-top:13px">
+            <h4>Retire "The port is 8080", keeping "The port is 8787"</h4>
+            <p>Retiring cannot be undone from here. The losing row stays in the store as superseded
+            and stops being served, and this console has no box to retype it into. Nothing is sent
+            until you hold the button.</p>
+            <button class="hold" data-ms="800" data-done-label="Retired. 8080 no longer serves.">
+              <span class="fill" aria-hidden="true"></span>
+              <span class="cap2">Hold to retire</span>
+            </button>
+            <div class="out">Or press Escape. Escape never commits anything.</div>
+          </div>
+        </div>
+
+        <div class="lab">Never read, and old <span class="n">1 row</span></div>
+        <div class="qi">
+          <div class="qh">
+            <span class="kind">Written 63 days ago, never served</span>
+            <span class="qns">project:lumen</span>
+          </div>
+          <div class="r" data-s="private" style="border:1px solid var(--rule);padding-right:13px">
+            <div class="sens"></div><div class="ns">project:lumen</div>
+            <div class="txt"><span class="tag">private</span><span class="ft">The staging preview lives at staging.example.dev</span><span class="prov">claude-code-mac &middot; 17 Jun</span></div>
+          </div>
+          <div class="verbs" style="grid-column:auto;padding-top:11px">
+            <button class="vb">Still true, confirm it <kbd>c</kbd></button>
+            <button class="vb danger">Delete <kbd>f</kbd></button>
+            <button class="vb">Leave it <kbd>s</kbd></button>
+          </div>
+        </div>
+
+        <div class="lab">Registry values due for review <span class="n">1 key</span></div>
+        <div class="qi" style="border-bottom:0">
+          <div class="qh">
+            <span class="kind">Unconfirmed since 04 Jul</span>
+            <span class="qns">project:lumberroom</span>
+          </div>
+          <dl class="kv" style="margin-top:0">
+            <dt>key</dt><dd>services.postgres.endpoint</dd>
+            <dt>value</dt><dd>127.0.0.1:5432</dd>
+            <dt>written by</dt><dd>claude-code-mac, 04 Jul, from a session in project:lumberroom</dd>
+          </dl>
+          <div class="verbs" style="grid-column:auto;padding-top:11px">
+            <button class="vb">Confirm as written <kbd>c</kbd></button>
+            <button class="vb">Open the key <kbd>&#9166;</kbd></button>
+            <button class="vb">Leave it <kbd>s</kbd></button>
+          </div>
+        </div>
+
+        <div class="status">
+          <span><span class="dot"></span>key verified</span>
+          <span>db 3 ms</span>
+          <span class="push">j and k move, and neither one commits</span>
+        </div>
+      </div>
+    </div>
+    <div class="margin">
+      <div class="note">
+        <div class="t">Answers today</div>
+        <p>All three lists come from <code>/admin/review/conflicts</code>,
+        <code>/admin/review/stale</code> and <code>/admin/review/registry</code>. Supersede, confirm
+        and delete are live routes.</p>
+      </div>
+      <div class="note needs">
+        <div class="t">Deliberately absent, ledger item 8</div>
+        <p>There is no "both are true" verdict on this screen. Without the not-a-conflict record the
+        pair returns tomorrow, and a queue that cries wolf stops being opened. "Skip" says out loud
+        that it comes back.</p>
+      </div>
+      <div class="note needs">
+        <div class="t">Deliberately absent, ledger item 9</div>
+        <p>No credential tripwire item, anywhere. The refusal record does not exist, so the queue
+        cannot hold one.</p>
+      </div>
+      <div class="note needs">
+        <div class="t">Needs ledger item 15</div>
+        <p>Nothing here undoes a retire. That is why the gate charges a held second and says the
+        console cannot type the losing row back in.</p>
+      </div>
+      <div class="note">
+        <div class="t">Held keys, floor 8</div>
+        <p>j and k repeat at zero duration. The hold gate is timed in JavaScript and ignores key
+        repeat, so a leaned-on Enter cannot reach a verdict. Try it on this page.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slot">
+    <div>
+      <p class="cap">The same screen on a healthy store, which is most weeks</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span><span class="typed">review</span>
+          <span class="right"><span class="scope">console, full reach</span><span class="hintk">nothing to decide</span></span>
+        </div>
+        <div class="calm">
+          <h3>Nothing needs a decision.</h3>
+          <p>No pair reads as a contradiction, no registry value is overdue, and nothing old enough
+          to worry about has gone unread. Here is the store instead.</p>
+          <div class="figs">
+            <div><b>1,240</b>live facts</div>
+            <div><b>86</b>retired by a correction</div>
+            <div><b>17%</b>never served</div>
+            <div><b>41 days</b>median age of what does get served</div>
+          </div>
+          <p style="margin-top:16px">The last write landed <b>9 minutes ago</b> from
+          <b>claude-code-mac</b>, into project:lumberroom. The oldest row nobody has ever read arrived
+          <b>63 days ago</b> in project:lumen.</p>
+          <div class="verbs" style="grid-column:auto;padding-top:15px">
+            <button class="vb go">Read what arrived this week <kbd>&#9166;</kbd></button>
+            <button class="vb">Show the 63 day old row <kbd>o</kbd></button>
+          </div>
+        </div>
+        <div class="status">
+          <span><span class="dot"></span>key verified</span>
+          <span>embedder bge-small-en-v1.5</span>
+          <span>db 3 ms</span>
+          <span class="push">claude-code-mac wrote 9 minutes ago</span>
+        </div>
+      </div>
+    </div>
+    <div class="margin">
+      <div class="note">
+        <div class="t">Neither an error nor a prize</div>
+        <p>No green tick, no "all clear". The same pixels answer the other standing question: how
+        much is held, how much is dead weight, who wrote last.</p>
+      </div>
+      <div class="note">
+        <div class="t">Answers today</div>
+        <p>Every figure is <code>GET /statsz</code> staleness, which is already built and is the
+        junk detector.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================= HEALTH AND ERRORS == -->
+<section class="pane" id="p7" hidden>
+  <div class="paneHead">
+    <h2>Noticing that the store has stopped working, and the four ways this screen fails</h2>
+    <p>Job 7 gets one line at the foot of every screen and one full panel here. A key mismatch never
+    becomes a slab across the top of a screen the owner opened for something else.</p>
+  </div>
+
+  <div class="slot">
+    <div>
+      <p class="cap">The one line, in its alarmed state, on a screen the owner opened for something else</p>
+      <div class="frame deskAuto">
+        <div class="rows">
+          <div class="r" data-s="open">
+            <div class="sens"></div><div class="ns">user:me</div>
+            <div class="txt"><span class="ft">The port is 8787</span><span class="prov">claude-code-mac &middot; 19 Aug 14:22 &middot; <b>you confirmed</b></span></div>
+          </div>
+          <div class="r" data-s="private">
+            <div class="sens"></div><div class="ns">project:lumberroom</div>
+            <div class="txt"><span class="tag">private</span><span class="ft">Migration 003 pins ef_search at 100 on the database itself</span><span class="prov">claude-code-mac &middot; 19 Aug 13:58</span></div>
+          </div>
+        </div>
+        <div class="status alert">
+          <span><span class="dot bad"></span>the encryption key does not match, so every private write is being refused</span>
+          <span class="push"><a href="#">status</a></span>
+        </div>
+      </div>
+      <p class="scale">One line, full width, at the foot. It does not push a single fact off the
+      screen and it does not outweigh the two rows above it.</p>
+    </div>
+    <div class="margin">
+      <div class="note">
+        <div class="t">The defect this fixes</div>
+        <p>The rejected design put the same condition across the top of the triage screen as a
+        full-bleed slab carrying 214 characters, above every queue item.</p>
+      </div>
+      <div class="note">
+        <div class="t">Answers today</div>
+        <p><code>kek_verified</code> on <code>/readyz</code>. Today it is a boolean and a line in the
+        boot log, and the server reports itself healthy while refusing every private write.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slot">
+    <div>
+      <p class="cap">Job 7, typed: status. The full treatment, on the one screen that gets it</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span><span class="typed">status</span>
+          <span class="right"><span class="scope">console, full reach</span></span>
+        </div>
+        <div class="health">
+          <div>
+            <div class="hk">Encryption key</div>
+            <div class="hv bad">Does not match the key the store was written with</div>
+            <div class="hn">Open reads and writes are fine. Private writes have been refused 3 times
+            since 18 Aug 22:10. Nothing already stored has been lost.</div>
+            <code class="cmdline">lumberroom doctor</code>
+          </div>
+          <div>
+            <div class="hk">Embedder</div>
+            <div class="hv">bge-small-en-v1.5, 384 dimensions</div>
+            <div class="hn">The real model, not the hash fallback. Search quality is what you
+            measured on 11 Aug.</div>
+          </div>
+          <div>
+            <div class="hk">Database</div>
+            <div class="hv">3 ms, migrations at 007</div>
+            <div class="hn">1,240 live rows, 86 superseded. pgvector, iterative scan on, ef_search
+            100.</div>
+          </div>
+          <div>
+            <div class="hk">Auth</div>
+            <div class="hv">token and oauth, both accepted</div>
+            <div class="hn">Issuer https://lumberroom.example.com. One OAuth client holds a grant, one
+            is waiting on you.</div>
+          </div>
+          <div>
+            <div class="hk">Who has called, 14 days</div>
+            <div class="hv">claude-code-mac, 412 reads and 96 writes</div>
+            <div class="hn">Last call 9 minutes ago. No other client has called.</div>
+          </div>
+          <div>
+            <div class="hk">Store decay</div>
+            <div class="hv">17% has never been served</div>
+            <div class="hn">Median age of a row that does get served is 41 days. The oldest never
+            served arrived 63 days ago.</div>
+          </div>
+        </div>
+        <div class="status alert">
+          <span><span class="dot bad"></span>private writes are being refused right now</span>
+          <span class="push">this panel is the full treatment, and the line above is all any other screen carries</span>
+        </div>
+      </div>
+    </div>
+    <div class="margin">
+      <div class="note">
+        <div class="t">Answers today</div>
+        <p><code>/readyz</code> for the key, the embedder, auth mode and database latency.
+        <code>/statsz?by=client&amp;hours=336</code> for the rates and the decay.</p>
+      </div>
+      <div class="note needs">
+        <div class="t">Needs ledger item 14</div>
+        <p>"No other client has called" is drawn as an observation about the window, not as a roll
+        of expected surfaces. Naming a silent surface needs the bearer client list and the
+        unwindowed last write per client.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slot">
+    <div>
+      <p class="cap">A store with nothing in it yet</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span>
+          <span class="ghost">type to search, or a verb: review, grant, status, as</span>
+          <span class="bar" aria-hidden="true"></span>
+          <span class="right"><span class="scope">console, full reach</span></span>
+        </div>
+        <div class="calm">
+          <h3>The store is empty. Nothing has been written to it.</h3>
+          <p>Write the first fact from a terminal. The console never grows a box to type facts into,
+          on purpose: it is a place to decide about facts, and a second note app would be a worse
+          one.</p>
+          <code class="cmdline">lumberroom write "The port is 8787" --namespace user:me</code>
+          <p style="margin-top:18px">Then make Claude Code write on its own, so you stop doing this
+          by hand. Add the session hook and it calls the digest at the start of every session:</p>
+          <code class="cmdline">lumberroom bootstrap --hook</code>
+          <p style="margin-top:18px">Once something is in here, this screen becomes the list of what
+          arrived and the count held in each namespace. One client has registered and holds nothing
+          yet, so approving it is the other thing worth doing today.</p>
+          <div class="verbs" style="grid-column:auto;padding-top:15px">
+            <button class="vb go">Decide about chatgpt <kbd>&#9166;</kbd></button>
+            <button class="vb">Check the server <kbd>s</kbd></button>
+          </div>
+        </div>
+        <div class="status">
+          <span><span class="dot"></span>key verified</span>
+          <span>embedder bge-small-en-v1.5</span>
+          <span>db 3 ms</span>
+          <span class="push">0 facts held</span>
+        </div>
+      </div>
+    </div>
+    <div class="margin">
+      <div class="note">
+        <div class="t">Different copy from the quiet queue</div>
+        <p>An empty store is a beginning and an empty queue is a good week. Sharing one screen for
+        both is how an interface starts lying.</p>
+      </div>
+      <div class="note">
+        <div class="t">No compose box, ever</div>
+        <p>The commands are printed to be copied, not to be a form. Writing stays in the CLI and in
+        the surfaces themselves.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slot narrow">
+    <div>
+      <p class="cap">The console cannot reach the server</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span><span class="typed">port</span>
+          <span class="right"><span class="scope" style="border-color:var(--bad-ink);color:var(--bad-ink)">offline</span></span>
+        </div>
+        <div class="err">
+          <h3>No answer from the server.</h3>
+          <p>The last reply came at 15:41, four minutes ago. Nothing you type will reach the store
+          until it answers, and nothing you typed earlier was lost on the way.</p>
+          <dl class="kv">
+            <dt>reaching</dt><dd>https://lumberroom.example.com</dd>
+            <dt>failed</dt><dd>connection refused, 3 attempts</dd>
+            <dt>last good</dt><dd>15:41, db was at 3 ms</dd>
+          </dl>
+          <div class="verbs" style="grid-column:auto;padding-top:14px">
+            <button class="vb go">Try again <kbd>&#9166;</kbd></button>
+          </div>
+          <p style="margin-top:14px;font-size:14px">On the box: <code style="font:400 13px/1 var(--mono)">docker compose ps</code>
+          then <code style="font:400 13px/1 var(--mono)">lumberroom doctor</code>.</p>
+        </div>
+        <div class="status"><span><span class="dot bad"></span>offline since 15:41</span></div>
+      </div>
+    </div>
+    <div class="margin">
+      <div class="note">
+        <div class="t">Says what was not lost</div>
+        <p>The anxiety in an offline console is whether the last act landed. The screen answers that
+        before anything else.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slot narrow">
+    <div>
+      <p class="cap">A route answered 403</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span><span class="typed">grant claude-code-mac</span>
+          <span class="right"><span class="scope" style="border-color:var(--warn-ink);color:var(--warn-ink)">refused</span></span>
+        </div>
+        <div class="err">
+          <h3>The server refused this console.</h3>
+          <p>Listing clients needs the registry write capability and this console's token does not
+          carry it. Search and reading still work, so the rest of the console is fine.</p>
+          <dl class="kv">
+            <dt>route</dt><dd>GET /oauth/clients</dd>
+            <dt>this token holds</dt><dd>read * sealed, write * sealed, may delete</dd>
+            <dt>it is missing</dt><dd>registryWrite</dd>
+            <dt>fix it in</dt><dd>AUTH_TOKENS, /etc/lumberroom/lumberroom.env, then restart</dd>
+          </dl>
+          <div class="pastebox" style="font-size:12px">"registryWrite": true</div>
+          <div class="verbs" style="grid-column:auto;padding-top:14px">
+            <button class="vb">Copy that line <kbd>y</kbd></button>
+            <button class="vb go">Back to arrivals <kbd>esc</kbd></button>
+          </div>
+        </div>
+        <div class="status"><span><span class="dot warn"></span>one capability short</span></div>
+      </div>
+    </div>
+    <div class="margin">
+      <div class="note">
+        <div class="t">Names the flag and the file</div>
+        <p>A 403 in this product is almost always the console's own grant being narrower than the
+        specification assumes. The screen says which flag and where it lives.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slot narrow">
+    <div>
+      <p class="cap">A destructive act failed after you committed to it</p>
+      <div class="frame deskAuto">
+        <div class="cmd">
+          <span class="caret">&rsaquo;</span><span class="typed">id 3fa9c2d0</span>
+          <span class="right"><span class="scope" style="border-color:var(--bad-ink);color:var(--bad-ink)">not deleted</span></span>
+        </div>
+        <div class="err">
+          <h3>It is still there.</h3>
+          <p>The delete was sent and the server refused it. "The port is 8080" is in the store,
+          unchanged, and it will keep being served to any client whose grant reaches user:me.</p>
+          <dl class="kv">
+            <dt>server said</dt><dd>409, the row is the target of a supersede</dd>
+            <dt>row</dt><dd>3fa9c2d0 &middot; user:me &middot; open</dd>
+            <dt>served</dt><dd>twice, last on 18 Aug 11:02</dd>
+          </dl>
+          <p style="margin-top:12px;font-size:14px">Retire it instead, which stops it being served
+          and keeps the correction intact.</p>
+          <div class="verbs" style="grid-column:auto;padding-top:12px">
+            <button class="vb go">Retire it <kbd>&#9166;</kbd></button>
+            <button class="vb danger">Try the delete again <kbd>f</kbd></button>
+          </div>
+        </div>
+        <div class="status"><span><span class="dot bad"></span>the row is still being served</span></div>
+      </div>
+    </div>
+    <div class="margin">
+      <div class="note">
+        <div class="t">The after-state is the server's</div>
+        <p>No optimistic removal from the list, so a failed delete never leaves the owner believing
+        a fact is gone. The row count in the rail does not move until the server says it did.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================= PHONE == -->
+<section class="pane" id="p8" hidden>
+  <div class="paneHead">
+    <h2>390 by 844, where job 4 actually happens</h2>
+    <p>The command line is the same input, one size smaller. Rows stack the namespace above the
+    fact. Verbs leave the row and become a bar at the thumb. Grant editing is not here at all.</p>
+  </div>
+
+  <div class="slot">
+    <div>
+      <div style="display:flex;gap:24px;flex-wrap:wrap">
+        <div>
+          <p class="cap">Job 1 on a phone</p>
+          <div class="frame phone">
+            <div class="cmd">
+              <span class="caret">&rsaquo;</span>
+              <span class="ghost">search or a verb</span>
+              <span class="bar" aria-hidden="true"></span>
+            </div>
+            <div class="lab">Arrived since Monday <span class="n">31</span></div>
+            <div class="rows" style="flex:1;overflow:hidden">
+              <div class="r" data-s="open">
+                <div class="sens"></div><div class="ns">user:me</div>
+                <div class="txt"><span class="ft">The port is 8787</span><span class="prov" style="display:block;margin:2px 0 0">claude-code-mac &middot; 19 Aug &middot; <b>you confirmed</b></span></div>
+              </div>
+              <div class="r" data-s="private">
+                <div class="sens"></div><div class="ns">project:lumberroom</div>
+                <div class="txt"><span class="tag">private</span><span class="ft">Migration 003 pins ef_search at 100 on the database</span><span class="prov" style="display:block;margin:2px 0 0">claude-code-mac &middot; 19 Aug</span></div>
+              </div>
+              <div class="r" data-s="private">
+                <div class="sens"></div><div class="ns">user:me</div>
+                <div class="txt"><span class="tag">private</span><span class="ft">I read documents adversarially</span><span class="prov" style="display:block;margin:2px 0 0">claude-code-mac &middot; 19 Aug &middot; <b>you confirmed</b></span></div>
+              </div>
+              <div class="r" data-s="open">
+                <div class="sens"></div><div class="ns">global</div>
+                <div class="txt"><span class="ft">Timezone is Asia/Kolkata</span><span class="prov" style="display:block;margin:2px 0 0">lumberroom &middot; 19 Aug</span></div>
+              </div>
+              <div class="r" data-s="sealed">
+                <div class="sens"></div><div class="ns">credentials:cloudflare</div>
+                <div class="txt"><span class="tag sealed">sealed</span><span class="sealedbody"><b>148 bytes</b> under <b>api.cloudflare.token</b>. Read it where the key is:<br><code>lumberroom unseal api.cloudflare.token --namespace credentials:cloudflare</code><span class="prov" style="display:block;margin:3px 0 0">lumberroom &middot; 18 Aug</span></span></div>
+              </div>
+              <div class="r" data-s="private">
+                <div class="sens"></div><div class="ns">personal:finance</div>
+                <div class="txt"><span class="tag">private</span><span class="ft">Emergency fund target is twelve months of expenses</span><span class="prov" style="display:block;margin:2px 0 0">lumberroom &middot; 18 Aug</span></div>
+              </div>
+              <div class="r" data-s="private">
+                <div class="sens"></div><div class="ns">project:lumen</div>
+                <div class="txt"><span class="tag">private</span><span class="ft">Competitor logos go on the comparison pages</span><span class="prov" style="display:block;margin:2px 0 0">claude-code-mac &middot; 18 Aug &middot; <b>you confirmed</b></span></div>
+              </div>
+              <div class="r" data-s="open">
+                <div class="sens"></div><div class="ns">project:lumberroom</div>
+                <div class="txt"><span class="ft">Migrations are forward-only</span><span class="prov" style="display:block;margin:2px 0 0">claude-code-mac &middot; 18 Aug</span></div>
+              </div>
+            </div>
+            <div class="status">
+              <span><span class="dot"></span>key verified</span>
+              <span class="push">1,240 held</span>
+            </div>
+          </div>
+          <p class="scale">8 facts drawn where the floor asks for 6. Fact text 16px.</p>
+        </div>
+
+        <div>
+          <p class="cap">Job 6 on a phone: readable, and not actionable</p>
+          <div class="frame phone">
+            <div class="cmd">
+              <span class="caret">&rsaquo;</span><span class="typed">review</span>
+            </div>
+            <div class="lab">Conflicts <span class="n">1</span></div>
+            <div class="qi" style="padding:12px 14px 14px">
+              <div class="qh"><span class="kind">Two rows disagree</span><span class="qns">user:me</span></div>
+              <div class="side" style="grid-template-columns:minmax(0,1fr)">
+                <div class="keep">
+                  <div class="t" style="font-size:17px">The port is 8787</div>
+                  <div class="p">claude-code-mac &middot; 19 Aug &middot; <b>you confirmed</b></div>
+                </div>
+                <div style="border-left:0;border-top:1px solid var(--rule)">
+                  <div class="t" style="font-size:17px">The port is 8080</div>
+                  <div class="p">lumberroom &middot; 17 Aug &middot; never confirmed</div>
+                </div>
+              </div>
+              <p class="sim">0.94 alike. <b>Decide this on a laptop.</b> A verdict cannot be undone
+              and this screen will not take one.</p>
+            </div>
+            <div class="lab">Never read, and old <span class="n">1</span></div>
+            <div class="qi" style="padding:12px 14px 14px;border-bottom:0">
+              <div class="qh"><span class="kind">63 days, never served</span><span class="qns">project:lumen</span></div>
+              <p style="font:400 16px/1.4 var(--sans);margin-top:4px">The staging preview lives at staging.example.dev</p>
+              <div class="p" style="font:400 12px/1.5 var(--mono);color:var(--ink-2);margin-top:5px">claude-code-mac &middot; 17 Jun</div>
+            </div>
+            <div class="status"><span><span class="dot"></span>key verified</span>
+              <span class="push">read only here</span></div>
+          </div>
+          <p class="scale">Grant editing has no phone screen at all.</p>
+        </div>
+      </div>
+    </div>
+    <div class="margin">
+      <div class="note">
+        <div class="t">Same rows, restacked</div>
+        <p>Namespace above the fact rather than beside it, and provenance on its own line directly
+        under the text. Still one unit, still within 20 characters of the fact.</p>
+      </div>
+      <div class="note">
+        <div class="t">Sealed survives the width</div>
+        <p>Length, key and the unseal command all fit, wrapped. Nothing about a sealed row is
+        dropped to save space, because dropping it is what a lie looks like here.</p>
+      </div>
+      <div class="note">
+        <div class="t">What is missing on purpose</div>
+        <p>No clause editor, no preset buttons, no approve. A fat-fingered ceiling is the mistake
+        this system exists to prevent, and it is never urgent.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slot">
+    <div>
+      <p class="cap">Job 4 end to end. The third frame is live, hold the button</p>
+      <div style="display:flex;gap:24px;flex-wrap:wrap">
+
+        <div>
+          <div class="frame phone">
+            <div class="cmd"><span class="caret">&rsaquo;</span><span class="typed">8080</span>
+              <span class="bar" aria-hidden="true"></span></div>
+            <div class="band"><div class="h">Strong match <b>&middot; 1</b></div></div>
+            <div class="rows">
+              <div class="r" data-s="open" aria-current="true">
+                <div class="sens"></div><div class="ns">user:me</div>
+                <div class="txt"><span class="ft">The port is 8080</span><span class="prov" style="display:block;margin:2px 0 0">lumberroom &middot; 17 Aug 20:31</span></div>
+              </div>
+            </div>
+            <div class="panel" style="flex:1">
+              <div class="claimtxt">The port is 8080</div>
+              <p class="provsent"><b>lumberroom</b> wrote this on <b>17 August at 20:31</b>. You never
+              confirmed it. <b>"The port is 8787"</b> replaced it two days later.</p>
+              <dl class="kv">
+                <dt>served</dt><dd><b style="font:700 15px/1.4 var(--sans)">twice</b>, last on 18 Aug 11:02</dd>
+                <dt>namespace</dt><dd>user:me &middot; open</dd>
+              </dl>
+            </div>
+            <div class="tapbar">
+              <button class="vb danger">Delete</button>
+              <button class="vb">Retire</button>
+              <button class="vb">Close</button>
+            </div>
+            <div class="status"><span><span class="dot"></span>key verified</span></div>
+          </div>
+          <p class="scale">One. The fact, its read count and the delete control, together, no scroll.</p>
+        </div>
+
+        <div>
+          <div class="frame phone">
+            <div class="cmd"><span class="caret">&rsaquo;</span><span class="typed">8080</span></div>
+            <div class="rows">
+              <div class="r" data-s="open">
+                <div class="sens"></div><div class="ns">user:me</div>
+                <div class="txt"><span class="ft">The port is 8080</span><span class="prov" style="display:block;margin:2px 0 0">lumberroom &middot; 17 Aug 20:31</span></div>
+              </div>
+            </div>
+            <div class="gate" style="flex:1">
+              <h4>Delete "The port is 8080" from user:me</h4>
+              <p>This cannot be undone. There is no tombstone and no undo window, and this console
+              has no box to type the text back in. It has already been served <b>twice</b>, most
+              recently on 18 Aug at 11:02, so deleting it does not recall what was read.</p>
+              <button class="hold" data-ms="900" data-done-label="Gone. The server confirmed it.">
+                <span class="fill" aria-hidden="true"></span>
+                <span class="cap2">Hold to delete</span>
+              </button>
+              <div class="out">Tap anywhere else to keep it.</div>
+            </div>
+            <div class="status"><span><span class="dot"></span>key verified</span>
+              <span class="push">nothing sent yet</span></div>
+          </div>
+          <p class="scale">Two. A held second, timed in script, and no key repeat can reach it.</p>
+        </div>
+
+        <div>
+          <div class="frame phone">
+            <div class="cmd"><span class="caret">&rsaquo;</span><span class="typed">8080</span></div>
+            <div class="after" style="flex:1">
+              <h4>Deleted. The server confirmed it at 15:44:02.</h4>
+              <p>"The port is 8080" is out of the store. It is not in a bin and it is not recoverable
+              from here.</p>
+              <dl class="kv">
+                <dt>it had been served</dt><dd>twice, last on 18 Aug 11:02</dd>
+                <dt>so</dt><dd>at least one client read it before it went</dd>
+                <dt>namespace now holds</dt><dd>user:me, 213 facts</dd>
+                <dt>links cleared</dt><dd>"The port is 8787" no longer retires anything</dd>
+              </dl>
+              <p style="margin-top:13px;font-size:14px;color:var(--ink-2)">If what was read matters,
+              the surface that read it is the next thing to check. This console cannot name it.</p>
+              <div class="verbs" style="grid-column:auto;padding-top:14px">
+                <button class="vb go">Back to arrivals</button>
+              </div>
+            </div>
+            <div class="status"><span><span class="dot"></span>key verified</span>
+              <span class="push">1,239 held</span></div>
+          </div>
+          <p class="scale">Three. Every number here came back in the delete response.</p>
+        </div>
+
+      </div>
+    </div>
+    <div class="margin">
+      <div class="note needs">
+        <div class="t">Not drawn, ledger item 7</div>
+        <p>"At least one client read it before it went" stops short of a name. The reading client
+        beside <code>last_accessed_at</code> needs a migration, so the sentence admits the gap
+        instead of inventing a client.</p>
+      </div>
+      <div class="note">
+        <div class="t">Answers today</div>
+        <p><code>DELETE /admin/memory/{id}</code> is a hard delete that clears the chain links
+        first, which is exactly what the third frame reports.</p>
+      </div>
+      <div class="note needs">
+        <div class="t">Needs ledger item 0</div>
+        <p>The whole phone case rests on the session. A password prompt on a signed-out phone spends
+        job 4's thirty seconds before the owner reaches the row, so the session TTL is a decision
+        the owner makes rather than inherits.</p>
+      </div>
+      <div class="note">
+        <div class="t">No undo, said out loud</div>
+        <p>Twice: in the gate, and in the after-state. Buying a ten second window would mean a
+        predicate in every read path, and the specification prices that to be declined.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ FLOORS == -->
+<section class="pane" id="p9" hidden>
+  <div class="paneHead">
+    <h2>The ten floors, and what the test returned</h2>
+    <p>Clearing these is the entry fee. Each line says how, and what happened when the test was
+    run against this file.</p>
+  </div>
+  <table class="floors">
+    <thead><tr><th>#</th><th>How this design meets it</th><th>Test result</th></tr></thead>
+    <tbody>
+      <tr><td>1</td>
+        <td>Rows are 15px sans on desktop and 16px on the phone, with the prose capped at 75
+        characters, in a 30 pixel row. The rail holds the inventory beside them rather than above
+        them.</td>
+        <td class="res">Counted in a browser at 1400 &times; 900: 22 facts, all above the fold, with
+        46 pixels to spare. The phone draws 8 where the floor asks for 6. No comfortable mode
+        exists, because this is it.</td></tr>
+      <tr><td>2</td>
+        <td>Fact text sans 15px regular. Metadata mono 12px regular. Section label mono 11px bold
+        uppercase over a hairline. Chrome sans 12px medium. Every neighbouring pair differs on
+        family and size, or size and weight.</td>
+        <td class="res">Flattened to three tones, the four levels stay apart. The rejected design ran
+        one family and three sizes across every operating surface, with lightness alone separating
+        them.</td></tr>
+      <tr><td>3</td>
+        <td>Provenance is inline in the fact's own text block, one space after the last word, and
+        never wraps mid-string. On the phone it drops to its own line directly beneath.</td>
+        <td class="res">Cover every row but one: it reads as a unit. The furthest a client name sits
+        from its fact is a single space. The rejected design put it about 800 pixels away in a
+        27-character column.</td></tr>
+      <tr><td>4</td>
+        <td>Four channels, none of them hue: a left bar that is absent, solid or hatched; a printed
+        word in a bordered chip; a dashed border for sealed against a solid one for private; and a
+        different row structure for sealed, which carries a length and a command rather than
+        prose.</td>
+        <td class="res">Printed in black and white the rows sort by sensitivity on the bar alone. The
+        whole file uses no colour for sensitivity at all.</td></tr>
+      <tr><td>5</td>
+        <td>An ungranted cell prints the word <code>none</code> in the metadata ink. The widest
+        ceiling prints <code>sealed</code> in the fact ink with a two pixel underline, on the plain
+        panel background.</td>
+        <td class="res"><code>none</code> at #52565C on #FFFFFF is 7.3:1. <code>sealed</code> at
+        #14161A is 18.4:1. The rejected design gave the safest cell a lone dot at 3.6:1 and the
+        widest grant tinted text on a tinted ground at 5.07:1.</td></tr>
+      <tr><td>6</td>
+        <td>Every verb is a button with its key printed on it, and buttons appear on the focused
+        row rather than in a legend. No rule in the stylesheet reveals content on hover. Escape
+        collapses a panel, drops a lens or closes a gate, and commits nothing.</td>
+        <td class="res">Unplug the mouse and the keys are on screen. Unplug the keyboard and every
+        verb is still a target. Focus moves to the next row after a delete, never to the
+        document.</td></tr>
+      <tr><td>7</td>
+        <td>Job 7 is one line at the foot of every screen, 30 pixels tall. Its alarmed state changes
+        the ink and the background and stays one line. The full panel exists on one screen, reached
+        by typing <code>status</code>.</td>
+        <td class="res">The line is 30 pixels of a 900 pixel screen, about 3%, against roughly 80% for
+        the rows above it. The rejected design put a 214 character salmon slab above every queue
+        item.</td></tr>
+      <tr><td>8</td>
+        <td>The stylesheet declares no transition and no animation. The hold gate is driven by
+        <code>requestAnimationFrame</code> against a timestamp, so no CSS preference can shorten it.
+        Every key handler returns early on <code>event.repeat</code>.</td>
+        <td class="res">Held j and k move at the repeat rate with zero transition. A held Enter never
+        reaches a verdict. Set reduced motion and the gate still takes its full 900
+        milliseconds.</td></tr>
+      <tr><td>9</td>
+        <td>Three printed band headers. The third reads "Nothing matched well" in those words and
+        counts what fell below it. Numbers appear only under a held backtick, and only the score and
+        the similarity the search path returns.</td>
+        <td class="res">No number appears in a resting state that no route returns. There is no
+        wording-against-meaning claim anywhere, because the lexical contribution is not returned
+        (ledger item 10).</td></tr>
+      <tr><td>10</td>
+        <td>Every capability note sits under its frame, outside the product, and names a numbered
+        ledger item. Nothing inside a frame comments on what is built.</td>
+        <td class="res">Search the frames for status chips and there are none. The notes belong to
+        this submission and would not ship.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ========================================================== DOWNSIDE == -->
+<section class="pane" id="p10" hidden>
+  <div class="paneHead">
+    <h2>What this style is bad at</h2>
+    <p>Five proposals, and the owner has already rejected one that cleared its own rules. Here is
+    where this one breaks.</p>
+  </div>
+  <div class="say2">
+    <h3>You have to know that a thing exists before you can name it</h3>
+    <p>The verb list answers the first visit and not the twentieth. A verb the owner has never run
+    sits in a panel they stopped opening two weeks in, and the console then has a feature they will
+    never find. The operations console and the triage inbox both put their surfaces in front of the
+    owner whether or not they were asked for. This one waits to be addressed. If the owner is the
+    kind of person who wants the machine to volunteer, this is the wrong style and no amount of
+    empty-state teaching fixes it.</p>
+
+    <h3>It is closest to the CLI, so it inherits the CLI's failure</h3>
+    <p>The argument for this design is that the row is the object and the lens re-renders. The
+    argument against it is that <code>lumberroom search</code> already exists, the owner already knows it,
+    and a browser tab that behaves like a terminal has to be better than the terminal every single
+    time or it stops being opened. Two of the four things it does better, the lens and the phone,
+    are the two that need the most server work: ledger items 3 and 0. Cut those and this proposal
+    collapses into a slower <code>lumberroom search</code> with a mouse.</p>
+
+    <h3>Job 6 at volume is where it loses outright</h3>
+    <p>The queue is a list of answers, not a workflow. There is no progress counter, no next-item
+    focus after a verdict, no keyboard rhythm built for thirty decisions in fifteen minutes. If the
+    open question about arrival rate comes back at twenty items a week, a triage inbox beats this
+    comfortably and should win that job. At one or two a week the difference does not exist, which
+    is the bet this design makes.</p>
+
+    <h3>Job 2 forced an exception I would rather not have made</h3>
+    <p>Clauses go into fields. Every other verb in this console is typed and this one is not, which
+    means the product has two interaction models and the owner has to learn where the seam is. I
+    think the seam is in the right place, since a mistyped ceiling is the failure this whole system
+    exists to prevent, but a style that needs an exception on its second most important job is
+    telling you something.</p>
+
+    <h3>Density has a ceiling and I have used most of it</h3>
+    <p>Twenty-two rows on a 13 inch screen with 15px text and 30 pixel rows leaves nothing for a
+    thumbnail, a chart or a second line of anything. Adding one field to a row costs rows. If the
+    owner wants tags visible, or the score, or a second date, this layout has to give up the row
+    count that job 1 is built on.</p>
+
+    <h3>The command line is a single point of failure</h3>
+    <p>Everything routes through one input. A slow query blocks the way to every other verb, the
+    parse rules for <code>as client: question</code> are a grammar the owner has to hold, and there
+    is no second path to a screen when the first one misbehaves. A pointer-first console degrades
+    into a slightly annoying pointer-first console. This one degrades into a blank box.</p>
+
+    <h3>Where the drawing is ahead of the server</h3>
+    <p>Named honestly, since the notes carry it screen by screen. The arrivals list needs item 1.
+    Every number in the blast radius needs item 2. The lens needs item 3, which is three couplings
+    and a resolver rather than one parameter. Approval and revocation need item 4, per-clause
+    editing item 5, the bearer screen and the last write per client item 14. The whole thing needs
+    item 0. Four things this proposal refuses to draw at all: a named last reader, a both-true
+    verdict, a tripwire refusal in the queue, and any client list containing a bearer client.</p>
+
+    <h3>Filler, declared</h3>
+    <p>The store is 1,240 live rows, 86 retired, one connected client, one client waiting. The
+    arrivals list needed 22 rows to test floor 1, so the facts drawn are plausible rather than
+    exported. Every row on every screen here is invented, the lumberroom and lumen lines along with the
+    personal ones, and the two credentials rows are invented keys at invented byte lengths. Client counts
+    and the call rates attributed to claude-code-mac are invented and unpadded. Nothing anywhere
+    shows a client that does not exist.</p>
+
+    <h3>The one decision I would defend against the other four</h3>
+    <p>The resting state of a command console should be the answer to job 1, not a blank prompt. An
+    empty box is a demand that the owner already know what they want, and the owner's own first
+    request was to look at their memories. Putting arrivals and inventory behind the caret costs
+    this style its purity and buys the job that the last design failed hardest.</p>
+  </div>
+</section>
+
+</div><!-- /.doc -->
+
+<script>
+/* Submission navigation. Not part of the product. */
+(function () {
+  var tabs = document.getElementById('tabs');
+  var buttons = Array.prototype.slice.call(tabs.querySelectorAll('button'));
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () {
+      buttons.forEach(function (o) {
+        o.removeAttribute('aria-current');
+        document.getElementById(o.dataset.p).hidden = true;
+      });
+      b.setAttribute('aria-current', 'page');
+      document.getElementById(b.dataset.p).hidden = false;
+      window.scrollTo(0, 0);
+      b.focus();
+    });
+  });
+})();
+
+/* The hold-to-confirm gate.
+   Timed against a timestamp through requestAnimationFrame, so no CSS preference
+   and no reduced-motion setting can shorten it to a tap. Key repeat is refused:
+   a leaned-on Enter or Space never reaches a destructive verb. */
+(function () {
+  Array.prototype.slice.call(document.querySelectorAll('.hold')).forEach(function (btn) {
+    var need = parseInt(btn.dataset.ms, 10) || 800;
+    var fill = btn.querySelector('.fill');
+    var label = btn.querySelector('.cap2');
+    var original = label.textContent;
+    var start = 0, raf = 0, done = false;
+
+    function paint() {
+      var pct = Math.min(1, (performance.now() - start) / need);
+      fill.style.width = (pct * 100) + '%';
+      if (pct >= 1) { finish(); return; }
+      raf = requestAnimationFrame(paint);
+    }
+    function finish() {
+      done = true;
+      cancelAnimationFrame(raf);
+      fill.style.width = '100%';
+      btn.dataset.done = '1';
+      label.textContent = btn.dataset.doneLabel || 'Done.';
+      btn.setAttribute('aria-disabled', 'true');
+    }
+    function begin(e) {
+      if (done) return;
+      if (e && e.repeat) return;              /* no held key reaches a verb */
+      if (e && e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
+      if (e && e.preventDefault) e.preventDefault();
+      start = performance.now();
+      raf = requestAnimationFrame(paint);
+    }
+    function cancel() {
+      if (done) return;
+      cancelAnimationFrame(raf);
+      fill.style.width = '0';
+      label.textContent = original;
+    }
+
+    btn.addEventListener('pointerdown', begin);
+    btn.addEventListener('pointerup', cancel);
+    btn.addEventListener('pointerleave', cancel);
+    btn.addEventListener('pointercancel', cancel);
+    btn.addEventListener('keydown', begin);
+    btn.addEventListener('keyup', cancel);
+    btn.addEventListener('blur', cancel);
+    btn.addEventListener('click', function (e) { e.preventDefault(); });
+  });
+})();
+</script>
+</body>
+</html>

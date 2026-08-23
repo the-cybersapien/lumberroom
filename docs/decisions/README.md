@@ -1,0 +1,42 @@
+# Decisions
+
+Numbered records of choices that shape the build. One record per decision whose reasoning would
+otherwise be lost, or which someone would revisit for the wrong reason a month later. Each carries
+what was decided, what it was decided against, what it costs, and the condition under which it gets
+reversed.
+
+Phase 1's own decision log is [`DECISIONS.md`](../../DECISIONS.md) at the repository root. It stays
+as a record of what was decided then; where a record below reverses part of it, the original text
+carries a marker pointing here.
+
+| | Decision | Date | Status |
+|---|---|---|---|
+| [0001](0001-rust-rewrite.md) | Rewrite the service in Rust, before Phase 2 rather than after | 19 Aug 2026 | accepted, done |
+| [0002](0002-built-in-oauth-server.md) | Build the OAuth 2.1 authorization server into lumberroom instead of standing up Logto | 19 Aug 2026 | accepted, verified |
+| [0003](0003-grants-in-the-database.md) | An OAuth client's grant is a row in Postgres; a static bearer client's grant stays in `AUTH_TOKENS` | 19 Aug 2026 | accepted, verified |
+| [0004](0004-kek-provider.md) | `KEK_PROVIDER` selects `none`, `file` or `env`, defaulting to a refused private write | 19 Aug 2026 | accepted, verified; escrow left open |
+| [0005](0005-private-drops-lexical-search.md) | The lexical index covers `open` only, so private content is semantic-only | 19 Aug 2026 | accepted, shipped in migration 004 |
+| [0006](0006-console-decides-the-queue.md) | The console decides the ingest queue through the same service call the CLI makes | 20 Aug 2026 | accepted, verified |
+| [0007](0007-longmemeval-as-the-retrieval-gate.md) | LongMemEval-S retrieval recall is the standing retrieval gate, run on the embedder the one published comparison used | 20 Aug 2026 | accepted, verified |
+| [0008](0008-valid-time.md) | A memory carries valid time beside transaction time, and the as-of query reads it | 20 Aug 2026 | accepted, implemented; amended on why phase 2 was deferred |
+| [0009](0009-aliases-are-query-expansion.md) | Two names for one subject is an alias with valid time, and search expands over the group rather than walking a graph | 20 Aug 2026 | accepted, implemented |
+| [0010](0010-registry-history.md) | A registry upsert keeps the value it replaces, readable behind may_read_history and through no tool | 21 Aug 2026 | accepted, implemented |
+| [0011](0011-cleanup-proposes.md) | A periodic pass proposes cleanups and never acts, and the model half only ever sees rows at open | 21 Aug 2026 | accepted, verified |
+
+**On "verified".** All four gates ran against a live server on 20 August 2026 and passed. An OAuth
+flow completed end to end, a private row was encrypted and read back, and a replayed refresh token
+was refused. `scripts/oauth-flow-test.sh` settles 0002 and 0003 at 43 PASS, `scripts/policy-test.sh`
+settles 0004 at 20 PASS, and `VERIFY.md` carries the output of both verbatim. No hosted MCP client
+has seen any of it, because nothing is deployed.
+
+0005 is the exception in the list, and only because it cost nothing to land: every row in the store
+is `open` today, so building the index with a `WHERE` predicate changed no behaviour on the day it
+shipped. Its reversal is cheap only until private encryption turns on for new writes.
+
+Two records depart from a written spec, and each says so in its own text rather than leaving a
+reader to find the mismatch. 0002 supersedes
+[`docs/specs/phase-2-surfaces.md`](../specs/phase-2-surfaces.md) §2, which called Logto the Phase 2
+baseline; what that spec settled was which surfaces force an authorization server, and that finding
+stands untouched. 0004 departs from
+[`docs/specs/phase-3-policy-encryption.md`](../specs/phase-3-policy-encryption.md) §3, which
+specified OCI Vault, because the product now has to come up wherever compose runs.

@@ -1,0 +1,246 @@
+# Lumberroom. One command on any Docker host:
+#   ./deploy/install.sh
+#
+# Profiles:
+#   (default)  postgres + mcp server, reachable on 127.0.0.1:8787
+#   tls        adds Caddy on 80/443 with automatic certificates
+#   logto      adds a self-hosted Logto for AUTH_MODE=oidc (bearer and the built-in AUTH_MODE=oauth
+#              need neither: see deploy/oauth.md)
+#
+# The server always gets ./secrets/lumberroom-kek bind-mounted, whether or not KEK_PROVIDER=file is in
+# use, so install.sh always creates that file rather than making the compose file's shape depend on
+# a choice made in .env. Under the KEK_PROVIDER=file that .env.example ships it holds the live key;
+# under `env` install.sh copies its contents into LUMBERROOM_KEK; under `none` it sits unread. Create it
+# before the first `up`: Docker answers a missing bind-mount source by creating a directory there,
+# and the server then fails to read its own key.
+#
+# It is a plain bind mount, not a Compose `secrets:` entry. `secrets:` supports per-target
+# uid/gid/mode only under Swarm, and under plain `docker compose up` those fields are silently
+# ignored: verified empirically, the file lands owned by root:root, mode 0444, regardless of what
+# the compose file says. src/crypto/kek.rs refuses a key file readable by group or other, so that
+# default would fail every boot with KEK_PROVIDER=file. A bind mount preserves the host file's
+# exact owner and mode, which is what makes the permission check satisfiable at all: install.sh
+# chowns the file to uid:gid 10001:10001 (the `lumberroom` user and group the Dockerfile pins) and chmods
+# it 600 on the host, and the container sees that unchanged.
+
+name: lumberroom
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lumberroom}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-lumberroom}
+      # Postgres never leaves the box (PRD §8).
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Docker defaults /dev/shm to 64MB. A parallel HNSW build needs far more and fails with
+    # "could not resize shared memory segment ... No space left on device", which shows up on a
+    # reindex or a restore rather than on first run, so it is exactly the kind of thing that
+    # surfaces at the worst moment. Measured: a 100k-row, 768-dim HNSW build wants ~512MB.
+    shm_size: 1gb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lumberroom} -d ${POSTGRES_DB:-lumberroom}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - work_mem=16MB
+      - -c
+      - max_connections=50
+      - -c
+      - maintenance_work_mem=512MB
+
+  server:
+    build:
+      context: .
+      # Named, and it has to be. Without a target Docker builds the last stage in the file, which
+      # is the client image, and the server would quietly become a container with no server in it.
+      target: runtime
+      args:
+        EMBED_PROVIDER: ${EMBED_PROVIDER:-local}
+        EMBED_MODEL: ${EMBED_MODEL:-Xenova/bge-base-en-v1.5}
+    image: lumberroom-server:0.1.0
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 8787
+      HOST: 0.0.0.0
+      DATABASE_URL: postgres://${POSTGRES_USER:-lumberroom}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lumberroom}
+      TENANT_ID: ${TENANT_ID:-me}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Every externally visible URL (MCP endpoint, OAuth issuer, metadata documents, redirect
+      # targets) derives from this one setting. Blank falls back to MCP_RESOURCE_URL, then to
+      # http://127.0.0.1:8787, fine for the no-domain/token-mode path and invalid for oauth mode,
+      # which the server refuses at boot rather than accept a plaintext owner password on the wire.
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      MCP_RESOURCE_URL: ${MCP_RESOURCE_URL:-}
+      AUTH_MODE: ${AUTH_MODE:-token}
+      AUTH_TOKENS: ${AUTH_TOKENS:-}
+      # AUTH_MODE=oauth (the built-in authorization server, decision 0002).
+      OWNER_PASSWORD_HASH: ${OWNER_PASSWORD_HASH:-}
+      OAUTH_COOKIE_SECRET: ${OAUTH_COOKIE_SECRET:-}
+      OAUTH_DCR_ENABLED: ${OAUTH_DCR_ENABLED:-}
+      OAUTH_CODE_TTL_SECS: ${OAUTH_CODE_TTL_SECS:-}
+      OAUTH_ACCESS_TTL_SECS: ${OAUTH_ACCESS_TTL_SECS:-}
+      OAUTH_REFRESH_TTL_SECS: ${OAUTH_REFRESH_TTL_SECS:-}
+      OAUTH_SESSION_TTL_SECS: ${OAUTH_SESSION_TTL_SECS:-}
+      OAUTH_DEFAULT_PROFILE: ${OAUTH_DEFAULT_PROFILE:-}
+      OAUTH_SCOPES: ${OAUTH_SCOPES:-}
+      OAUTH_LOGIN_ATTEMPTS_PER_MINUTE: ${OAUTH_LOGIN_ATTEMPTS_PER_MINUTE:-}
+      # AUTH_MODE=oidc (Logto or another external issuer).
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
+      OIDC_JWKS_URI: ${OIDC_JWKS_URI:-}
+      OIDC_REQUIRED_SCOPES: ${OIDC_REQUIRED_SCOPES:-}
+      EMBED_PROVIDER: ${EMBED_PROVIDER:-local}
+      EMBED_MODEL: ${EMBED_MODEL:-Xenova/bge-base-en-v1.5}
+      EMBED_DIM: ${EMBED_DIM:-768}
+      EMBED_ALLOW_FALLBACK: ${EMBED_ALLOW_FALLBACK:-false}
+      # Sensitivity axis (Phase 3).
+      #
+      # Blank here means the server reads the `sensitivity_default` table instead, which migration
+      # 004 seeds with the same rules .env.example spells out, and falls back to those seeded rules
+      # if the table is empty too. It never runs on an empty rule set, because an empty rule set
+      # classifies every namespace open. The boot log carries one `classification table` line naming
+      # which of the three won.
+      SENSITIVITY_DEFAULTS: ${SENSITIVITY_DEFAULTS:-}
+      SENSITIVITY_TRIPWIRE: ${SENSITIVITY_TRIPWIRE:-}
+      MAX_WRITE_SENSITIVITY: ${MAX_WRITE_SENSITIVITY:-}
+      # Key-encryption key. KEK_PATH matches the bind mount target below, which is populated
+      # regardless of whether KEK_PROVIDER=file is actually chosen (see the note at the top of
+      # this file).
+      #
+      # .env.example ships KEK_PROVIDER=file, because personal:finance and personal:health classify
+      # `private` and a deployment with no key cannot write there at all. The fallback stays `none`
+      # here to match what the binary does with the variable unset: an env file that never mentions
+      # the KEK gets a server that refuses private writes rather than one hunting for a key file
+      # nobody created. Set the value in .env; do not read this line as the default.
+      KEK_PROVIDER: ${KEK_PROVIDER:-none}
+      KEK_PATH: ${KEK_PATH:-/run/secrets/lumberroom-kek}
+      KEK_ENV_VAR: ${KEK_ENV_VAR:-LUMBERROOM_KEK}
+      LUMBERROOM_KEK: ${LUMBERROOM_KEK:-}
+      KEK_ID: ${KEK_ID:-}
+      REQUIRE_VERIFIED_KEK: ${REQUIRE_VERIFIED_KEK:-}
+      # Quality (Phase 4).
+      DEDUPE_THRESHOLD: ${DEDUPE_THRESHOLD:-}
+      CONFLICT_THRESHOLD: ${CONFLICT_THRESHOLD:-}
+      CONFLICT_LIMIT: ${CONFLICT_LIMIT:-}
+      STALE_DAYS: ${STALE_DAYS:-}
+      EXPORT_MAX_SENSITIVITY: ${EXPORT_MAX_SENSITIVITY:-}
+      BOOTSTRAP_CACHE_MS: ${BOOTSTRAP_CACHE_MS:-30000}
+      BOOTSTRAP_MAX_CHARS_BY_CLIENT: ${BOOTSTRAP_MAX_CHARS_BY_CLIENT:-}
+      SEARCH_DEFAULT_LIMIT: ${SEARCH_DEFAULT_LIMIT:-}
+      SEARCH_USAGE_WEIGHT: ${SEARCH_USAGE_WEIGHT:-}
+      # Compose passes an explicit map rather than the whole .env, so a variable absent here never
+      # reaches the container however the operator sets it. Empty parses as linear.
+      SEARCH_FUSION: ${SEARCH_FUSION:-}
+      SEARCH_RRF_K: ${SEARCH_RRF_K:-}
+    ports:
+      # Localhost only: Caddy terminates TLS and proxies in. Nothing else needs this port.
+      - "127.0.0.1:${SERVER_PORT:-8787}:8787"
+    volumes:
+      # See the KEK note at the top of this file for why this is a bind mount and not `secrets:`.
+      - ${KEK_SECRET_FILE:-./secrets/lumberroom-kek}:/run/secrets/lumberroom-kek:ro
+
+  # The model half of the cleanup pass, on a wall clock.
+  #
+  # A separate process, and that is the point rather than a packaging choice. The server runs the
+  # deterministic pass on its own timer and holds the key-encryption key; this one calls a provider.
+  # Decision 0011 keeps those apart, so no outbound connection to a third party is ever opened from
+  # the process holding that key.
+  #
+  # `restart: unless-stopped` is the whole scheduler. No cron daemon, no crontab to install, no host
+  # dependency, and the same `docker compose up -d` that starts everything else. The daemon sleeps
+  # to the next wall-clock occurrence of CLEANUP_DAILY_AT rather than counting 24 hours from start,
+  # so a restart does not move the run or spend the model call again.
+  #
+  # Under the `cleanup` profile, so a deployment with no provider key gets nothing running that
+  # would fail every night at 04:25.
+  cleanup:
+    profiles: ["cleanup"]
+    # Its own image, because the daemon is not the server. It carries the 5MB client and nothing
+    # else: no model weights, no ONNX Runtime, and no reason to grow when the server does.
+    build:
+      context: .
+      target: cli-runtime
+    image: lumberroom:0.1.0
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_started
+    environment:
+      LUMBERROOM_URL: http://server:8787
+      # A client carrying mayIngest. docs/permissions.md covers what that opens and why it is off
+      # by default; the token itself never reaches a command line or a crontab.
+      # Not `:?`. Compose interpolates every service in the file whether or not its profile is
+      # active, so a required variable here would break `docker compose up -d db` for a deployment
+      # that never wanted this service. The daemon refuses at startup instead and names the
+      # variable, which is the same message one step later.
+      LUMBERROOM_TOKEN: ${LUMBERROOM_CLEANUP_TOKEN:-}
+      LUMBERROOM_INGEST_KEY_ZAI: ${ZAI_API_KEY:-}
+      LUMBERROOM_INGEST_KEY_OPENROUTER: ${OPENROUTER_API_KEY:-}
+      # Written where a container can, and never read: `resolve` refuses a config file group or
+      # other can read, and the environment is where these keys actually come from.
+      LUMBERROOM_CONFIG: /tmp/lumberroom-cleanup.json
+    command:
+      - lumberroom
+      - cleanup
+      - daemon
+      - --at
+      - ${CLEANUP_DAILY_AT:-04:25}
+      - --provider
+      - ${CLEANUP_PROVIDER:-openrouter}
+      - --model
+      - ${CLEANUP_MODEL:-qwen/qwen3.7-flash}
+      - --min-similarity
+      - ${CLEANUP_MIN_SIMILARITY:-0.65}
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["tls"]
+    restart: unless-stopped
+    depends_on:
+      - server
+    environment:
+      LUMBERROOM_DOMAIN: ${LUMBERROOM_DOMAIN:?set LUMBERROOM_DOMAIN in .env for the tls profile}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  logto:
+    image: svhd/logto:latest
+    profiles: ["logto"]
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["sh", "-c", "npm run cli db seed -- --swe && npm start"]
+    environment:
+      TRUST_PROXY_HEADER: 1
+      DB_URL: postgres://${POSTGRES_USER:-lumberroom}:${POSTGRES_PASSWORD}@db:5432/logto
+      ENDPOINT: https://${LOGTO_DOMAIN:-auth.example.com}
+      ADMIN_ENDPOINT: https://${LOGTO_ADMIN_DOMAIN:-auth-admin.example.com}
+    ports:
+      - "127.0.0.1:3001:3001"
+      - "127.0.0.1:3002:3002"
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

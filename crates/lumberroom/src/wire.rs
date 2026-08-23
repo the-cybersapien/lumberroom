@@ -1,0 +1,351 @@
+//! The request and response shapes the server publishes, redeclared here.
+//!
+//! This crate does not depend on the server crate, which is the point: the client ships to a
+//! machine that runs no database and no embedding runtime. The cost is a second copy of the
+//! contract, and `tests/wire.rs` is what stops the two drifting. Every type below names the server
+//! file and symbol it mirrors, so the pin test's fixtures have somewhere to be checked against.
+//!
+//! Two rules hold the shape. Responses type only the fields this client prints or branches on and
+//! let serde ignore the rest, so a server that adds a field does not break an installed client.
+//! Requests are exact: a missing key on a request fails at runtime against `Deserialize`, never at
+//! compile time, so the pin test asserts the serialized key set.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+// ---- responses ----
+
+/// `GET /readyz`, from `readyz` in `src/http/mod.rs`.
+#[derive(Debug, Deserialize)]
+pub struct Ready {
+    pub ok: bool,
+    pub auth_mode: Option<String>,
+}
+
+/// `GET /admin/whoami`, from `whoami` in `src/http/mod.rs`.
+#[derive(Debug, Deserialize)]
+pub struct Whoami {
+    pub client: String,
+    pub mode: String,
+}
+
+/// `memory_search`'s structured content, from `services::search::SearchResult`.
+#[derive(Debug, Deserialize)]
+pub struct SearchResult {
+    #[serde(default)]
+    pub hits: Vec<Hit>,
+}
+
+/// `services::search::Hit`.
+#[derive(Debug, Deserialize)]
+pub struct Hit {
+    pub id: String,
+    pub namespace: String,
+    pub content: String,
+    pub score: f64,
+}
+
+/// `memory_write`'s structured content, from `domain::types::WriteOutcome`.
+///
+/// `superseded` and `possible_conflicts` are skipped when empty on the server side, so both carry
+/// `#[serde(default)]` here rather than being optional by accident.
+#[derive(Debug, Deserialize)]
+pub struct WriteOutcome {
+    pub id: String,
+    pub namespace: String,
+    pub deduplicated: bool,
+}
+
+/// `domain::types::Memory`, as `GET /admin/memory/{id}` and the export and stale pages return it.
+///
+/// `content` is empty rather than absent for a row the caller may hold but not open, which is why
+/// the Obsidian writer substitutes a placeholder instead of treating it as a bug.
+#[derive(Debug, Deserialize)]
+pub struct Memory {
+    pub id: String,
+    pub namespace: String,
+    #[serde(default)]
+    pub content: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub source_client: String,
+    pub sensitivity: String,
+    pub created_at: String,
+}
+
+/// `GET /admin/review/stale`.
+#[derive(Debug, Deserialize)]
+pub struct StaleReview {
+    #[serde(default)]
+    pub rows: Vec<Memory>,
+}
+
+/// `GET /admin/review/conflicts`.
+#[derive(Debug, Deserialize)]
+pub struct ConflictReview {
+    #[serde(default)]
+    pub pairs: Vec<ConflictPair>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConflictPair {
+    pub similarity: f64,
+    pub older: ConflictSide,
+    pub newer: ConflictSide,
+}
+
+/// `conflict_side` in `src/http/mod.rs`, which is deliberately narrower than a `Memory`.
+#[derive(Debug, Deserialize)]
+pub struct ConflictSide {
+    pub id: String,
+    pub namespace: String,
+    pub content: String,
+}
+
+/// `GET /admin/review/registry`, whose two lists are `domain::types::RegistryEntry`.
+#[derive(Debug, Deserialize)]
+pub struct RegistryReview {
+    #[serde(default)]
+    pub due_for_review: Vec<RegistryEntryRef>,
+    #[serde(default)]
+    pub non_canonical: Vec<RegistryEntryRef>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RegistryEntryRef {
+    pub namespace: String,
+    pub kind: String,
+    pub key: String,
+}
+
+/// `GET /admin/export`, one page.
+#[derive(Debug, Deserialize)]
+pub struct ExportPage {
+    #[serde(default)]
+    pub rows: Vec<Memory>,
+}
+
+/// `GET /statsz`, the per-tool shape, from `tool_stats_body`.
+#[derive(Debug, Deserialize)]
+pub struct ToolStats {
+    pub window_hours: i64,
+    pub totals: StatsTotals,
+    #[serde(default)]
+    pub by_tool: Vec<ToolStatsRow>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StatsTotals {
+    pub calls: i64,
+    pub failures: i64,
+    pub unprompted: i64,
+    pub unprompted_rate: Option<f64>,
+}
+
+/// `ports::tool_calls::ToolCallStats`.
+#[derive(Debug, Deserialize)]
+pub struct ToolStatsRow {
+    pub tool: String,
+    pub client: String,
+    pub calls: i64,
+    pub unprompted: i64,
+    pub p50_ms: Option<i64>,
+    pub p95_ms: Option<i64>,
+}
+
+/// `GET /statsz?by=client`, from `client_stats_body`.
+#[derive(Debug, Deserialize)]
+pub struct ClientStats {
+    pub window_hours: i64,
+    #[serde(default)]
+    pub by_client: Vec<ClientStatsRow>,
+}
+
+/// `ports::tool_calls::ClientStats`.
+#[derive(Debug, Deserialize)]
+pub struct ClientStatsRow {
+    pub client: String,
+    pub calls: i64,
+    pub reads: i64,
+    pub writes: i64,
+    pub write_to_read_ratio: Option<f64>,
+    pub unprompted_write_rate: Option<f64>,
+}
+
+/// `GET /oauth/clients`, from `clients` in `src/authserver/routes.rs`.
+#[derive(Debug, Deserialize)]
+pub struct ClientList {
+    #[serde(default)]
+    pub clients: Vec<ClientRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClientRecord {
+    pub client_id: String,
+    pub client_name: String,
+    pub registered_via: String,
+    pub consented_at: Option<String>,
+    pub revoked_at: Option<String>,
+}
+
+/// `POST /oauth/register`, RFC 7591.
+#[derive(Debug, Deserialize)]
+pub struct RegistrationResponse {
+    pub client_id: String,
+    pub client_secret: Option<String>,
+}
+
+/// `POST /oauth/token`, RFC 6749 §5.1.
+#[derive(Debug, Deserialize)]
+pub struct TokenResponse {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub token_type: Option<String>,
+    pub expires_in: Option<i64>,
+}
+
+/// `GET /admin/memory/{id}/history`, a route this crate assumes rather than one it has confirmed
+/// against a server implementation; see `wire_in` in the phase-7 handoff for the exact shape to
+/// reconcile. Wire order is not trusted: `format::order_chain` walks `superseded_by` itself, since
+/// S4 lets a later approval state an earlier fact and the two orders can disagree.
+#[derive(Debug, Deserialize)]
+pub struct HistoryChain {
+    #[serde(default)]
+    pub entries: Vec<HistoryEntry>,
+}
+
+/// One row of a chain, carrying the valid-time and supersession columns off
+/// `domain::types::Memory`. `occurred_at`/`occurred_until` follow phase 7's half-open convention:
+/// a `None` start means the fact reads as always having held, a `None` end means it still does.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HistoryEntry {
+    pub id: String,
+    pub content: String,
+    #[serde(default)]
+    pub occurred_at: Option<String>,
+    #[serde(default)]
+    pub occurred_until: Option<String>,
+    #[serde(default)]
+    pub superseded_by: Option<String>,
+    #[serde(default)]
+    pub superseded_at: Option<String>,
+    pub created_at: String,
+}
+
+/// One name for an entity, from `ports::alias::Alias`. `since`/`until` carry the same half-open
+/// convention valid time does on a memory.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AliasRecord {
+    pub namespace: String,
+    pub alias: String,
+    pub canonical: String,
+    #[serde(default)]
+    pub since: Option<String>,
+    #[serde(default)]
+    pub until: Option<String>,
+    pub origin: String,
+    pub created_at: String,
+}
+
+/// `GET /admin/alias`, assumed shape.
+#[derive(Debug, Deserialize)]
+pub struct AliasList {
+    #[serde(default)]
+    pub aliases: Vec<AliasRecord>,
+}
+
+/// `DELETE /admin/alias/{name}`, assumed shape.
+#[derive(Debug, Deserialize)]
+pub struct AliasForgetResponse {
+    pub forgotten: bool,
+}
+
+// ---- requests ----
+
+/// `RegistryWrite` in `src/http/mod.rs`. `sensitivity` is optional there and this client does not
+/// send it, so it is skipped rather than sent as null: the field is `Option<String>` behind
+/// `#[serde(default)]` and a null would parse, but sending a key nobody asked for invites a
+/// deny-unknown-fields handler later.
+#[derive(Debug, Serialize)]
+pub struct RegistryWriteRequest<'a> {
+    pub namespace: &'a str,
+    pub kind: &'a str,
+    pub key: &'a str,
+    pub value: Value,
+}
+
+/// `SupersedeBody` in `src/http/mod.rs`.
+#[derive(Debug, Serialize)]
+pub struct SupersedeRequest<'a> {
+    pub new_id: &'a str,
+}
+
+/// `mcp::SearchArgs`. Absent fields keep the server's defaults, so every optional is skipped.
+///
+/// `as_of` is not confirmed against a server field yet: phase 7 section 9 reads as deferring it to
+/// phase 2, and this crate was told Track A is landing it anyway. Coded to the name `as_of` per
+/// instruction; see `wire_in` in the phase-7 handoff.
+#[derive(Debug, Default, Serialize)]
+pub struct SearchArgsRequest {
+    pub query: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespaces: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// An RFC 3339 UTC instant, sent regardless of which of the two accepted forms the owner
+    /// typed, so the server never has to guess which midnight a bare date meant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub as_of: Option<String>,
+}
+
+/// `mcp::WriteArgs`.
+#[derive(Debug, Default, Serialize)]
+pub struct WriteArgsRequest {
+    pub content: String,
+    pub namespace: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
+    /// An RFC 3339 UTC instant. `commands::write` parses both accepted forms locally and always
+    /// sends this shape, so the server's own `parse_occurred_at` sees only the form it produces
+    /// from a date-only input itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
+}
+
+/// `POST /admin/alias`, assumed shape mirroring `AliasWrite` in `src/http/mod.rs` for the
+/// registry-key alias. Origin is not a field here: the server fixes it to `manual` the way
+/// `admin_registry_alias` fixes its own origin, and a client able to choose it could promote a
+/// derived guess to a decision.
+#[derive(Debug, Serialize)]
+pub struct AliasSetRequest<'a> {
+    pub namespace: &'a str,
+    pub alias: &'a str,
+    pub canonical: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+}
+
+/// `mcp::RegistryArgs`.
+#[derive(Debug, Default, Serialize)]
+pub struct RegistryArgsRequest {
+    pub kind: String,
+    pub key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+
+/// `mcp::BootstrapArgs`.
+#[derive(Debug, Default, Serialize)]
+pub struct BootstrapArgsRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}

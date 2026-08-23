@@ -1,0 +1,22 @@
+{
+  "window_hours": 168,
+  "scope": "tenant",
+  "totals": {
+    "calls": 12,
+    "failures": 1,
+    "unprompted": 3,
+    "unprompted_rate": 0.25,
+    "failure_rate": 0.083
+  },
+  "by_tool": [
+    {
+      "tool": "memory_search",
+      "client": "claude-code",
+      "calls": 9,
+      "failures": 0,
+      "unprompted": 2,
+      "p50_ms": 41,
+      "p95_ms": null
+    }
+  ]
+}

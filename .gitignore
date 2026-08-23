@@ -1,0 +1,47 @@
+node_modules/
+dist/
+.env*
+!.env.example
+*.log
+spike/node_modules/
+spike/package*.json
+.models/
+backups/
+coverage/
+.DS_Store
+
+# Rust
+target/
+rust-spike/target/
+**/*.rs.bk
+
+# Key material. .env.example and deploy/install.sh both default KEK_PROVIDER=file with the key at
+# ./secrets/lumberroom-kek, so the documented setup writes a live key into the working tree. Losing this
+# key makes every private row permanently unreadable; committing it makes the encryption pointless,
+# and git history does not really forget. Ignore the directory, not just the one filename, because
+# the operator is free to move KEK_SECRET_FILE and a rotation leaves kek-2 beside kek-1.
+secrets/
+*.kek
+lumberroom-kek*
+
+# Backups and editor state for .env. `.env` itself is ignored above, but a timestamped copy or a
+# vim swap file is not, and both hold the same tokens.
+.env.bak*
+.env.*.bak
+.env.sw[a-p]
+*.swp
+
+# Screenshots design agents take while checking their own mockups.
+.shot-*.png
+
+# Rendered console pages, written by `cargo test --test dump_console -- --ignored` for design work.
+# Regenerated from the code on demand, so committing them makes a second source of truth that goes
+# stale the first time the markup changes.
+design/current/
+design/after/
+
+# Agent worktrees. Nested repositories, and nothing here belongs in this one.
+.claude/worktrees/
+
+# scripts/eval-longmemeval.sh downloads the dataset to the repo root by default.
+longmemeval_*.json

@@ -1,0 +1,1666 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lumberroom console: design preview</title>
+<style>
+/* ---------------------------------------------------------------------------
+   Tokens, copied from docs/design/console-visual.md section 3.
+   Every ratio in that document was computed there. Nothing is restated here.
+   Two families are specified in the design and neither ships in this file, so
+   the stacks below fall back to system faces. See the gap list on Overview.
+   --------------------------------------------------------------------------- */
+:root {
+  color-scheme: dark;
+
+  --canvas:        oklch(0.205 0.010 220);
+  --panel:         oklch(0.245 0.010 220);
+  --panel-2:       oklch(0.285 0.010 220);
+  --rule:          oklch(0.330 0.010 220);
+
+  --ink-hi:        oklch(0.960 0.004 220);
+  --ink:           oklch(0.890 0.006 220);
+  --ink-mid:       oklch(0.740 0.009 220);
+  --ink-low:       oklch(0.640 0.011 220);
+  --ink-faint:     oklch(0.545 0.011 220);
+
+  --sel-field:     oklch(0.400 0.060 248);
+  --focus:         oklch(0.760 0.110 242);
+
+  /* sensitivity, reserved, used nowhere else in this file */
+  --sens-private:    oklch(0.845 0.115 078);
+  --sens-private-bg: oklch(0.285 0.030 078);
+  --sens-sealed:     oklch(0.690 0.125 305);
+  --sens-sealed-bg:  oklch(0.280 0.035 305);
+  /* open has no colour token. Absence is the encoding. */
+
+  --ok:            oklch(0.790 0.120 152);
+  --bad:           oklch(0.740 0.140 027);
+
+  --s1: 2px; --s2: 4px; --s3: 6px; --s4: 8px; --s5: 12px;
+  --s6: 16px; --s7: 20px; --s8: 24px; --s9: 32px; --s10: 48px;
+
+  --t-micro: 11px; --t-meta: 12px; --t-body: 13px;
+  --t-read: 15px;  --t-head: 17px; --t-lead: 20px;
+
+  --dur-quick: 120ms; --dur-struct: 180ms;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --serif: Charter, "Source Serif 4", Georgia, "Times New Roman", serif;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --canvas:        oklch(0.988 0.003 230);
+  --panel:         oklch(0.962 0.005 230);
+  --panel-2:       oklch(0.930 0.006 230);
+  --rule:          oklch(0.860 0.008 230);
+  --ink-hi:        oklch(0.200 0.012 230);
+  --ink:           oklch(0.290 0.013 230);
+  --ink-mid:       oklch(0.450 0.014 230);
+  --ink-low:       oklch(0.510 0.014 230);
+  --ink-faint:     oklch(0.635 0.013 230);
+  --sel-field:     oklch(0.895 0.048 248);
+  --focus:         oklch(0.505 0.115 245);
+  --sens-private:    oklch(0.505 0.100 070);
+  --sens-private-bg: oklch(0.955 0.030 078);
+  --sens-sealed:     oklch(0.405 0.150 305);
+  --sens-sealed-bg:  oklch(0.950 0.028 305);
+  --ok:            oklch(0.470 0.120 152);
+  --bad:           oklch(0.490 0.170 027);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; scroll-padding-top: 48px; }
+body {
+  background: var(--canvas); color: var(--ink);
+  font: 400 var(--t-body)/1.3 var(--mono);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+p, li { }
+b, strong { font-weight: 600; color: var(--ink-hi); }
+code, .mono { font-family: var(--mono); }
+.prose { font: 400 var(--t-read)/1.5 var(--serif); max-width: 58ch; color: var(--ink); }
+.prose.wide { max-width: 76ch; }
+.prose + .prose { margin-top: var(--s5); }
+.micro { font-size: var(--t-micro); color: var(--ink-low); text-transform: uppercase; letter-spacing: 0.08em; }
+.meta { font-size: var(--t-meta); color: var(--ink-low); }
+.mid { color: var(--ink-mid); }
+.low { color: var(--ink-low); }
+.hi { color: var(--ink-hi); }
+
+/* ---- chrome ---------------------------------------------------------- */
+.topbar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: var(--s6);
+  height: 36px; padding: 0 var(--s6);
+  background: var(--panel); border-bottom: 1px solid var(--rule);
+}
+.brand { font-size: var(--t-meta); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-hi); }
+#nav { display: flex; gap: var(--s1); flex: 1; flex-wrap: wrap; }
+#nav button {
+  appearance: none; background: none; border: 0; cursor: pointer;
+  font: 400 var(--t-meta)/1 var(--mono); color: var(--ink-low);
+  padding: var(--s3) var(--s4); border-radius: 0;
+}
+#nav button:hover { background: var(--panel-2); color: var(--ink); }
+#nav button[aria-current="page"] { background: var(--sel-field); color: var(--ink-hi); }
+#nav button:focus-visible, .kbd-target:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; }
+.topbar .keys { font-size: var(--t-micro); color: var(--ink-faint); }
+.topbar .keys b { color: var(--ink-mid); font-weight: 400; }
+#themeBtn { appearance: none; background: none; border: 1px solid var(--rule); color: var(--ink-low);
+  font: 400 var(--t-micro)/1 var(--mono); padding: var(--s3) var(--s4); cursor: pointer; }
+
+main { padding: var(--s8) var(--s6) var(--s10); max-width: 1180px; }
+section[hidden] { display: none; }
+h1 { font: 400 var(--t-head)/1.3 var(--mono); color: var(--ink-hi); letter-spacing: 0.02em; }
+h2 { font: 400 var(--t-body)/1.3 var(--mono); color: var(--ink-hi); margin: var(--s9) 0 var(--s4);
+  padding-bottom: var(--s2); border-bottom: 1px solid var(--rule); letter-spacing: 0.04em; }
+h3 { font: 400 var(--t-meta)/1.3 var(--mono); color: var(--ink-mid); margin: var(--s7) 0 var(--s3);
+  text-transform: uppercase; letter-spacing: 0.08em; }
+.screenhead { border-bottom: 1px solid var(--rule); padding-bottom: var(--s5); margin-bottom: var(--s6); }
+.screenhead .source { display: flex; gap: var(--s5); align-items: baseline; flex-wrap: wrap; margin-top: var(--s3); }
+.resolves { margin-top: var(--s4); font: 400 var(--t-read)/1.5 var(--serif); color: var(--ink); max-width: 68ch; }
+.resolves span.micro { display: block; margin-bottom: var(--s1); }
+.cli { font-size: var(--t-meta); color: var(--ink-low); margin-top: var(--s4); }
+.cli code { color: var(--ink-mid); }
+
+/* ---- the frame around a mockup --------------------------------------- */
+.mock { background: var(--panel); border: 1px solid var(--rule); margin: var(--s5) 0 var(--s8); }
+.mock > .mockbar {
+  display: flex; align-items: center; gap: var(--s5); flex-wrap: wrap;
+  padding: var(--s3) var(--s5); background: var(--panel-2);
+  border-bottom: 1px solid var(--rule); font-size: var(--t-meta); color: var(--ink-mid);
+}
+.mock > .mockbar .grow { flex: 1; }
+.strip { display: flex; gap: var(--s6); flex-wrap: wrap; padding: var(--s3) var(--s5);
+  border-bottom: 1px solid var(--rule); font-size: var(--t-meta); color: var(--ink-low); }
+.statusbar { padding: var(--s3) var(--s5); border-top: 1px solid var(--rule);
+  font-size: var(--t-micro); color: var(--ink-low); display: flex; gap: var(--s6); flex-wrap: wrap; }
+.pad { padding: var(--s5); }
+.pad-lg { padding: var(--s6); }
+
+/* ---- the index and its rows ------------------------------------------ */
+.idx { display: grid; grid-template-columns: 2ch 7ch minmax(0,1fr) 17ch 18ch; }
+.row { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1;
+  align-items: baseline; min-height: 24px; padding: var(--s1) var(--s5) var(--s1) var(--s4);
+  border-bottom: 1px solid var(--rule); column-gap: var(--s4); }
+.row:last-child { border-bottom: 0; }
+.row .content { font: 400 var(--t-body)/1.3 var(--serif);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .date, .row .client, .row .ns { font: 400 var(--t-meta)/1.3 var(--mono); color: var(--ink-low); }
+.row .gutter { font-size: var(--t-meta); }
+.row[data-sens="open"] .gutter { visibility: hidden; }
+.row[data-sens="private"] { background: var(--sens-private-bg); }
+.row[data-sens="private"] .gutter { color: var(--sens-private); }
+.row[data-sens="sealed"] { background: var(--sens-sealed-bg); }
+.row[data-sens="sealed"] .gutter { color: var(--sens-sealed); }
+.row[data-sens="sealed"] .content { font-family: var(--mono); color: var(--sens-sealed); letter-spacing: 0.02em; }
+.row[data-sens="private"] :is(.date,.client,.ns),
+.row[data-sens="sealed"] :is(.date,.client,.ns) { color: var(--ink-mid); }
+.row:hover { background-color: var(--panel-2); }
+.row[aria-current="true"] { background: var(--sel-field); color: var(--ink-hi); }
+.row[aria-current="true"] .gutter { box-shadow: inset 2px 0 0 var(--focus); }
+.row[aria-current="true"] :is(.date,.client,.ns) { color: var(--ink); }
+.row .content em { font-style: normal; font-weight: 700; color: var(--ink-hi); }
+.row .why { font: 400 var(--t-micro)/1.3 var(--mono); color: var(--ink-low); }
+.band-head { grid-column: 1 / -1; padding: var(--s5) var(--s5) var(--s2) var(--s4);
+  font-size: var(--t-micro); color: var(--ink-low); text-transform: uppercase; letter-spacing: 0.08em; }
+.band-head b { color: var(--ink-mid); font-weight: 400; }
+.stack { grid-column: 1 / -1; padding: 0 var(--s5) var(--s2) 6ch; border-bottom: 1px solid var(--rule); }
+.stack div { font-size: var(--t-meta); color: var(--ink-mid); padding: var(--s1) 0; }
+.elision { grid-column: 1 / -1; padding: var(--s4) var(--s5) var(--s4) var(--s4);
+  font-size: var(--t-meta); color: var(--ink-mid); border-bottom: 1px solid var(--rule); }
+.cliff { grid-column: 1 / -1; border-top: 1px solid var(--focus); padding: var(--s2) var(--s4);
+  font-size: var(--t-micro); color: var(--ink-mid); }
+
+/* ---- queue items ----------------------------------------------------- */
+.q { border-bottom: 1px solid var(--rule); padding: var(--s5); display: grid; gap: var(--s3); }
+.q:last-of-type { border-bottom: 0; }
+.q > .qhead { display: flex; gap: var(--s5); align-items: baseline; flex-wrap: wrap; }
+.q > .qhead .kind { font-size: var(--t-micro); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-mid); }
+.q > .qhead .ns { font-size: var(--t-meta); color: var(--ink-low); margin-left: auto; }
+.claim { display: grid; grid-template-columns: minmax(0,1fr) 27ch; gap: var(--s4);
+  align-items: baseline; padding: var(--s2) 0; }
+.claim .t { font: 400 var(--t-read)/1.4 var(--serif); }
+.claim .p { font-size: var(--t-meta); color: var(--ink-low); }
+.verdicts { display: flex; gap: var(--s5); flex-wrap: wrap; font-size: var(--t-meta); color: var(--ink-mid); }
+kbd { font: 400 var(--t-micro)/1 var(--mono); border: 1px solid var(--rule); background: var(--panel-2);
+  color: var(--ink); padding: 2px 5px; }
+
+/* ---- annotation chips: preview scaffolding, not product signal ------- */
+.cap { display: inline-flex; align-items: baseline; gap: var(--s3);
+  font: 400 var(--t-micro)/1.4 var(--mono); color: var(--ink-mid);
+  border: 1px dotted var(--ink-faint); padding: 1px var(--s3); white-space: nowrap; }
+.cap b { font-weight: 400; color: var(--ink-low); letter-spacing: 0.06em; text-transform: uppercase; }
+.cap.wired b::before { content: "wired "; }
+.cap.noroute b::before { content: "no route "; }
+.cap.nobuild b::before { content: "not built "; }
+.cap.proposed b::before { content: "proposed "; }
+.cap.wired { border-style: solid; }
+.cap.nobuild { border-style: dashed; }
+.cap.proposed { border-style: dashed; }
+.caps { display: flex; gap: var(--s4); flex-wrap: wrap; margin-top: var(--s3); }
+.caps .cap { white-space: normal; min-width: 0; }
+.tension { border-left: 2px solid var(--focus); padding: var(--s4) var(--s5); background: var(--panel);
+  margin: var(--s5) 0; font-size: var(--t-meta); color: var(--ink-mid); max-width: 84ch; }
+.tension b { color: var(--ink-hi); }
+.errband { padding: var(--s4) var(--s5); background: var(--bad); color: var(--canvas);
+  font-size: var(--t-meta); }
+.lensband { padding: var(--s4) var(--s5); background: var(--bad); color: var(--canvas);
+  font-size: var(--t-meta); display: flex; gap: var(--s5); align-items: baseline; flex-wrap: wrap; }
+.lensband .grow { flex: 1; }
+
+/* ---- tables ---------------------------------------------------------- */
+table { border-collapse: collapse; width: 100%; font-size: var(--t-meta); }
+th { text-align: left; font-weight: 400; color: var(--ink-low); font-size: var(--t-micro);
+  text-transform: uppercase; letter-spacing: 0.08em; padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--rule); vertical-align: bottom; }
+td { padding: var(--s3) var(--s4); border-bottom: 1px solid var(--rule); vertical-align: top; color: var(--ink); }
+tr:last-child td { border-bottom: 0; }
+td.n { text-align: right; }
+td.empty { color: var(--ink-faint); }
+.cellprivate { color: var(--sens-private); background: var(--sens-private-bg); }
+.cellsealed { color: var(--sens-sealed); background: var(--sens-sealed-bg); }
+.bar { display: inline-block; height: 8px; background: var(--ok); vertical-align: middle; }
+.bar.zero { background: var(--ink-low); }
+.reach { font-size: var(--t-meta); color: var(--ink-mid); }
+
+.two { display: grid; grid-template-columns: minmax(0,1fr) minmax(320px, 460px); gap: 0; }
+.two > .aside { border-left: 1px solid var(--rule); padding: var(--s6); }
+@media (max-width: 980px) { .two { grid-template-columns: minmax(0,1fr); }
+  .two > .aside { border-left: 0; border-top: 1px solid var(--rule); } }
+.field { display: grid; grid-template-columns: 14ch minmax(0,1fr); gap: var(--s2) var(--s4);
+  font-size: var(--t-meta); }
+.field dt { color: var(--ink-low); }
+.field dd { color: var(--ink); }
+.actions { display: flex; gap: var(--s5); flex-wrap: wrap; margin-top: var(--s6);
+  padding-top: var(--s5); border-top: 1px solid var(--rule); font-size: var(--t-meta); color: var(--ink-mid); }
+ul.plain { list-style: none; display: grid; gap: var(--s4); }
+ul.plain > li { padding-left: 2ch; text-indent: -2ch; }
+ul.plain > li::before { content: "· "; color: var(--ink-low); }
+.verdict { border-top: 1px solid var(--rule); padding: var(--s6) 0; }
+.verdict:last-child { border-bottom: 1px solid var(--rule); }
+.verdict h4 { font: 400 var(--t-body)/1.3 var(--mono); color: var(--ink-hi); }
+.verdict .call { font-size: var(--t-micro); text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-mid); margin-top: var(--s2); }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--s6); }
+.note { font-size: var(--t-meta); color: var(--ink-low); max-width: 84ch; }
+.note code, .meta code { color: var(--ink-mid); }
+hr { border: 0; border-top: 1px solid var(--rule); margin: var(--s8) 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <span class="brand">lumberroom</span>
+  <nav id="nav" aria-label="preview screens"></nav>
+  <span class="keys">press <b>1</b> to <b>0</b>, or <b>g</b> then <b>f r p s</b>, or <b>&larr; &rarr;</b></span>
+  <button id="themeBtn" type="button">theme</button>
+</header>
+
+<main>
+
+<!-- ==================== 1. OVERVIEW ==================== -->
+<section id="overview">
+  <div class="screenhead">
+    <h1>The rule that scoped this console</h1>
+    <div class="source">
+      <span class="micro">docs/design/console-ia.md, the frame</span>
+      <span class="micro">docs/design/console-visual.md, the apparatus</span>
+    </div>
+  </div>
+
+  <p class="prose wide"><b>The console is a disposition surface: a place to decide and to act. It is
+  never a place to read.</b> Every screen either resolves something into a new state, or shows the
+  consequence of a policy so a decision about it can be made. Nothing exists to be browsed.</p>
+
+  <p class="prose wide">That single rule does the scoping. It kills the file browser, the tag
+  manager, the timeline visualisation and the dashboard, all of which would otherwise arrive by
+  reflex. Reading belongs to the Obsidian mirror, which is better at it and works offline.
+  Authoring and bulk work belong to the CLI. The console never grows a compose box: every write it
+  performs answers a fact already on screen.</p>
+
+  <p class="note" style="margin-top:var(--s6)">Agree or disagree with that rule first. Everything
+  below follows from it, and if it is wrong then eight of the ten screens here are wrong.</p>
+
+  <h2>What each screen resolves</h2>
+  <table>
+    <thead><tr><th>Screen</th><th>Source</th><th>The decision it resolves</th></tr></thead>
+    <tbody>
+      <tr><td>Inbox</td><td class="low">IA, the landing view</td><td>Is there anything to deal with, and when there is not, is this thing still working</td></tr>
+      <tr><td>Search</td><td class="low">IA, screen 2</td><td>What would chatgpt get back if it asked this</td></tr>
+      <tr><td>Clients</td><td class="low">IA, screen 3</td><td>Does this grant earn the risk it carries</td></tr>
+      <tr><td>Fact panel</td><td class="low">IA, the one panel</td><td>Why does the store think this, and should it keep thinking it</td></tr>
+      <tr><td>Policy</td><td class="low">visual pass, screen B</td><td>What becomes visible to whom if I widen this clause</td></tr>
+      <tr><td>Signal</td><td class="low">visual pass, screen C</td><td>Is the loop working, or has a surface gone quiet</td></tr>
+      <tr><td>Registry</td><td class="low">visual pass, section 5</td><td>Is this exact value still true, and who said so</td></tr>
+      <tr><td>Gaps</td><td class="low">this preview</td><td>Five capabilities the design never saw, and whether each belongs</td></tr>
+      <tr><td>Boundary</td><td class="low">IA, what not to build</td><td>Where the console stops</td></tr>
+    </tbody>
+  </table>
+
+  <h2>How the mockups mark capability</h2>
+  <p class="note">Every element that needs something from the server carries one chip. The chips are
+  preview scaffolding, drawn in ink steps with a printed word and no colour, so they cannot be
+  mistaken for the product's own signal. The three sensitivity colours stay reserved.</p>
+  <div class="caps" style="margin-top:var(--s5)">
+    <span class="cap wired"><b></b> a route answers this today</span>
+    <span class="cap noroute"><b></b> the service exists, nothing exposes it</span>
+    <span class="cap nobuild"><b></b> no code, and often no column</span>
+    <span class="cap proposed"><b></b> not in either design document</span>
+  </div>
+
+  <h2>Where this preview filled a gap the design left</h2>
+  <ul class="plain note" style="margin-top:var(--s5)">
+    <li><b>Fonts.</b> The design names Source Serif 4 for fact prose and Iosevka Fixed for
+    everything else, self-hosted, two woff2 files. This file makes no network request, so prose
+    falls back to Charter or Georgia and chrome falls back to the system mono. Iosevka's 0.5em advance is the whole
+    density argument in section 2 and none of it is visible here, so the client column is set at 17ch
+    rather than the specified 14ch to stop a name wrapping in the fallback. Judge the structure, not
+    the letterforms.</li>
+    <li><b>The empty grant cell.</b> The visual pass draws it as an em dash. House style bans that
+    character, so this preview prints a middle dot and keeps emptiness as the signal.</li>
+    <li><b>Row counts.</b> Compact is specified at 24px and 33 rows on a 1440 by 900 display. These
+    mockups show six to twelve rows each so a screen fits on one page next to its notes. The
+    density claim is untested here.</li>
+    <li><b>Keyboard.</b> The design specifies two dispatchers, a command palette and about twenty
+    verbs. This preview binds screen movement only: number keys, <kbd>g</kbd> chords, arrows. Verbs
+    are printed where they belong and do nothing.</li>
+    <li><b>Motion.</b> The design's default is that nothing moves, and nothing moves here. The
+    600ms hold-to-confirm delete gate is drawn as a static state rather than run.</li>
+  </ul>
+
+  <div class="tension">
+    <b>Both design passes recommend holding the build.</b> Their words: four of the five ranked jobs
+    depend on the sensitivity axis and per-client grants, and an admin UI built early against a
+    store of two hundred facts and one client is a screen with nothing to do. Since they were
+    written, Phases 2 through 4 landed in the tree and none of it has been verified against a live
+    server. Nothing is deployed, no OAuth flow has completed, and no private row has been encrypted
+    and read back. The console would be the first thing to read a store that has not yet proved it
+    can hold anything.
+  </div>
+</section>
+
+<!-- ==================== 2. INBOX ==================== -->
+<section id="inbox" hidden>
+  <div class="screenhead">
+    <h1>Inbox</h1>
+    <div class="source">
+      <span class="micro">IA: the landing view, and why</span>
+      <span class="micro">the queue plus a one-line health strip</span>
+    </div>
+    <p class="resolves"><span class="micro">resolves</span>Is there anything to deal with. When the
+    answer is no, the same pixels answer the other question: is this thing working. Those are not two
+    questions, because the only durable evidence of health is that nothing has gone wrong and facts
+    are still arriving.</p>
+    <p class="cli">The CLI that does the same job: <code>lumberroom review</code></p>
+  </div>
+
+  <div class="mock">
+    <div class="mockbar">
+      <span class="hi">Inbox 4</span><span>Search</span><span>Clients</span>
+      <span class="grow"></span>
+      <span>lens: off</span><span>&#8984;K</span><span>&#9678; live</span>
+    </div>
+
+    <div class="strip">
+      <span>1,240 live</span><span>412 retired</span><span>6 clients</span>
+      <span>last write 4m ago, claude-code-mac</span>
+      <span class="grow" style="flex:1"></span>
+      <span>claude-code-mac &#9601;&#9603;&#9605;&#9607;&#9605;&#9603;</span>
+      <span>openwebui &#9601;&#9601;&#9602;&#9601;&#9603;&#9601;</span>
+      <span>chatgpt &#9601;&#9601;&#9601;&#9601;&#9601;&#9601; reads only &#9873;</span>
+    </div>
+
+    <div class="errband">
+      The encryption key does not match the one this store recorded. Private writes stay refused and
+      existing private rows will not open. Restore the original key, or clear kek_state and accept
+      that those rows are lost.
+      &nbsp; <span class="mono" style="opacity:.85">kek_id lumberroom-kek-1 &middot; provider file &middot; /readyz says kek_verified false</span>
+    </div>
+
+    <div class="q">
+      <div class="qhead">
+        <span class="kind">&#9873; credential tripwire</span>
+        <span class="meta">a write refused for looking like a secret sorts above everything else</span>
+        <span class="ns">project:lumberroom</span>
+      </div>
+      <div class="claim">
+        <div class="t low">chatgpt tried to write a value matching rule <span class="mono">aws-secret-access-key</span> at open. Refused. The content was not stored and is not shown here.</div>
+        <div class="p">chatgpt &middot; 19 Aug 11:04</div>
+      </div>
+      <div class="verdicts">
+        <span><kbd>s</kbd> seal it instead</span><span><kbd>i</kbd> ignore this rule here</span><span><kbd>&#8629;</kbd> open the client</span>
+      </div>
+      <div class="caps">
+        <span class="cap nobuild"><b></b> the refusal reaches the caller and the log and nowhere else</span>
+        <span class="cap nobuild"><b></b> tool_calls records client, tool, succeeded, latency. No reason, no rule, no namespace</span>
+      </div>
+    </div>
+
+    <div class="q">
+      <div class="qhead">
+        <span class="kind">&#8890; conflict</span>
+        <span class="meta">0.94 similar, kept apart by the guard</span>
+        <span class="ns">user:me</span>
+      </div>
+      <div class="claim">
+        <div class="t">The port is 8787</div>
+        <div class="p">claude-code-mac &middot; 19 Aug &middot; confirmed by you</div>
+      </div>
+      <div class="claim">
+        <div class="t">The port is 8080</div>
+        <div class="p">chatgpt &middot; 12 Aug &middot; never confirmed</div>
+      </div>
+      <div class="meta">near-identical wording, one digit apart. The write guard refused to collapse
+      these, reason <span class="mono">digits-differ</span>, which is why both are still live.</div>
+      <div class="verdicts">
+        <span><kbd>n</kbd> newer wins</span><span><kbd>o</kbd> older wins</span>
+        <span><kbd>b</kbd> both true</span><span><kbd>&#8629;</kbd> open</span>
+      </div>
+      <div class="caps">
+        <span class="cap wired"><b></b> GET /admin/review/conflicts returns the pair and the similarity</span>
+        <span class="cap wired"><b></b> POST /admin/memory/{id}/supersede resolves it</span>
+        <span class="cap nobuild"><b></b> both true has nowhere to persist. The IA asked for a not-a-conflict table and there is none, so this pair returns tomorrow</span>
+      </div>
+    </div>
+
+    <div class="q">
+      <div class="qhead">
+        <span class="kind">&#9873; unconfirmed registry value</span>
+        <span class="ns">user:me &middot; routes &middot; due for review</span>
+      </div>
+      <div class="claim">
+        <div class="t mono" style="font-family:var(--mono);font-size:var(--t-body)">routes.coding.model = "claude-opus-5"</div>
+        <div class="p">hermes &middot; 16 Aug &middot; you have never confirmed it</div>
+      </div>
+      <div class="meta">A model route ages fast, so this kind carries a short review interval.
+      Expiry marks a row for review and never removes it.</div>
+      <div class="verdicts">
+        <span><kbd>c</kbd> confirm</span><span><kbd>e</kbd> correct</span>
+        <span><kbd>r</kbd> retire</span><span><kbd>&#8629;</kbd> open</span>
+      </div>
+      <div class="caps">
+        <span class="cap wired"><b></b> GET /admin/review/registry lists due and non-canonical keys</span>
+        <span class="cap wired"><b></b> POST /admin/registry writes the correction</span>
+        <span class="cap noroute"><b></b> review::confirm exists in the service and no route calls it</span>
+      </div>
+    </div>
+
+    <div class="q">
+      <div class="qhead">
+        <span class="kind">&#8987; never read, 5 months old</span>
+        <span class="ns">user:me</span>
+      </div>
+      <div class="claim">
+        <div class="t">I prefer pnpm over npm for new projects</div>
+        <div class="p">claude-code-mac &middot; 14 Mar &middot; 0 reads</div>
+      </div>
+      <div class="verdicts">
+        <span><kbd>k</kbd> still true</span><span><kbd>r</kbd> retire</span><span><kbd>x</kbd> delete</span>
+      </div>
+      <div class="caps">
+        <span class="cap wired"><b></b> GET /admin/review/stale, DELETE /admin/memory/{id}</span>
+      </div>
+    </div>
+
+    <div class="q">
+      <div class="qhead">
+        <span class="kind">&#9670; first sight of a new client</span>
+        <span class="ns">registered 19 Aug 09:41</span>
+      </div>
+      <div class="claim">
+        <div class="t low">claude-ai registered itself and holds nothing. Empty read list, empty
+        write list, no consent. It can start an authorization request and receive nothing until you
+        approve it.</div>
+        <div class="p">via dcr &middot; software_id claude-ai-web</div>
+      </div>
+      <div class="verdicts"><span><kbd>&#8629;</kbd> review the client</span><span><kbd>x</kbd> revoke the registration</span></div>
+      <div class="caps">
+        <span class="cap wired"><b></b> GET /oauth/clients lists it, consented_at null</span>
+        <span class="cap noroute"><b></b> revoke_client exists in the store and no route calls it</span>
+        <span class="cap proposed"><b></b> the IA queue predates dynamic registration and has no item type for this</span>
+      </div>
+    </div>
+
+    <div class="statusbar">
+      <span>4 to decide</span><span>conflict threshold 0.90</span><span>stale after 365 days</span>
+      <span class="grow" style="flex:1"></span><span>lumberroom review</span>
+    </div>
+  </div>
+
+  <h3>The empty state is the health readout</h3>
+  <div class="mock"><div class="pad-lg">
+    <p class="prose">Nothing to decide. 1,240 live facts, 412 retired, last write 4 minutes ago,
+    claude-code-mac.</p>
+  </div></div>
+
+  <div class="tension">
+    <b>The least confident decision in the IA is this screen's existence as the landing view.</b> It
+    rests on a rate nobody has measured: how many conflicts, stale rows and unconfirmed values arrive
+    per week. Five and it is right. One a month and the console opens empty every time, teaching the
+    owner there is nothing here. The IA's own test is to dump live pairs above 0.85 similarity and
+    count how many land between 0.90 and 0.97. Under one per week and Search becomes the landing
+    view. The thresholds behind that count, 0.97 and 0.90, are documented guesses.
+  </div>
+
+  <div class="tension">
+    <b>One route shape problem to decide before this is built.</b> The review queue exists as a
+    service, <span class="mono">src/services/review.rs</span>, which assembles conflicts, stale rows,
+    registry due dates and the three decay numbers in one call and checks every row against the
+    caller's ceiling. Nothing exposes it. The three <span class="mono">/admin/review/*</span> routes
+    each rebuild their own list inline, so this screen would make three requests, get three shapes
+    and reimplement the priority order in the browser. Exposing <span class="mono">review::queue</span>
+    is one route and it is the console's central dependency.
+  </div>
+</section>
+
+<!-- ==================== 3. SEARCH ==================== -->
+<section id="search" hidden>
+  <div class="screenhead">
+    <h1>Search, run as a named client</h1>
+    <div class="source">
+      <span class="micro">IA: search, keep and upgrade the justification</span>
+      <span class="micro">visual pass: section 7, bands not scores</span>
+    </div>
+    <p class="resolves"><span class="micro">resolves</span>What would chatgpt get back if it asked
+    this. Not a search box in a browser, which adds nothing over the CLI. The client selector is the
+    whole point: the difference between a policy you asserted and one you have watched work.</p>
+    <p class="cli">The CLI that does the same job: <code>lumberroom search "deploy schedule"</code>, with no
+    way to run it as another client.</p>
+  </div>
+
+  <div class="mock">
+    <div class="mockbar">
+      <span>Inbox 4</span><span class="hi">Search</span><span>Clients</span>
+      <span class="grow"></span>
+      <span>lens: chatgpt</span><span>&#8984;K</span><span>? raw numbers</span>
+    </div>
+
+    <div class="lensband">
+      <span>&#9622;&#9622; viewing the whole interface as chatgpt sees it. 1,204 of 14,382 facts visible.</span>
+      <span class="grow"></span><span>[V] clear</span>
+    </div>
+
+    <div class="strip">
+      <span class="hi">/ deploy schedule</span>
+      <span class="grow" style="flex:1"></span>
+      <span>38 results</span><span>as chatgpt: user:me + global + project:*</span>
+    </div>
+
+    <div class="idx">
+      <div class="band-head">strong <b>&middot; 4 results</b></div>
+
+      <div class="row" data-sens="open" aria-current="true">
+        <span class="gutter" aria-hidden="true"></span>
+        <span class="date">19 Aug</span>
+        <p class="content">Deploys go out Tuesday mornings, never <em>Friday</em></p>
+        <span class="client">claude-code-mac</span>
+        <span class="ns">project:lumberroom</span>
+      </div>
+      <div class="row" data-sens="open">
+        <span class="gutter" aria-hidden="true"></span>
+        <span class="date">02 Aug</span>
+        <p class="content">Release train is cut Monday 18:00 UTC <span class="why">meaning + wording</span></p>
+        <span class="client">claude-code-mac</span>
+        <span class="ns">project:lumberroom</span>
+      </div>
+      <div class="row" data-sens="open">
+        <span class="gutter" aria-hidden="true"></span>
+        <span class="date">14 Jul</span>
+        <p class="content">Never deploy the hour before standup</p>
+        <span class="client">hermes</span>
+        <span class="ns">project:lumberroom</span>
+      </div>
+      <div class="row" data-sens="open">
+        <span class="gutter" aria-hidden="true"></span>
+        <span class="date">11 Jul</span>
+        <p class="content">Release cadence is weekly <span class="why">semantic only</span></p>
+        <span class="client">claude-code-mac</span>
+        <span class="ns">project:lumberroom</span>
+      </div>
+
+      <div class="cliff">the largest gap in this result set falls here, which is a fact about these
+        38 rows and not a threshold</div>
+
+      <div class="band-head">related <b>&middot; 11 results</b></div>
+      <div class="row" data-sens="open">
+        <span class="gutter" aria-hidden="true"></span>
+        <span class="date">09 Jul</span>
+        <p class="content">CI runs on the ARM builder <span class="why">other project</span></p>
+        <span class="client">openwebui</span>
+        <span class="ns">project:hermes</span>
+      </div>
+      <div class="row" data-sens="open">
+        <span class="gutter" aria-hidden="true"></span>
+        <span class="date">28 Jun</span>
+        <p class="content">The staging box reboots on Sundays at 03:00</p>
+        <span class="client">claude-code-mac</span>
+        <span class="ns">global</span>
+      </div>
+
+      <div class="elision">&#8943; 14 facts here are outside chatgpt's grant, in personal:finance and
+        credentials:*. This is the feature working, not an error, so the rows collapse to a count
+        rather than vanishing.</div>
+
+      <div class="elision">&#8943; 2 facts here are sealed. No browser will ever decrypt them. Read
+        one where the key is: <span class="mono hi">lumberroom unseal credentials.aws.deploy-key</span></div>
+
+      <div class="band-head">weak <b>&middot; 23 results, matched only faintly</b> &nbsp; &#9656; show</div>
+    </div>
+
+    <div class="statusbar">
+      <span>14,382 facts</span><span>blend 0.65 vector / 0.35 lexical</span>
+      <span>secondary penalty 0.85</span><span>p50 44ms</span>
+      <span class="grow" style="flex:1"></span><span>compact [ ] comfortable</span>
+    </div>
+  </div>
+
+  <div class="two mock">
+    <div class="pad-lg">
+      <h3>When nothing matched</h3>
+      <p class="prose">Nothing matched well. The closest 5 are below. Try a different phrasing, or
+      write this fact:</p>
+      <p class="mono hi" style="margin-top:var(--s5)">lumberroom write "..." --namespace user:me</p>
+      <p class="note" style="margin-top:var(--s6)">Semantic search has no zero-result state.
+      Everything matches a little, so the band header becomes the answer rather than a count of
+      nothing.</p>
+      <div class="caps"><span class="cap nobuild"><b></b> the recall-miss capture the IA asks for lands in a fixture lumberroom eval would read, and lumberroom eval is not built</span></div>
+      <div class="verdicts" style="margin-top:var(--s5)"><span><kbd>t</kbd> save this as a recall test case</span></div>
+    </div>
+    <div class="aside">
+      <h3>Diagnostic overlay, held with ?</h3>
+      <table>
+        <thead><tr><th>row</th><th class="n">cosine</th><th class="n">ts_rank</th><th class="n">blend</th><th class="n">penalty</th></tr></thead>
+        <tbody>
+          <tr><td>Deploys go out Tuesday</td><td class="n">0.811</td><td class="n">0.240</td><td class="n">0.611</td><td class="n">1.00</td></tr>
+          <tr><td>Release train is cut</td><td class="n">0.742</td><td class="n">0.190</td><td class="n">0.549</td><td class="n">1.00</td></tr>
+          <tr><td>CI runs on the ARM builder</td><td class="n">0.688</td><td class="n">0.000</td><td class="n">0.380</td><td class="n">0.85</td></tr>
+        </tbody>
+      </table>
+      <p class="note" style="margin-top:var(--s5)">The numbers exist and the owner is the one person
+      who might want them. They are never in the resting state, because a number you cannot
+      calibrate is noise that looks like signal.</p>
+      <div class="caps"><span class="cap nobuild"><b></b> hits carry a blended score. The three components are not returned separately</span></div>
+    </div>
+  </div>
+
+  <div class="tension">
+    <b>This screen is the signature element and it has no capability behind it.</b> Two things are
+    missing, and both are server work rather than UI work.
+    <br><br>
+    First, there is no HTTP search route at all. Search reaches callers through the
+    <span class="mono">memory_search</span> MCP tool at <span class="mono">/mcp</span>. A console
+    either speaks MCP from a browser session or the server grows a search route.
+    <br><br>
+    Second, and harder: a <span class="mono">Principal</span> is derived from the credential on the
+    request and from nothing else. Every read path takes that principal's namespace and ceiling
+    pairs. Nothing anywhere accepts "run this query with a different client's grant." The client lens
+    is a new server capability with its own security question, since it asks the owner's credential
+    to construct a narrower one and trust the result.
+  </div>
+</section>
+
+<!-- ==================== 4. CLIENTS ==================== -->
+<section id="clients" hidden>
+  <div class="screenhead">
+    <h1>Clients</h1>
+    <div class="source">
+      <span class="micro">IA: screen 3, reach and behaviour on one row</span>
+      <span class="micro">IA: build this one first</span>
+    </div>
+    <p class="resolves"><span class="micro">resolves</span>Does this grant earn the risk it carries.
+    Neither number means much alone. A wide grant on a client that has never written is risk with no
+    return. A narrow grant on the client doing all the work is a bottleneck.</p>
+    <p class="cli">The CLI that does the same job: <code>lumberroom clients</code> and
+    <code>lumberroom stats --by-client</code>, in two tables that do not sit next to each other.</p>
+  </div>
+
+  <div class="mock">
+    <div class="mockbar">
+      <span>Inbox 4</span><span>Search</span><span class="hi">Clients</span>
+      <span class="grow"></span><span>lens: off</span><span>&#8984;K</span>
+    </div>
+
+    <table>
+      <thead><tr>
+        <th style="width:18ch">client</th><th style="width:12ch">authority</th>
+        <th>reach</th><th style="width:26ch">last 14 days</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td class="hi">claude-code-mac</td>
+          <td class="low">AUTH_TOKENS</td>
+          <td><span class="reach">every namespace, read and write, up to <span class="cellsealed" style="padding:0 4px">sealed</span>. Registry writes on, deletes off.</span></td>
+          <td>1,102 read &nbsp; 84 write<br><span class="meta">61 of those unprompted</span></td>
+        </tr>
+        <tr>
+          <td class="hi">chatgpt</td>
+          <td class="low">oauth_client row</td>
+          <td><span class="reach">profile <b>standard</b>: user:me, global, project:* at open. Read and write are the same set.</span></td>
+          <td>340 read &nbsp; 0 write &#9873;<br><span class="meta">this surface consumes and never contributes</span></td>
+        </tr>
+        <tr>
+          <td class="hi">openwebui</td>
+          <td class="low">AUTH_TOKENS</td>
+          <td><span class="reach">project:* read and write at open</span></td>
+          <td>88 read &nbsp; 12 write<br><span class="meta">all 12 unprompted, through the inlet filter</span></td>
+        </tr>
+        <tr>
+          <td class="hi">hermes</td>
+          <td class="low">AUTH_TOKENS</td>
+          <td><span class="reach">user:me and global read at open, global write at open</span></td>
+          <td>41 read &nbsp; 6 write</td>
+        </tr>
+        <tr>
+          <td class="hi">claude-ai</td>
+          <td class="low">oauth_client row</td>
+          <td><span class="reach low">nothing. Registered itself 19 Aug, no consent, empty read and write lists.</span></td>
+          <td class="low">no calls<br><span class="meta">it cannot make one</span></td>
+        </tr>
+        <tr>
+          <td class="hi">lumberroom-ui <span class="cap proposed"><b></b></span></td>
+          <td class="low">would be an oauth_client row</td>
+          <td><span class="reach">the console's own credential. Read every namespace up to sealed, write nothing, decrypt no sealed item.</span></td>
+          <td class="low">not built</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="pad-lg" style="border-top:1px solid var(--rule)">
+      <h3>chatgpt, expanded</h3>
+      <table style="margin-top:var(--s4)">
+        <thead><tr><th style="width:9ch"></th><th style="width:22ch">namespace</th><th style="width:14ch">up to</th><th>admitted right now</th></tr></thead>
+        <tbody>
+          <tr><td class="low">reads</td><td class="mono">user:me</td><td>open</td><td>612 facts <span class="cap nobuild"><b></b> no query counts a client's admitted rows per namespace</span></td></tr>
+          <tr><td class="low"></td><td class="mono">global</td><td>open</td><td>190 facts</td></tr>
+          <tr><td class="low"></td><td class="mono">project:*</td><td>open</td><td>402 facts across 3 namespaces</td></tr>
+          <tr><td class="low">writes</td><td class="mono">user:me, global, project:*</td><td>open</td><td class="low">the same set. The shipped profiles make read and write identical.</td></tr>
+          <tr><td class="low">cannot</td><td colspan="2">decrypt sealed content</td><td class="low">sealed_capable false. A sealed ceiling would still deliver ciphertext.</td></tr>
+        </tbody>
+      </table>
+      <p class="note" style="margin-top:var(--s6)">&#9873; 340 reads and 0 writes in 14 days. This
+      surface consumes and never contributes.</p>
+      <p class="note" style="margin-top:var(--s4)">policy-test.sh passed 17 Aug, which was before the
+      last grant edit. &nbsp; <span class="hi">[ run it now ]</span>
+      <span class="cap nobuild"><b></b> the script is a shell script against a live server, with no route that triggers it</span></p>
+      <div class="verdicts" style="margin-top:var(--s6)">
+        <span><kbd>v</kbd> lens to this client</span>
+        <span><kbd>e</kbd> edit the grant</span>
+        <span><kbd>t</kbd> assert a fact id is invisible to it</span>
+        <span><kbd>x</kbd> revoke</span>
+      </div>
+      <div class="caps">
+        <span class="cap wired"><b></b> GET /oauth/clients, and GET /admin/whoami for the credential you present</span>
+        <span class="cap wired"><b></b> GET /statsz?by=client for both activity numbers</span>
+        <span class="cap noroute"><b></b> revoke_client exists in the store. No route calls it, so revoking is a SQL statement today</span>
+        <span class="cap nobuild"><b></b> editing a grant after consent has no path at all. See the note below</span>
+      </div>
+    </div>
+
+    <div class="statusbar">
+      <span>6 clients</span><span>2 with write outside user:me</span>
+      <span>last grant change 17 Aug</span>
+      <span class="grow" style="flex:1"></span><span>lumberroom clients</span>
+    </div>
+  </div>
+
+  <div class="tension">
+    <b>The authority column is the honest part, and it inverts what the design assumed.</b> The design
+    README asks for grants to move from <span class="mono">AUTH_TOKENS</span> into a versioned
+    Postgres table in Phase 3. Decision 0003 refused half of that on purpose: authority follows the
+    credential. A token from <span class="mono">AUTH_TOKENS</span> carries its grant there, a client
+    id this server issued carries its grant in its row, and no code path copies one into the other.
+    The record's reason is that a seeded copy has two quiet failure modes and both end with the file
+    and the row disagreeing about what a client may see.
+    <br><br>
+    The consequence for this screen: the editable authority is the less expressive one. An OAuth
+    client's grant is one of three fixed profiles, <b>full</b>, <b>standard</b> and <b>narrow</b>,
+    assigned at the consent screen, where read and write are the same namespace set at every profile
+    and only <b>full</b> carries sealed, deletes or registry writes. The expressive authority is the
+    environment: <span class="mono">AUTH_TOKENS</span> takes per-namespace ceilings on read and write
+    independently. That one needs a restart to change and the console must never write it, because a
+    console that could rewrite it would put the server in charge of its own access control.
+    <br><br>
+    So the row for claude-code-mac is read-only by design, the row for chatgpt is editable in
+    principle and has no editor, and the console's own <span class="mono">lumberroom-ui</span> grant, read
+    everywhere up to sealed with no writes and no sealed decryption, is not expressible as any
+    profile the server ships.
+  </div>
+
+  <div class="tension">
+    <b>Unresolved between the two design passes.</b> The IA demotes instrumentation from a section to
+    two lines on this screen, on the argument that adjacency is what the browser adds: the counts
+    sitting directly beneath the grant they belong to is one thought. The visual pass gives
+    instrumentation a whole screen and a nav item. Both are in this preview. Pick one.
+  </div>
+</section>
+
+<!-- ==================== 5. FACT PANEL ==================== -->
+<section id="fact" hidden>
+  <div class="screenhead">
+    <h1>The fact panel</h1>
+    <div class="source">
+      <span class="micro">IA: opens from anywhere, deep-linkable by id</span>
+      <span class="micro">visual pass: section 5, there is no card</span>
+    </div>
+    <p class="resolves"><span class="micro">resolves</span>Why does the store think this, and should
+    it keep thinking it. The panel carries provenance as a sentence, the value history as intervals,
+    and the four actions. It is the only place the console writes.</p>
+    <p class="cli">The CLI that does the same job: <code>lumberroom forget &lt;id&gt;</code> and
+    <code>lumberroom supersede &lt;old&gt; &lt;new&gt;</code>, both of which need a uuid you already hold.</p>
+  </div>
+
+  <div class="mock two">
+    <div>
+      <div class="strip"><span>user:me + global + project:lumberroom</span><span class="grow" style="flex:1"></span><span>compact</span></div>
+      <div class="idx">
+        <div class="row" data-sens="open" aria-current="true">
+          <span class="gutter" aria-hidden="true"></span>
+          <span class="date">19 Aug</span>
+          <p class="content">The port is 8787</p>
+          <span class="client">claude-code-mac</span><span class="ns">user:me</span>
+        </div>
+        <div class="row" data-sens="open">
+          <span class="gutter" aria-hidden="true"></span>
+          <span class="date">19 Aug</span>
+          <p class="content">Deploys go out Tuesday mornings, never Friday</p>
+          <span class="client">claude-code-mac</span><span class="ns">project:lumberroom</span>
+        </div>
+        <div class="row" data-sens="private">
+          <span class="gutter" aria-hidden="true">&#9670;</span>
+          <span class="date">18 Aug</span>
+          <p class="content">Retainer invoices go out on the 1st, net 15</p>
+          <span class="client">claude-code-mac</span><span class="ns">personal:finance</span>
+        </div>
+        <div class="row" data-sens="open">
+          <span class="gutter" aria-hidden="true"></span>
+          <span class="date">18 Aug</span>
+          <p class="content">Desktop runs Ubuntu 26.04</p>
+          <span class="client">lumberroom</span><span class="ns">global</span>
+        </div>
+        <div class="stack">
+          <div>&#9500; 02 Aug &nbsp; Ubuntu 25.10 &nbsp; <span class="low">retired 18 Aug by lumberroom</span></div>
+          <div>&#9492; 11 Jun &nbsp; Ubuntu 24.04 LTS &nbsp; <span class="low">retired 02 Aug by lumberroom</span></div>
+        </div>
+        <div class="row" data-sens="sealed">
+          <span class="gutter" aria-hidden="true">&#9641;</span>
+          <span class="date">17 Aug</span>
+          <p class="content">&#9622;&#9622;&#9622;&#9622;&#9622;&#9622;&#9622;&#9622; sealed &middot; 412 B &middot; key not in this browser</p>
+          <span class="client">&middot;</span><span class="ns">credentials:aws</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="aside">
+      <p class="prose" style="font-size:var(--t-head);line-height:1.35">The port is 8787</p>
+      <p class="meta" style="margin-top:var(--s5)">open &middot; user:me &middot; tags: lumberroom, config</p>
+
+      <h3>provenance</h3>
+      <p class="prose">claude-code-mac wrote this on 19 Aug and you confirmed it. It replaced a value
+      from 12 Aug.</p>
+      <p class="note" style="margin-top:var(--s4)">Provenance is a sentence, not a field list. Fields
+      fall out of the grammar when they are ordinary, so a long sentence means something unusual
+      happened. Exactly one distinction is coloured, confirmed by you or not, because it is the only
+      provenance fact that routinely changes a decision.</p>
+
+      <h3>value history</h3>
+      <div class="field" style="grid-template-columns:2ch 10ch 1fr">
+        <dt class="hi">&#9679;</dt><dd class="mono hi">8787</dd><dd class="meta">now, since 19 Aug</dd>
+        <dt class="mid">&#9675;</dt><dd class="mono mid">8080</dd><dd class="meta">12 Aug to 19 Aug &middot; chatgpt</dd>
+        <dt class="mid">&#9675;</dt><dd class="mono mid">3000</dd><dd class="meta">18 Jan to 12 Aug &middot; you</dd>
+      </div>
+      <p class="note" style="margin-top:var(--s4)">Intervals rather than events. "8080 was true from
+      12 to 19 August" is what a decision log is for. It never becomes a graph: chains are linear
+      because a supersede whose target is already superseded is refused.</p>
+      <div class="caps"><span class="cap wired"><b></b> superseded_by, superseded_at and the cycle rules are in migration 005 and the repository</span></div>
+
+      <h3>reads</h3>
+      <p class="prose">Read 14 times, last on 19 Aug.</p>
+      <div class="caps"><span class="cap nobuild"><b></b> which client did the reading is the IA's first schema ask. memory has last_accessed_at and access_count and no reading client</span></div>
+
+      <div class="actions">
+        <span><kbd>e</kbd> correct</span><span><kbd>s</kbd> supersede</span>
+        <span><kbd>y</kbd> copy id</span><span><kbd>Y</kbd> copy the CLI command</span>
+        <span><kbd>L</kbd> sensitivity</span><span><kbd>d</kbd> <kbd>d</kbd> delete</span>
+      </div>
+      <div class="caps">
+        <span class="cap wired"><b></b> GET and DELETE /admin/memory/{id}, POST /admin/memory/{id}/supersede</span>
+        <span class="cap nobuild"><b></b> raising a row's sensitivity in place has no path. Sensitivity is set on write</span>
+      </div>
+    </div>
+  </div>
+
+  <h2>Correcting a fact</h2>
+  <div class="mock">
+    <div class="pad-lg">
+      <p class="prose mid" style="text-decoration:none;opacity:.75">The port is 8080</p>
+      <p class="meta" style="margin:var(--s3) 0 var(--s6)">chatgpt wrote this on 12 Aug. You have never confirmed it.</p>
+      <div style="border:1px solid var(--focus);padding:var(--s5);background:var(--panel-2)">
+        <p class="prose hi">The port is 8787</p>
+      </div>
+      <p class="note" style="margin-top:var(--s5)">The field arrives pre-filled with the old text, so
+      a one-word fix is a one-word edit. On save the panel does not close: it re-renders as the new
+      fact with the history strip one segment longer. Seeing the chain grow is the confirmation. A
+      toast saying "saved" is not.</p>
+      <div class="field" style="margin-top:var(--s6);grid-template-columns:18ch 1fr">
+        <dt>sensitivity</dt><dd>open &nbsp; <span class="low">raise to private</span> &nbsp; <span class="low">raise to sealed</span></dd>
+        <dt>lower it</dt><dd class="low">not offered. A level can be raised and never lowered, so the option is disabled with the reason rather than failing after you press save.</dd>
+      </div>
+      <p class="note" style="margin-top:var(--s6)">If the target was already superseded by another
+      session, the write is rejected and the panel jumps to the head of the chain, naming who
+      corrected it and when, then offers to correct that one instead.</p>
+      <div class="caps">
+        <span class="cap wired"><b></b> memory_write with supersedes lands both halves in one transaction, and supersession_head names the current head on a rejection</span>
+        <span class="cap nobuild"><b></b> writing content needs a write route or an MCP session from the browser. Only supersede is exposed over HTTP</span>
+      </div>
+    </div>
+  </div>
+
+  <h2>Deleting</h2>
+  <div class="mock two">
+    <div class="pad-lg">
+      <h3>open and private: optimistic</h3>
+      <p class="prose">The row disappears at once with a ten-second undo, because the anxiety is that
+      the fact still exists and the interface has to show it gone.</p>
+      <div style="margin-top:var(--s6);border:1px solid var(--rule);background:var(--panel-2);padding:var(--s5)">
+        <p class="prose">Deleted. It may already have been read: 3 reads, last by chatgpt on 17 Aug.</p>
+        <p class="meta" style="margin-top:var(--s4)">undo &nbsp; 10 &middot; 9 &middot; 8</p>
+      </div>
+      <p class="note" style="margin-top:var(--s5)">A deletion does not un-read a fact, and the console
+      is the only thing that can say whether you were too late. That sentence is the last frame of the
+      toast and the reason the reading client is worth a column.</p>
+      <div class="caps">
+        <span class="cap wired"><b></b> DELETE /admin/memory/{id}. A private row's wrapped key goes with it, so older backups hold unreadable ciphertext</span>
+        <span class="cap nobuild"><b></b> "last by chatgpt" needs the reading-client column</span>
+        <span class="cap nobuild"><b></b> undo needs a delayed delete or a tombstone. The delete path is immediate and hard</span>
+      </div>
+    </div>
+    <div class="aside">
+      <h3>sealed: no optimism, no undo</h3>
+      <div class="row" data-sens="sealed" style="border:1px solid var(--rule);grid-template-columns:2ch 1fr">
+        <span class="gutter" aria-hidden="true">&#9641;</span>
+        <p class="content">credentials.aws.deploy-key</p>
+      </div>
+      <p class="prose" style="margin-top:var(--s5)">This server holds no key for sealed items and
+      neither does this browser. Deleting this row destroys the only copy.</p>
+      <p class="meta" style="margin-top:var(--s4)">hmac 9f3a...c210 &middot; 412 B &middot; written 17 Aug by lumberroom</p>
+      <p class="mono hi" style="margin-top:var(--s5)">lumberroom unseal credentials.aws.deploy-key</p>
+      <div style="margin-top:var(--s6);border:1px solid var(--bad);padding:var(--s4)">
+        <p class="meta">Type the key name to confirm, then hold for 600ms. 3 &middot; 2 &middot; 1</p>
+      </div>
+      <p class="note" style="margin-top:var(--s5)">The 600ms gate is a JS timer and the fill only
+      displays it, so no stylesheet and no motion preference can shorten it to a tap.</p>
+      <div class="caps"><span class="cap wired"><b></b> DELETE /admin/sealed, keyed by namespace and key_hmac</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 6. POLICY ==================== -->
+<section id="policy" hidden>
+  <div class="screenhead">
+    <h1>Policy</h1>
+    <div class="source">
+      <span class="micro">visual pass: screen B, the grid with the lens armed</span>
+      <span class="micro">IA: do not build the grant matrix as a matrix</span>
+    </div>
+    <p class="resolves"><span class="micro">resolves</span>What becomes visible to whom if I widen
+    this clause. The IA calls the blast radius the highest-value thing in the whole document, because
+    it requires running the proposed grant against the live store before committing it, and nothing
+    else can tell you that.</p>
+    <p class="cli">The CLI that does the same job: nothing does. <code>lumberroom clients</code> prints the
+    current state and cannot preview a change.</p>
+  </div>
+
+  <div class="mock">
+    <div class="mockbar">
+      <span>facts</span><span>registry</span><span class="hi">policy</span><span>signal</span>
+      <span class="grow"></span><span>lens: chatgpt</span><span>&#8984;K</span>
+    </div>
+    <div class="lensband">
+      <span>&#9622;&#9622; viewing the whole interface as chatgpt sees it. 1,204 of 14,382 facts visible.</span>
+      <span class="grow"></span><span>[V] clear</span>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th rowspan="2" style="width:17ch">client</th>
+          <th colspan="2">user:me</th><th colspan="2">global</th><th colspan="2">project:*</th>
+          <th colspan="2">personal:finance</th><th colspan="2">credentials:*</th>
+        </tr>
+        <tr>
+          <th>r</th><th>w</th><th>r</th><th>w</th><th>r</th><th>w</th><th>r</th><th>w</th><th>r</th><th>w</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>claude-code-mac</td>
+          <td class="cellsealed">sealed</td><td class="cellsealed">sealed</td>
+          <td class="cellsealed">sealed</td><td class="cellsealed">sealed</td>
+          <td class="cellsealed">sealed</td><td class="cellsealed">sealed</td>
+          <td class="cellsealed">sealed</td><td class="cellsealed">sealed</td>
+          <td class="cellsealed">sealed</td><td class="cellsealed">sealed</td>
+        </tr>
+        <tr>
+          <td>chatgpt</td>
+          <td>open</td><td>open</td><td>open</td><td>open</td><td>open</td><td>open</td>
+          <td class="empty">&middot;</td><td class="empty">&middot;</td>
+          <td class="empty">&middot;</td><td class="empty">&middot;</td>
+        </tr>
+        <tr>
+          <td>openwebui</td>
+          <td class="empty">&middot;</td><td class="empty">&middot;</td>
+          <td class="empty">&middot;</td><td class="empty">&middot;</td>
+          <td>open</td><td>open</td>
+          <td class="empty">&middot;</td><td class="empty">&middot;</td>
+          <td class="empty">&middot;</td><td class="empty">&middot;</td>
+        </tr>
+        <tr>
+          <td>hermes</td>
+          <td>open</td><td class="empty">&middot;</td>
+          <td>open</td><td>open</td>
+          <td class="empty">&middot;</td><td class="empty">&middot;</td>
+          <td class="empty">&middot;</td><td class="empty">&middot;</td>
+          <td class="empty">&middot;</td><td class="empty">&middot;</td>
+        </tr>
+        <tr>
+          <td>claude-ai</td>
+          <td class="empty">&middot;</td><td class="empty">&middot;</td>
+          <td class="empty">&middot;</td><td class="empty">&middot;</td>
+          <td class="empty">&middot;</td><td class="empty">&middot;</td>
+          <td class="empty">&middot;</td><td class="empty">&middot;</td>
+          <td class="empty">&middot;</td><td class="empty">&middot;</td>
+        </tr>
+        <tr>
+          <td>lumberroom-ui <span class="cap proposed"><b></b></span></td>
+          <td class="cellsealed">sealed</td><td class="empty">&middot;</td>
+          <td class="cellsealed">sealed</td><td class="empty">&middot;</td>
+          <td class="cellsealed">sealed</td><td class="empty">&middot;</td>
+          <td class="cellsealed">sealed</td><td class="empty">&middot;</td>
+          <td class="cellsealed">sealed</td><td class="empty">&middot;</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="pad-lg" style="border-top:1px solid var(--rule)">
+      <p class="note">chatgpt is sealed_capable false, so a sealed ceiling would still deliver
+      ciphertext and nothing else.</p>
+      <p class="note" style="margin-top:var(--s4)">A private cell and a sealed cell are the only
+      coloured cells in this interface. An empty cell is not granted. The grant model is
+      allowlist-only: there is no deny rule, so nothing here is red.</p>
+      <div class="verdicts" style="margin-top:var(--s6)">
+        <span><kbd>&#8629;</kbd> edit cell</span><span><kbd>v</kbd> lens to this client</span>
+        <span><kbd>t</kbd> assert a fact id is invisible to this client</span>
+      </div>
+      <div class="caps">
+        <span class="cap wired"><b></b> the two-axis model is enforced. Each namespace glob carries a ceiling and the filter runs inside the query</span>
+        <span class="cap nobuild"><b></b> three of these six rows cannot be produced by the shipped grant model. Read and write are the same set at every OAuth profile</span>
+      </div>
+    </div>
+    <div class="statusbar">
+      <span>6 clients</span><span>2 with write outside user:me</span><span>allowlist only</span>
+      <span class="grow" style="flex:1"></span><span>the columns are the namespaces that exist today, not the axis</span>
+    </div>
+  </div>
+
+  <div class="tension">
+    <b>The one place the two design passes contradict each other, and how the README resolves it.</b>
+    The IA refuses the matrix on structural grounds: namespaces are glob patterns that overlap, nest
+    and are open-ended, so the axis has no enumerable row set. Rows-as-patterns leaves the cell where
+    project:* and project:lumberroom overlap undefined. Rows-as-namespaces grows forever and stops showing
+    the grant you wrote. The visual pass draws the grid anyway. The README resolves it in favour of
+    the IA for the editor, where patterns are authored, and allows the grid only as a read-only
+    overview of concrete clients against concrete namespaces. That is what the grid above is, and
+    <kbd>&#8629;</kbd> edit cell contradicts it. Decide whether the grid stays read-only.
+  </div>
+
+  <h2>The editor, which is clauses and a diff</h2>
+  <div class="mock two">
+    <div class="pad-lg">
+      <h3>chatgpt, read clauses</h3>
+      <div class="field" style="grid-template-columns:22ch 14ch 1fr">
+        <dt class="mono">user:me</dt><dd>up to open</dd><dd class="meta">612 facts admitted today</dd>
+        <dt class="mono">global</dt><dd>up to open</dd><dd class="meta">190 facts admitted today</dd>
+        <dt class="mono">project:*</dt><dd>up to open</dd><dd class="meta">402 facts across 3 namespaces</dd>
+        <dt class="mono hi">personal:*</dt><dd class="hi">up to private</dd><dd class="meta hi">added, not yet saved</dd>
+      </div>
+      <p class="note" style="margin-top:var(--s6)">Clauses plus live counters plus the diff, rather
+      than a matrix. Each clause shows what it currently admits, so a pattern that admits nothing is
+      visible as a pattern that admits nothing.</p>
+    </div>
+    <div class="aside">
+      <h3>what changes</h3>
+      <p class="prose" style="font-size:var(--t-read)">chatgpt &middot; read &middot; add personal:* at private</p>
+      <p class="prose hi" style="margin-top:var(--s5)">+412 facts become visible to chatgpt.</p>
+      <p class="prose" style="margin-top:var(--s4)">3 of them are in personal:finance. &nbsp;
+        <span class="hi">[ show me ]</span></p>
+      <p class="note" style="margin-top:var(--s5)">The preview is not a summary, it is the actual
+      rows. <span class="hi">show me</span> opens Search as chatgpt with the newly admitted set.
+      Editing shows the diff, never the state.</p>
+      <div style="margin-top:var(--s6);padding-top:var(--s5);border-top:1px solid var(--rule)">
+        <p class="prose">A second example, the ceiling rather than the pattern:</p>
+        <p class="meta" style="margin-top:var(--s4)">chatgpt &middot; read &middot; user:me &middot; open to private</p>
+        <p class="prose hi" style="margin-top:var(--s3)">+7 facts become visible to chatgpt.</p>
+        <p class="meta">All 7 are encrypted at rest and this server decrypts them to answer a search,
+        so chatgpt would receive their plaintext.</p>
+      </div>
+      <div class="caps">
+        <span class="cap nobuild"><b></b> no query counts what a proposed grant would admit. namespace_counts is pre-policy and its own contract forbids its numbers from reaching a response</span>
+        <span class="cap nobuild"><b></b> set_client_grant is reachable only from POST /oauth/consent, inside a live authorization request, and takes one of three profiles rather than clauses</span>
+        <span class="cap nobuild"><b></b> a grant history, which the design wants for the same reason a memory history is worth having, has no table</span>
+      </div>
+    </div>
+  </div>
+
+  <h2>What decides that something is private</h2>
+  <div class="mock">
+    <div class="pad-lg">
+      <p class="note">The classification table, which the design never mentions and which is the
+      thing that decides what gets encrypted. It applies to writes, not to clients.</p>
+      <table style="margin-top:var(--s5)">
+        <thead><tr><th style="width:24ch">pattern</th><th style="width:14ch">default level</th><th>live rows</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">*</td><td>open</td><td class="meta">the fallback</td></tr>
+          <tr><td class="mono">global</td><td>open</td><td class="meta">318</td></tr>
+          <tr><td class="mono">project:*</td><td>open</td><td class="meta">402</td></tr>
+          <tr><td class="mono">user:me</td><td>open</td><td class="meta">612</td></tr>
+          <tr><td class="mono">personal:finance</td><td class="cellprivate">private</td><td class="meta">3</td></tr>
+          <tr><td class="mono">personal:health</td><td class="cellprivate">private</td><td class="meta">0</td></tr>
+          <tr><td class="mono">credentials:*</td><td class="cellsealed">sealed</td><td class="meta">2 sealed items, contents unknown to this server</td></tr>
+        </tbody>
+      </table>
+      <p class="note" style="margin-top:var(--s6)">In effect from: <span class="mono hi">SENSITIVITY_DEFAULTS</span>,
+      the environment variable. While that variable carries rules the
+      <span class="mono">sensitivity_default</span> table has no say, and the table is what an editor
+      would write. Clear the variable to hand authority back to the table.</p>
+      <p class="note" style="margin-top:var(--s4)">Editing here would take effect at the next boot.
+      The server resolves this table once, at startup, next to the key check.</p>
+      <div class="caps">
+        <span class="cap nobuild"><b></b> no route reads or writes the classification table. It is edited with SQL or an environment variable and a redeploy</span>
+        <span class="cap proposed"><b></b> read-only in the console until the resolution moves off the boot path</span>
+      </div>
+      <p class="note" style="margin-top:var(--s6)">The PRD names the failure this table prevents:
+      everything ending up in open because classifying is a chore. That is an argument for the
+      console owning it, and the boot-time resolution is the reason it cannot own it yet.</p>
+    </div>
+  </div>
+
+  <h2>The key, and what a mismatch costs</h2>
+  <div class="mock">
+    <div class="pad-lg">
+      <div class="field" style="grid-template-columns:20ch 1fr">
+        <dt>provider</dt><dd>file &nbsp; <span class="meta">defends a stolen dump and a leaked backup. Not the disk, not root, not a live compromise.</span></dd>
+        <dt>kek_id</dt><dd class="mono">lumberroom-kek-1</dd>
+        <dt>fingerprint</dt><dd class="mono">4f21c0a9...8e17 &nbsp; <span class="meta">HMAC of a frozen label under the key, 128 bits</span></dd>
+        <dt>verified</dt><dd><span class="hi">no</span> &nbsp; <span class="meta">the live key is not the one this store recorded</span></dd>
+        <dt>consequence</dt><dd>Private writes are refused. Existing private rows will not open. Every open read and write works, which is why the server still reports itself healthy.</dd>
+        <dt>escrow</dt><dd class="hi">undecided</dd>
+      </div>
+      <p class="note" style="margin-top:var(--s6)">Decision 0004 leaves escrow open on purpose and
+      says to answer it before turning on encryption for writes the owner cares about. A row encrypted
+      under a key nobody can fetch again is unreadable in the database and in every backup taken
+      since. The console can show that question and cannot answer it.</p>
+      <div class="caps">
+        <span class="cap wired"><b></b> GET /readyz returns kek_provider and kek_verified</span>
+        <span class="cap nobuild"><b></b> the fingerprint, the recorded kek_id and the escrow state are not on any route</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 7. SIGNAL ==================== -->
+<section id="signal" hidden>
+  <div class="screenhead">
+    <h1>Signal</h1>
+    <div class="source">
+      <span class="micro">visual pass: screen C</span>
+      <span class="micro">contested: the IA demotes this to two lines on Clients</span>
+    </div>
+    <p class="resolves"><span class="micro">resolves</span>Is the loop working, or has a surface gone
+    quiet. The interesting finding is always a client that stopped calling.</p>
+    <p class="cli">The CLI that does the same job: <code>lumberroom stats --hours 168</code></p>
+  </div>
+
+  <div class="mock">
+    <div class="mockbar">
+      <span>facts</span><span>registry</span><span>policy</span><span class="hi">signal</span>
+      <span class="grow"></span><span>window: 1h &nbsp; 24h &nbsp; [7d] &nbsp; 30d</span>
+    </div>
+    <div class="pad-lg">
+      <p style="font-size:var(--t-lead);color:var(--ink-hi)">0.31 &nbsp;
+        <span class="meta">unprompted share &nbsp; &#9601;&#9602;&#9602;&#9603;&#9603;&#9602;&#9604;&#9605;&#9604;&#9605;&#9606;&#9605;&#9606;&#9607;&#9606;&#9607;&#9607;&#9606;&#9607;&#9608;&#9607; 7d</span></p>
+      <p class="note" style="margin-top:var(--s3)">the share of calls a model made on its own, not
+      forced by a hook</p>
+
+      <table style="margin-top:var(--s8)">
+        <thead><tr>
+          <th style="width:18ch">client</th><th class="n">calls</th><th class="n">failed</th>
+          <th style="width:22ch">unprompted</th><th class="n">p50</th><th class="n">p95</th>
+        </tr></thead>
+        <tbody>
+          <tr><td>claude-code-mac</td><td class="n">2,411</td><td class="n">0</td>
+            <td><span class="bar" style="width:41%"></span> <span class="meta">0.41</span></td>
+            <td class="n">44ms</td><td class="n">238ms</td></tr>
+          <tr><td>chatgpt</td><td class="n">318</td><td class="n">12</td>
+            <td><span class="bar" style="width:9%"></span> <span class="meta">0.09</span></td>
+            <td class="n">61ms</td><td class="n">410ms</td></tr>
+          <tr><td>hermes</td><td class="n">204</td><td class="n">0</td>
+            <td><span class="bar" style="width:28%"></span> <span class="meta">0.28</span></td>
+            <td class="n">52ms</td><td class="n">198ms</td></tr>
+          <tr><td>openwebui</td><td class="n">0</td><td class="n low">&middot;</td>
+            <td><span class="bar zero" style="width:2%"></span> <span class="meta low">no data</span></td>
+            <td class="n low">&middot;</td><td class="n low">&middot;</td></tr>
+        </tbody>
+      </table>
+
+      <table style="margin-top:var(--s8)">
+        <thead><tr><th style="width:22ch">tool</th><th class="n">calls</th><th class="n">failed</th><th class="n">p50</th><th class="n">p95</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">memory_search</td><td class="n">1,904</td><td class="n">3</td><td class="n">44ms</td><td class="n">238ms</td></tr>
+          <tr><td class="mono">context_bootstrap</td><td class="n">1,012</td><td class="n">0</td><td class="n">4ms</td><td class="n">30ms</td></tr>
+          <tr><td class="mono">memory_write</td><td class="n">412</td><td class="n">9</td><td class="n">184ms</td><td class="n">197ms</td></tr>
+          <tr><td class="mono">registry_get</td><td class="n">105</td><td class="n">0</td><td class="n">6ms</td><td class="n">22ms</td></tr>
+        </tbody>
+      </table>
+
+      <p class="note" style="margin-top:var(--s8)">openwebui has made no calls in 7 days. Wired and
+      silent: check the grant or the client. A zero-call client gets a sentence rather than a green
+      tick, and a zero-failure bar is drawn in grey, because nothing happening is not success.</p>
+      <p class="note" style="margin-top:var(--s4)">9 of the 412 writes failed. Three of those were
+      the credential tripwire refusing content that looked like a secret, and this table cannot say
+      which three.</p>
+      <div class="caps">
+        <span class="cap wired"><b></b> GET /statsz and /statsz?by=client return every number above</span>
+        <span class="cap nobuild"><b></b> a failure has no reason attached, so the tripwire hits that belong at the top of the Inbox are invisible here too</span>
+        <span class="cap nobuild"><b></b> the measure the PRD cares about most, whether you stopped repeating yourself, has no instrumentation and three unpicked options</span>
+      </div>
+    </div>
+    <div class="statusbar">
+      <span>2,933 calls</span><span>12 failed</span>
+      <span class="grow" style="flex:1"></span><span>lumberroom stats --hours 168</span>
+    </div>
+  </div>
+
+  <div class="tension">
+    <b>Decide whether this is a screen.</b> The IA's argument is that <code>lumberroom stats</code> is
+    already a good table and a browser copy is a worse one, so what the browser adds is adjacency:
+    the counts sitting directly beneath the grant they belong to. Under that reading, everything above
+    collapses to two lines on the Clients screen and this nav item goes away.
+  </div>
+</section>
+
+<!-- ==================== 8. REGISTRY ==================== -->
+<section id="registry" hidden>
+  <div class="screenhead">
+    <h1>Registry</h1>
+    <div class="source">
+      <span class="micro">visual pass: section 5, same row grammar, different columns</span>
+      <span class="micro">contested: the IA lists three screens and one panel, and this is not one of them</span>
+    </div>
+    <p class="resolves"><span class="micro">resolves</span>Is this exact value still true, and who
+    said so. The registry is where credential locations live, which is why a write here is an operator
+    action rather than a fifth tool.</p>
+    <p class="cli">The CLI that does the same job: <code>lumberroom registry list</code> and
+    <code>lumberroom registry set</code></p>
+  </div>
+
+  <div class="mock two">
+    <div>
+      <div class="strip"><span>4 keys</span><span>1 due for review</span><span class="grow" style="flex:1"></span><span>global + user:me + credentials:*</span></div>
+      <div class="idx" style="grid-template-columns:2ch 34ch minmax(0,1fr) 10ch 18ch">
+        <div class="row" data-sens="open">
+          <span class="gutter" aria-hidden="true"></span>
+          <span class="mono" style="font-size:var(--t-body)">machines.desktop.os</span>
+          <p class="content mono" style="font-family:var(--mono)">"Ubuntu 26.04"</p>
+          <span class="client">&#10003;you</span><span class="ns">global</span>
+        </div>
+        <div class="row" data-sens="open">
+          <span class="gutter" aria-hidden="true"></span>
+          <span class="mono" style="font-size:var(--t-body)">services.postgres.endpoint</span>
+          <p class="content mono" style="font-family:var(--mono)">{host:"127.0.0.1", port:5432}</p>
+          <span class="client">&#10003;you</span><span class="ns">global</span>
+        </div>
+        <div class="row" data-sens="open" aria-current="true">
+          <span class="gutter" aria-hidden="true"></span>
+          <span class="mono" style="font-size:var(--t-body)">routes.coding.model</span>
+          <p class="content mono" style="font-family:var(--mono)">"claude-opus-5"</p>
+          <span class="client">&middot;</span><span class="ns">user:me</span>
+        </div>
+        <div class="row" data-sens="sealed">
+          <span class="gutter" aria-hidden="true">&#9641;</span>
+          <span class="mono" style="font-size:var(--t-body)">credentials.postgres.location</span>
+          <p class="content">&#9622;&#9622;&#9622;&#9622;&#9622;&#9622;&#9622;&#9622;</p>
+          <span class="client">&#10003;you</span><span class="ns">credentials:*</span>
+        </div>
+      </div>
+      <div class="pad">
+        <p class="note">Dotted keys read as a hierarchy without indentation because the dots sit one
+        ink step back from the segments. JSON is elided to one line here and pretty-printed in the
+        margin.</p>
+      </div>
+    </div>
+    <div class="aside">
+      <p class="mono hi" style="font-size:var(--t-head)">routes.coding.model</p>
+      <p class="mono" style="margin-top:var(--s5)">"claude-opus-5"</p>
+      <h3>provenance</h3>
+      <div class="field">
+        <dt>written by</dt><dd>hermes &middot; session 0f21...</dd>
+        <dt>on</dt><dd>16 Aug 2026, 23:41</dd>
+        <dt>confirmed</dt><dd class="hi">never</dd>
+        <dt>supersedes</dt><dd>v2 &middot; routes.coding.model = "claude-sonnet-4-5"</dd>
+        <dt>version</dt><dd>3</dd>
+        <dt>review after</dt><dd>16 Sep 2026 &middot; <span class="low">a model route ages fast</span></dd>
+      </div>
+      <p class="note" style="margin-top:var(--s6)">Five provenance fields printed as a labelled block,
+      never as badges.</p>
+      <h3>a rejected guess became a redirect</h3>
+      <p class="prose">A write to <span class="mono">coding.model</span> was refused for not matching
+      the canonical scheme, and the refusal was recorded, so the same wrong name resolves here next
+      time. Aliases resolve one hop, an exact key beats a redirect, and a model's guess cannot
+      overwrite a mapping you wrote by hand.</p>
+      <div class="actions">
+        <span><kbd>c</kbd> confirm</span><span><kbd>e</kbd> correct</span><span><kbd>a</kbd> add an alias</span>
+      </div>
+      <div class="caps">
+        <span class="cap wired"><b></b> POST /admin/registry, POST /admin/registry/alias, GET /admin/review/registry</span>
+        <span class="cap nobuild"><b></b> no route lists the registry. The digest carries a summary and lumberroom registry list reads it through the MCP tool</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="tension">
+    <b>The IA does not include this screen.</b> Its verdict on browsing is absolute, and a registry
+    list is browsing. The argument for keeping it is that a registry entry due for review is a
+    decision, not a read, which is why review items already appear in the Inbox. The narrow version
+    is no Registry screen at all: registry decisions arrive in the Inbox, and the panel opens from
+    there.
+  </div>
+</section>
+
+<!-- ==================== 9. GAPS ==================== -->
+<section id="gaps" hidden>
+  <div class="screenhead">
+    <h1>Five things the design never saw</h1>
+    <div class="source">
+      <span class="micro">the design was written during Phase 1</span>
+      <span class="micro">the OAuth server, the sensitivity axis, sealed items, the delete path and the disclosure work all landed after it</span>
+    </div>
+    <p class="resolves"><span class="micro">resolves</span>Which of these belong in a disposition
+    surface, and which are somebody else's job.</p>
+  </div>
+
+  <div class="verdict">
+    <h4>1. Approving and revoking an OAuth client</h4>
+    <p class="call">verdict: belongs, and it is the strongest addition</p>
+    <p class="prose wide" style="margin-top:var(--s5)">Approval is the purest disposition act in the
+    system. A client registers itself, holds nothing, and waits for one decision that hands it reach
+    over the owner's whole record. That is the console's job description. Revocation is the same act
+    reversed and today it is a SQL statement.</p>
+    <div class="mock" style="max-width:760px">
+      <div class="mockbar"><span class="hi">approve a client</span><span class="grow"></span><span>registered 19 Aug 09:41</span></div>
+      <div class="pad-lg">
+        <p class="prose">claude-ai wants access to your memory bank.</p>
+        <div class="field" style="margin-top:var(--s6);grid-template-columns:16ch 1fr">
+          <dt>client_id</dt><dd class="mono">c_7f21a0c9e4</dd>
+          <dt>registered</dt><dd>by itself, through dynamic registration</dd>
+          <dt>redirect to</dt><dd class="mono">https://claude.ai/api/mcp/auth_callback</dd>
+          <dt>calls itself</dt><dd>claude-ai <span class="meta">self-declared at registration, so it is a hint and never an identity</span></dd>
+          <dt>holds now</dt><dd>nothing. Empty read list, empty write list, no consent.</dd>
+        </div>
+        <h3>pick what it may reach</h3>
+        <table>
+          <tbody>
+            <tr><td style="width:12ch">full</td><td>Every namespace at every level, including sealed items. Can delete memories and change the registry.</td></tr>
+            <tr><td class="hi">standard</td><td>Your own notes, shared facts and project notes. Nothing private or sealed, no deletes, no registry changes.</td></tr>
+            <tr><td>narrow</td><td>Your own notes and shared facts. No project notes, nothing private or sealed, no deletes, no registry changes.</td></tr>
+          </tbody>
+        </table>
+        <p class="note" style="margin-top:var(--s5)">Three profiles is what the server accepts. There
+        is no fourth shape and no per-namespace choice at this screen.</p>
+        <p class="prose hi" style="margin-top:var(--s6)">Standard admits 1,204 of 14,382 facts. None
+        of them are in personal:finance or credentials:*.</p>
+        <div class="verdicts" style="margin-top:var(--s6)">
+          <span class="hi">[ allow ]</span><span>[ refuse ]</span><span><kbd>x</kbd> revoke the registration</span>
+        </div>
+        <div class="caps">
+          <span class="cap wired"><b></b> the shipped consent page at POST /oauth/consent does exactly this, inside the authorization redirect, with the owner's password in front of it</span>
+          <span class="cap noroute"><b></b> revoke_client exists and nothing calls it</span>
+          <span class="cap nobuild"><b></b> approving outside a live authorization request, which is what a console does, has no path</span>
+          <span class="cap nobuild"><b></b> the admits count is the blast-radius query again</span>
+        </div>
+      </div>
+    </div>
+    <p class="note">One caution the design would have raised: the consent screen is the one place the
+    owner's password is taken. Folding it into a console session means the console's session can grant
+    reach, and that is a security decision rather than a layout one.</p>
+  </div>
+
+  <div class="verdict">
+    <h4>2. Editing a grant ceiling per namespace, now that there are two axes</h4>
+    <p class="call">verdict: belongs, and the console cannot have it until the grant model grows</p>
+    <p class="prose wide" style="margin-top:var(--s5)">The design assumed clauses with a ceiling each
+    and built the blast radius on top of them. The server enforces exactly that model and only
+    <span class="mono">AUTH_TOKENS</span> can express it. An OAuth client gets one of three profiles
+    with read and write identical. So the editor on the Policy screen is drawn against a grant model
+    that exists in the enforcement path and not in the authoring path.</p>
+    <p class="prose wide">What has to happen first: <span class="mono">set_client_grant</span> already
+    takes clause lists rather than a profile, so the store is ready. What is missing is a route that
+    calls it outside a consent flow, a way to say per-clause ceilings at that route, and a decision
+    about whether profiles stay as presets on top of clauses or go away.</p>
+    <p class="note">Shown on the Policy screen, marked.</p>
+  </div>
+
+  <div class="verdict">
+    <h4>3. The classification table as an editable surface</h4>
+    <p class="call">verdict: belongs, read-only for now, and it is not urgent</p>
+    <p class="prose wide" style="margin-top:var(--s5)">This table decides what is private, so it
+    decides what gets encrypted, and the PRD's named failure condition is everything ending up in open
+    because classifying is a chore. An interface that shows a namespace holding three facts at open
+    next to a rule that classifies its neighbour private is doing the console's job.</p>
+    <p class="prose wide">Two facts make editing dishonest today. The rules resolve once, at boot,
+    beside the key check, so a change made in a browser does nothing until a restart. And when
+    <span class="mono">SENSITIVITY_DEFAULTS</span> carries rules the table has no say at all, which is
+    the state every compose deployment ships in. A console that wrote rows into a table the server
+    ignores would be worse than no editor. Show the rules, name the authority, print the caveat.</p>
+    <p class="note">Shown on the Policy screen, read-only, marked.</p>
+  </div>
+
+  <div class="verdict">
+    <h4>4. Key state, and the fact that a mismatch leaves private writes refused</h4>
+    <p class="call">verdict: belongs as a band and one status line, not as a screen</p>
+    <p class="prose wide" style="margin-top:var(--s5)">A key mismatch is the failure this system is
+    worst at showing. Every open read and write keeps working, the server reports itself healthy, and
+    every private write is refused. The one thing that catches it today is a line in the boot log and
+    a boolean on <span class="mono">/readyz</span>. The Inbox already answers "is this thing working"
+    when the queue is empty, and this is the answer it would otherwise get wrong.</p>
+    <p class="prose wide">Escrow is the harder half and the console cannot resolve it. Decision 0004
+    leaves it open and says to answer it before turning on encryption for writes that matter. A
+    console that offers a private write while escrow is undecided is helping the owner strand data.</p>
+    <p class="note">Shown as a band on the Inbox and a block on the Policy screen.</p>
+  </div>
+
+  <div class="verdict">
+    <h4>5. Sealed items, which the server cannot read and can only count</h4>
+    <p class="call">verdict: no screen. A row state and an inventory line</p>
+    <p class="prose wide" style="margin-top:var(--s5)">Sealed content has no plaintext to show, no
+    search to run and no ordering worth browsing. It is retrievable by exact key only, and the server
+    cannot enumerate the names because the key is an HMAC computed on the client. A count per
+    namespace is the whole honest surface.</p>
+    <div class="mock" style="max-width:620px">
+      <div class="pad">
+        <div class="field" style="grid-template-columns:24ch 1fr">
+          <dt class="mono">credentials:aws</dt><dd>2 sealed items</dd>
+          <dt class="mono">credentials:postgres</dt><dd>1 sealed item</dd>
+        </div>
+        <p class="note" style="margin-top:var(--s5)">Contents unknown to this server. Read one where
+        the key is: <span class="mono hi">lumberroom unseal credentials.aws.deploy-key</span></p>
+        <div class="caps"><span class="cap wired"><b></b> the sealed store counts per namespace and the digest already shows this inventory</span></div>
+      </div>
+    </div>
+    <p class="prose wide">The one sealed action that belongs is delete, and the design already has it
+    right: no optimism and no undo, an explicit confirm naming the key, because deleting a sealed row
+    destroys the only copy by construction.</p>
+  </div>
+
+  <h2>What the design asked the system for, and what happened</h2>
+  <table style="margin-top:var(--s5)">
+    <thead><tr><th style="width:34ch">the ask</th><th style="width:12ch">state</th><th>consequence for the console</th></tr></thead>
+    <tbody>
+      <tr><td>The reading client beside last_accessed_at</td><td class="hi">not built</td><td>The delete flow cannot say "3 reads, last by chatgpt", which is the sentence the flow exists for</td></tr>
+      <tr><td>A persistent not-a-conflict record</td><td class="hi">not built</td><td>"Both true" has nowhere to land, so the queue cries wolf and stops being opened</td></tr>
+      <tr><td>Grants in a versioned table, with history</td><td class="hi">half refused</td><td>Decision 0003 keeps bearer grants in the environment on purpose. Two authorities, one of them read-only, and no history table anywhere</td></tr>
+      <tr><td>The console as a client of itself, sealed_capable false</td><td class="hi">not expressible</td><td>No shipped profile grants read at sealed without also granting writes, deletes, registry writes and sealed decryption</td></tr>
+      <tr><td>Credential tripwire hits at the top of the queue</td><td class="hi">not built</td><td>tool_calls records a boolean. The highest-priority queue item has nothing to read</td></tr>
+      <tr><td>Impersonated search, the client lens</td><td class="hi">not built</td><td>A principal comes from the presented credential. Nothing accepts another client's grant as an argument</td></tr>
+      <tr><td>The blast-radius count</td><td class="hi">not built</td><td>The one query the highest-value screen depends on. namespace_counts is pre-policy and its contract forbids publishing its numbers</td></tr>
+      <tr><td>An export UI</td><td class="low">refused, correctly</td><td>The design rejects it. Worth noting that export::run and its manifest have no caller at all, so the tombstone rules the Obsidian mirror depends on are unreachable over HTTP</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ==================== 10. BOUNDARY ==================== -->
+<section id="boundary" hidden>
+  <div class="screenhead">
+    <h1>What the console does not do</h1>
+    <div class="source">
+      <span class="micro">IA: what not to build</span>
+      <span class="micro">each of these would otherwise arrive by reflex</span>
+    </div>
+    <p class="resolves"><span class="micro">resolves</span>Where the console stops. A reader should
+    finish knowing the boundary.</p>
+  </div>
+
+  <div class="grid2" style="margin-top:var(--s6)">
+    <div>
+      <h3>refused by the scoping rule</h3>
+      <ul class="plain note">
+        <li><b>A browse-all table</b> of every fact with filters and pagination. The single most
+        likely thing to be built and the most useless.</li>
+        <li><b>A compose box.</b> Break that and the console becomes a second-rate note app. Every
+        write it performs answers a fact already on screen.</li>
+        <li><b>A graph view.</b> Supersession chains are linear by construction, because a supersede
+        whose target is already superseded is refused. Branching is defined as an error, so the only
+        structure a graph would add is the one that cannot exist.</li>
+        <li><b>A stats page</b>, in the IA's reading. Two lines on Clients instead.</li>
+        <li><b>A timeline.</b> The value strip carries intervals, which is what a decision log is for.
+        A list of write timestamps is an audit trail and tool_calls already is one.</li>
+        <li><b>A dashboard.</b> The Inbox's empty state is the health readout.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>refused because it belongs elsewhere</h3>
+      <ul class="plain note">
+        <li><b>A registry CRUD form.</b></li>
+        <li><b>A tag manager.</b></li>
+        <li><b>A namespace management screen.</b> Namespaces are created by writing to them.</li>
+        <li><b>An export or backup UI.</b> The CLI owns export, backup, doctor and eval.</li>
+        <li><b>A settings screen.</b> Configuration is environment variables on a box the owner owns,
+        and a settings screen would be a lie about where the truth lives.</li>
+        <li><b>A theme toggle.</b> The light theme exists and the switch is not a product feature.
+        This preview carries one because it has to be judged in both.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>refused as noise</h3>
+      <ul class="plain note">
+        <li><b>Onboarding, tours, tooltips</b> explaining what a namespace is, empty state
+        illustrations.</li>
+        <li><b>A word-level diff</b> of two one-sentence facts.</li>
+        <li><b>Notifications and weekly digests.</b> The Inbox count is the notification.</li>
+        <li><b>Group actions as checkbox selection.</b> They exist as a rule with a dry run.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>refused as scope</h3>
+      <ul class="plain note">
+        <li><b>Websockets</b> and any live tail. The new-row tick is specified and not scheduled,
+        because nothing in the repo carries a transport for it.</li>
+        <li><b>Anything multi-user.</b> There are no user accounts, only one owner, and no sign-up
+        path that could make a second.</li>
+        <li><b>A conversation viewer</b>, which would mean storing transcripts.</li>
+        <li><b>React, Tailwind, an icon library, a CDN font, a service worker, client-side routing,
+        analytics of any kind.</b> Server-rendered HTML, one stylesheet, about 300 lines of vanilla
+        TypeScript, two self-hosted font files, under 90KB to the client.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Mobile</h2>
+  <p class="prose wide">One job fully, one at a glance, nothing else. The panic delete is the
+  strongest mobile argument in the product: the realisation that something sensitive got stored does
+  not wait for a laptop, and the surfaces most likely to have stored it are on the same phone. Keep
+  the health strip, the Inbox read-only, search with the client selector, the fact panel and delete.
+  Drop grant editing entirely, because a fat-fingered ceiling change is exactly the mistake this
+  system exists to prevent and it is never urgent.</p>
+
+  <h2>The job the design is suspicious of</h2>
+  <p class="prose wide">"What did I used to believe", the decision log. The supersession chain is a
+  side effect and exactly the kind of thing a builder over-invests in. It gets a widget, which is the
+  value strip in the fact panel, and never a screen.</p>
+
+  <hr>
+  <p class="note">Design documents: <span class="mono">docs/design/console-ia.md</span>,
+  <span class="mono">docs/design/console-visual.md</span>,
+  <span class="mono">docs/design/README.md</span>. This preview shows what they specify and marks what
+  the system cannot yet answer. It builds nothing.</p>
+</section>
+
+</main>
+
+<script>
+(function () {
+  var screens = [
+    ["overview", "Overview"],
+    ["inbox",    "Inbox 4"],
+    ["search",   "Search"],
+    ["clients",  "Clients"],
+    ["fact",     "Fact panel"],
+    ["policy",   "Policy"],
+    ["signal",   "Signal"],
+    ["registry", "Registry"],
+    ["gaps",     "Gaps"],
+    ["boundary", "Boundary"]
+  ];
+  var nav = document.getElementById("nav");
+  var buttons = [];
+
+  screens.forEach(function (s, i) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.textContent = s[1];
+    b.dataset.target = s[0];
+    b.addEventListener("click", function () { show(i); });
+    nav.appendChild(b);
+    buttons.push(b);
+  });
+
+  var current = 0;
+
+  function show(i) {
+    if (i < 0 || i >= screens.length) return;
+    current = i;
+    screens.forEach(function (s, j) {
+      var el = document.getElementById(s[0]);
+      if (el) el.hidden = j !== i;
+      buttons[j].setAttribute("aria-current", j === i ? "page" : "false");
+    });
+    if (location.hash.slice(1) !== screens[i][0]) {
+      history.replaceState(null, "", "#" + screens[i][0]);
+    }
+    requestAnimationFrame(function () { window.scrollTo(0, 0); });
+  }
+
+  // g chords, per the keymap in console-visual.md section 8: g f facts, g r registry,
+  // g p policy, g s signal. Screen movement only. No verb in this preview does anything.
+  var chords = { f: "fact", r: "registry", p: "policy", s: "signal", i: "inbox", c: "clients" };
+  var pending = false;
+  var pendingTimer = null;
+
+  function indexOf(id) {
+    for (var i = 0; i < screens.length; i++) { if (screens[i][0] === id) return i; }
+    return -1;
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+
+    if (pending) {
+      pending = false;
+      clearTimeout(pendingTimer);
+      var id = chords[e.key];
+      if (id) { show(indexOf(id)); e.preventDefault(); return; }
+    }
+
+    if (e.key === "g") {
+      pending = true;
+      pendingTimer = setTimeout(function () { pending = false; }, 900);
+      return;
+    }
+    if (e.key >= "1" && e.key <= "9") { show(Number(e.key) - 1); return; }
+    if (e.key === "0") { show(9); return; }
+    if (e.key === "ArrowRight" || e.key === "j") { show(Math.min(current + 1, screens.length - 1)); return; }
+    if (e.key === "ArrowLeft" || e.key === "k") { show(Math.max(current - 1, 0)); return; }
+    if (e.key === "?") { show(0); return; }
+  });
+
+  var themeBtn = document.getElementById("themeBtn");
+  themeBtn.addEventListener("click", function () {
+    var root = document.documentElement;
+    root.dataset.theme = root.dataset.theme === "light" ? "dark" : "light";
+  });
+
+  var start = indexOf(location.hash.slice(1));
+  show(start >= 0 ? start : 0);
+})();
+</script>
+</body>
+</html>

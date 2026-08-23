@@ -1,0 +1,16 @@
+{
+  "id": "9f1c2b4e-0000-4a1b-8c3d-1122334455aa",
+  "namespace": "user:me",
+  "content": "The owner runs lumberroom on an Oracle Ampere A1.",
+  "tags": ["infra"],
+  "source_client": "claude-code",
+  "embedding_model": "bge-base-en-v1.5",
+  "sensitivity": "open",
+  "supersedes": null,
+  "superseded_by": null,
+  "superseded_at": null,
+  "access_count": 4,
+  "last_accessed_at": "2026-08-20T08:00:00Z",
+  "last_confirmed_at": null,
+  "created_at": "2026-08-19T11:02:31.442Z"
+}

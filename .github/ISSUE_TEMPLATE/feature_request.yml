@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose something lumberroom should do that it does not do today.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do, and where the current design stops you.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: The change you want, and how it fits the ports-and-adapters architecture in CLAUDE.md if you have a view on that.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other ways to solve the same problem, and why they lost.

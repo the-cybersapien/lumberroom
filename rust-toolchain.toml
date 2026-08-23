@@ -1,0 +1,8 @@
+# Pinned to the rustc the lumberroom-builder image carries (rust:1-slim at the time the image was built).
+# `channel = "stable"` looked right and was not: rustup resolves it to the newest stable, which the
+# image does not have, so every `scripts/cargo.sh` call downloaded a full toolchain into a
+# throwaway container before doing any work. Bump this line when Dockerfile.builder is rebuilt on a
+# newer image; `rust-version = "1.83"` in the two Cargo.toml files is the floor, not this.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]

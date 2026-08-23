@@ -1,0 +1,27 @@
+{
+  "window_hours": 168,
+  "scope": "tenant",
+  "by_client": [
+    {
+      "client": "claude-code",
+      "calls": 12,
+      "reads": 9,
+      "writes": 3,
+      "failures": 1,
+      "sessions": 4,
+      "sessions_with_unprompted_read": 3,
+      "sessions_with_unprompted_write": 2,
+      "unprompted_read_rate": 0.75,
+      "unprompted_write_rate": 0.5,
+      "write_to_read_ratio": 0.33
+    }
+  ],
+  "staleness": {
+    "live_rows": 120,
+    "never_retrieved": 40,
+    "never_retrieved_pct": 33.3,
+    "median_age_days_retrieved": 12.0,
+    "superseded_rows": 7,
+    "oldest_never_retrieved_days": 210.0
+  }
+}

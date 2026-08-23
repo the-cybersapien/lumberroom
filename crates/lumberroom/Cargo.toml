@@ -1,0 +1,53 @@
+[package]
+name = "lumberroom"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+description = "Client for a lumberroom memory server. Runs on the machine holding the transcripts."
+license = "Apache-2.0"
+repository = "https://github.com/the-cybersapien/lumberroom"
+keywords = ["mcp", "memory", "cli", "lumberroom"]
+categories = ["command-line-utilities"]
+
+# One publishable artifact. It never depends on the server crate: the wire contract is redeclared
+# here and pinned by tests/wire.rs, so a client cannot drag an embedding runtime or a database
+# driver along behind it.
+[lib]
+name = "lumberroom"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lumberroom"
+path = "src/main.rs"
+
+[dependencies]
+# HTTP to a possibly remote server. rustls rather than native-tls so the binary carries its own TLS
+# and does not need OpenSSL on the machine it is copied to. default-features off keeps the
+# feature set to what this client uses.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# reqwest needs a runtime, and `login` binds a loopback listener: net and io-util are that listener,
+# time is the sign-in deadline. Current-thread flavour, so no worker pool for a CLI.
+# `sync` carries the semaphore that bounds extract concurrency: a provider answers a chunk in
+# seconds and 34 chunks at once is a rate limit rather than a speedup.
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time", "sync"] }
+serde = { version = "1", features = ["derive"] }
+# preserve_order because doctor, whoami and clients echo the server's JSON back and the owner reads
+# those lines. A BTreeMap-backed Value alphabetises keys and silently reorders every report.
+serde_json = { version = "1", features = ["preserve_order"] }
+# PKCE S256 is a SHA-256 over the verifier, base64url-encoded with no padding.
+sha2 = "0.10"
+base64 = "0.22"
+# CSPRNG bytes for the PKCE verifier and the OAuth state. getrandom rather than rand for the same
+# reason the server picked it: this is the only randomness here.
+getrandom = "0.3"
+# config.json's oauth.expires_at is an ISO-8601 instant the node CLI also reads and writes. std has
+# no calendar.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+# Run ids and proposal ids. The server issues them and the client parses and echoes them.
+uuid = { version = "1", features = ["v4", "serde"] }
+# An exclusive flock over the run lock, so two runs on one machine serialise instead of
+# interleaving their reads of the same growing file. Pure Rust over libc, no build script.
+fs2 = "0.4"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time"] }

@@ -1,0 +1,10 @@
+{
+  "embedder": "bge-base-en-v1.5",
+  "embedder_degraded": false,
+  "auth_mode": "oauth",
+  "kek_provider": "file",
+  "kek_verified": true,
+  "db_ms": 3,
+  "embedding_dim": 768,
+  "ok": true
+}

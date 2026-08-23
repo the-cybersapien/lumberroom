@@ -1,0 +1,31 @@
+name: Bug report
+description: Something in lumberroom does not work the way it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Commands run, environment variables set, and the smallest input that triggers it.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Output from the server, cargo test, or docker build. Paste text rather than a screenshot.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Image tag, commit hash, or the output of `lumberroom-server --version` if the binary carries one.
+    validations:
+      required: true

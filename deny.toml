@@ -1,0 +1,62 @@
+# cargo-deny configuration. Run it with `cargo deny check`, or via the `cargo-deny` job in
+# .github/workflows/ci.yml.
+#
+# The license allow list below is not aspirational: it is every SPDX identifier that appears
+# anywhere in Cargo.lock's dependency tree, read from each package's published license on
+# crates.io, not copied from another project's deny.toml. Re-derive it the same way after adding
+# a dependency that needs a license this list does not already cover.
+
+[advisories]
+db-urls = ["https://github.com/RustSec/advisory-db"]
+yanked = "warn"
+# The current schema replaced a deny/warn/allow severity for `unmaintained` with a scope: `all`,
+# `workspace`, `transitive`, or `none`. `workspace` is the closest match to "warn rather than
+# block": it still surfaces an unmaintained direct dependency, which is the one this project can
+# actually act on, without failing the build over something three layers down that nobody here
+# chose directly.
+unmaintained = "workspace"
+
+[licenses]
+confidence-threshold = 0.93
+# Catches a license this list carries that nothing in Cargo.lock actually needs any more, so the
+# list stays honest as dependencies change.
+unused-allowed-license = "warn"
+unused-license-exception = "warn"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CDLA-Permissive-2.0",
+    # ring's own Cargo.toml license field ("Apache-2.0 AND ISC") already satisfies this list
+    # without it, but the crate bundles BoringSSL C sources carrying the original OpenSSL
+    # license text, which is why cargo-deny's own documentation uses ring as the worked example
+    # for this identifier. Kept allowed and unused rather than assumed away.
+    "OpenSSL",
+    # libfuzzer-sys, present in the lock file behind rav1e's fuzz feature, ANDs this in.
+    "NCSA",
+]
+
+# option-ext is the only MPL-2.0 crate here. MPL-2.0 is file-level copyleft, so an unmodified
+# dependency imposes no obligation on the rest of this codebase; the exception says that
+# explicitly rather than adding MPL-2.0 to the general allow list, which would also clear a crate
+# whose modified MPL-2.0 files this project does carry.
+[[licenses.exceptions]]
+allow = ["MPL-2.0"]
+name = "option-ext"
+
+[bans]
+# Different crates in this tree pin different major versions of the same dependency; that is
+# normal for a graph this size and not something to fail a build over. Surfaced rather than
+# silenced, in case a future edit can collapse one.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

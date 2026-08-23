@@ -1,0 +1,1997 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lumberroom console: policy map</title>
+<style>
+/* =============================================================================
+   Policy map. One of five competing styles for the lumberroom console.
+
+   Three families carry the hierarchy, so a greyscale screenshot still separates
+   the levels: a serif for fact prose, a monospace for identifiers and counts, a
+   grotesque for chrome and labels. Hue is the fourth channel on sensitivity and
+   never the first.
+
+   Everything inside a .screen is product. Everything inside a .notes or .mark is
+   this document talking about the product, and it sits outside the bezel.
+   ========================================================================== */
+:root{
+  --paper:#FBF9F4; --page:#F1EDE3; --panel:#FFFFFF; --sink:#F6F3EB;
+  --ink:#191713; --ink2:#4C473D; --ink3:#6E6759;
+  --rule:#DFD9CA; --rule2:#C3BAA4; --rule3:#9C917A;
+
+  --reach:#0F4C75; --reach-tint:#E1EDF6; --reach-edge:#8FB6D2;
+  --priv:#7A4B0C; --priv-tint:#F7EEDC;
+  --seal:#3E3168; --seal-tint:#EDEAF6;
+  --warn:#8C3410; --warn-tint:#FBEBE3;
+  --good:#2A5A2C;
+
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,ui-serif,serif;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--page);color:var(--ink);font:400 16px/1.5 var(--sans)}
+a{color:var(--reach)}
+
+/* ---- document chrome ---------------------------------------------------- */
+.docbar{position:sticky;top:0;z-index:40;display:flex;gap:18px;align-items:center;
+  padding:0 20px;height:46px;background:var(--ink);color:#F3EFE6;
+  box-shadow:0 1px 0 rgba(0,0,0,.25)}
+.docbar .who{font:700 13px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase}
+.docbar .who i{font-style:normal;color:#B9AF98;font-weight:500}
+.docnav{display:flex;gap:2px;flex:1;flex-wrap:wrap;overflow:hidden}
+.docnav a{display:block;padding:6px 9px;color:#CFC7B4;text-decoration:none;
+  font:500 13px/1 var(--sans);border-radius:3px}
+.docnav a:hover{background:#33302A;color:#fff}
+.docnav a.on{background:#F3EFE6;color:var(--ink);font-weight:700}
+.docnav a:focus-visible{outline:2px solid #F0C560;outline-offset:1px}
+
+.wrap{max-width:1560px;margin:0 auto;padding:0 20px 90px}
+section.doc{padding-top:40px}
+h2.dh{font:700 27px/1.2 var(--sans);letter-spacing:-.012em;margin-bottom:6px}
+h2.dh .n{font:700 13px/1 var(--mono);color:var(--ink3);display:block;margin-bottom:8px;
+  letter-spacing:.16em;text-transform:uppercase}
+h3.sh{font:700 12px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ink3);margin:26px 0 10px}
+p.lede{font:400 17.5px/1.55 var(--serif);max-width:70ch;color:#26231D;margin-top:10px}
+p.lede + p.lede{margin-top:12px}
+p.lede b{font-weight:700}
+.cols2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:26px;align-items:start}
+@media(max-width:900px){.cols2{grid-template-columns:1fr}}
+
+/* ---- the frame around a product screen ---------------------------------- */
+.stage{margin:18px 0 8px}
+.cap{display:flex;gap:14px;align-items:baseline;flex-wrap:wrap;margin-bottom:8px}
+.cap .t{font:700 14px/1.3 var(--sans)}
+.cap .v{font:500 12px/1.3 var(--mono);color:var(--ink3)}
+.fit{position:relative;overflow:hidden}
+.screen{transform-origin:top left;background:var(--paper);color:var(--ink);
+  border:1px solid var(--rule3);box-shadow:0 2px 0 rgba(0,0,0,.05);overflow:hidden;
+  display:flex;flex-direction:column;font:400 14px/1.45 var(--sans)}
+.screen.d{width:1440px;height:900px}
+.screen.dshort{width:1440px;height:700px}
+.screen.p{width:390px;height:844px}
+.phones{display:flex;gap:20px;flex-wrap:wrap}
+
+/* ---- markers: this document's voice, outside the bezel ------------------ */
+.notes{margin:10px 0 4px;display:grid;gap:6px}
+.mark{display:grid;grid-template-columns:22px minmax(0,1fr);gap:9px;align-items:start;
+  font:500 13.5px/1.45 var(--sans);color:#3A352C;background:#FFFDF7;
+  border-left:3px solid var(--rule3);padding:7px 11px}
+.mark.needs{border-left-color:var(--warn);background:var(--warn-tint)}
+.mark .k{font:700 11px/17px var(--mono);text-align:center;color:#fff;background:var(--ink3);
+  border-radius:2px}
+.mark.needs .k{background:var(--warn)}
+.mark b{font-weight:700}
+.mark code,.mark .m{font:500 12.5px/1.4 var(--mono);background:#fff;padding:1px 4px;
+  border:1px solid var(--rule)}
+
+/* =========================================================================
+   PRODUCT STYLES. Everything below renders inside .screen.
+   ========================================================================= */
+.screen .bar{display:flex;align-items:center;gap:16px;height:44px;padding:0 16px;
+  background:var(--panel);border-bottom:1px solid var(--rule2);flex:none}
+.screen .brand{font:700 14px/1 var(--sans);letter-spacing:.2em;text-transform:uppercase}
+.screen nav{display:flex;gap:3px}
+.screen nav .tab{font:600 14px/1 var(--sans);color:var(--ink3);padding:8px 12px;
+  border:1px solid transparent;border-radius:3px;background:none;cursor:default}
+.screen nav .tab[aria-current]{background:var(--ink);color:#FBF9F4;font-weight:700}
+.screen .grow{flex:1}
+.health{display:flex;gap:10px;align-items:center;font:500 13px/1 var(--mono);color:var(--ink2)}
+.health .dot{width:9px;height:9px;border-radius:50%;background:var(--good);flex:none}
+.health.bad{color:var(--warn);font-weight:700}
+.health.bad .dot{background:var(--warn);border-radius:0}
+
+.body{flex:1;display:flex;min-height:0}
+.pane{min-width:0;display:flex;flex-direction:column}
+.pane + .pane{border-left:1px solid var(--rule2)}
+.ph{display:flex;align-items:baseline;gap:12px;padding:11px 16px 9px;flex:none;
+  border-bottom:1px solid var(--rule)}
+.ph h1{font:700 12px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--ink3)}
+.ph .sub{font:500 12.5px/1 var(--mono);color:var(--ink3);margin-left:auto}
+.scrollish{overflow:hidden;flex:1;min-height:0}
+
+/* ---- sensitivity marks: shape, fill, texture, printed word -------------- */
+.mk{display:inline-block;width:12px;height:12px;border:1.5px solid var(--ink);flex:none;
+  vertical-align:-1px}
+.mk.open{background:transparent}
+.mk.private{background:var(--priv);border-color:var(--priv)}
+.mk.sealed{border-color:var(--seal);background:var(--seal-tint);
+  background-image:repeating-linear-gradient(45deg,transparent 0 2px,var(--seal) 2px 3px),
+  repeating-linear-gradient(-45deg,transparent 0 2px,var(--seal) 2px 3px)}
+.sw{font:700 11px/1 var(--sans);letter-spacing:.09em;text-transform:uppercase}
+.sw.open{color:var(--ink3)} .sw.private{color:var(--priv)} .sw.sealed{color:var(--seal)}
+
+/* ---- arrivals rail ------------------------------------------------------ */
+.arr{display:grid;grid-template-columns:20px 132px minmax(0,1fr)}
+.arr .r{display:grid;grid-template-columns:subgrid;grid-column:1/-1;align-items:baseline;
+  padding:5px 16px 5px 12px;border-bottom:1px solid var(--rule);column-gap:10px}
+.arr .r.private{background:var(--priv-tint);box-shadow:inset 3px 0 0 var(--priv)}
+.arr .r.sealed{background:var(--seal-tint);box-shadow:inset 3px 0 0 var(--seal);
+  background-image:repeating-linear-gradient(45deg,transparent 0 7px,rgba(62,49,104,.07) 7px 14px)}
+.arr .ns{font:500 12.5px/1.5 var(--mono);color:var(--ink2);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.arr .tx{font:400 15px/1.5 var(--serif);color:#151310;max-width:75ch}
+.arr .tx .pv{font:500 12.5px/1 var(--mono);color:var(--ink3);white-space:nowrap}
+.arr .tx .pv b{font-weight:700;color:var(--good)}
+.arr .tx .sealedline{font:500 13.5px/1.5 var(--mono);color:var(--seal)}
+.arr .r[data-cur]{background:#E9F0F7;box-shadow:inset 3px 0 0 var(--reach)}
+.arr .r[data-cur].private{background:#EFE7DA;box-shadow:inset 3px 0 0 var(--priv),inset 0 0 0 1px var(--reach)}
+.dim{color:var(--ink3)}
+.tiny{font:500 12px/1.4 var(--mono);color:var(--ink3)}
+
+/* ---- the field: the map itself ------------------------------------------ */
+.field{position:relative;padding:12px 16px 14px}
+.grid{position:relative;display:grid;grid-template-columns:150px repeat(3,116px);
+  border:1px solid var(--rule2);background:var(--panel);width:min-content}
+.grid .hd{height:30px;display:flex;align-items:center;gap:6px;padding:0 9px;
+  border-bottom:1px solid var(--rule2);font:700 11px/1 var(--sans);letter-spacing:.09em;
+  text-transform:uppercase;color:var(--ink3);background:var(--sink)}
+.grid .hd.ax{justify-content:flex-start}
+.grid .nsl{height:40px;display:flex;flex-direction:column;justify-content:center;padding:0 9px;
+  border-bottom:1px solid var(--rule);border-right:1px solid var(--rule2);background:var(--sink)}
+.grid .nsl b{font:600 13px/1.15 var(--mono);color:var(--ink)}
+.grid .nsl i{font:500 10.5px/1.2 var(--sans);font-style:normal;color:var(--ink3)}
+.grid .c{height:40px;border-bottom:1px solid var(--rule);border-right:1px solid var(--rule);
+  display:flex;flex-direction:column;justify-content:center;align-items:flex-end;padding:0 9px;
+  position:relative}
+.grid .c .n{font:700 15px/1 var(--mono);font-variant-numeric:tabular-nums}
+.grid .c .d{font:600 10.5px/1.3 var(--mono);color:var(--good)}
+.grid .c.zero .n{font-weight:500;color:var(--ink3)}
+.grid .c.priv{background:var(--priv-tint)}
+.grid .c.seal{background:var(--seal-tint);
+  background-image:repeating-linear-gradient(45deg,transparent 0 6px,rgba(62,49,104,.08) 6px 12px)}
+.grid .c.reach{background-color:var(--reach-tint);box-shadow:inset 0 0 0 1px var(--reach-edge)}
+.grid .c.priv.reach{background-color:#E4EBE9}
+.grid .c.seal.reach{background-color:#E4E9F1}
+.grid .c.norch{background-color:#EEEAE0;
+  background-image:repeating-linear-gradient(45deg,transparent 0 4px,rgba(25,23,19,.17) 4px 5px)}
+.grid .c.norch .n{color:var(--ink2);font-weight:500}
+.grid .c .nr{position:absolute;left:8px;top:50%;transform:translateY(-50%);
+  font:700 10.5px/1 var(--sans);letter-spacing:.06em;text-transform:uppercase;color:#2B2721;
+  background:#FBF9F4;padding:2px 4px;border:1px solid var(--rule2)}
+.grid .rowtot{height:40px;display:flex;align-items:center;justify-content:flex-end;padding:0 9px;
+  border-bottom:1px solid var(--rule);font:600 13px/1 var(--mono);color:var(--ink2)}
+.region{position:absolute;border:2.5px solid var(--reach);pointer-events:none;
+  box-shadow:0 0 0 2px rgba(251,249,244,.75)}
+.region.drift{border-style:dashed;border-color:var(--warn)}
+.region .lbl{position:absolute;left:100%;top:50%;transform:translateY(-50%);margin-left:9px;
+  white-space:nowrap;font:700 12.5px/1 var(--sans);color:#fff;background:var(--reach);
+  padding:5px 8px;border-radius:3px}
+.region.drift .lbl{background:var(--warn)}
+.legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;
+  font:500 12.5px/1.5 var(--sans);color:var(--ink2);max-width:520px}
+.legend span{display:flex;gap:6px;align-items:center}
+.axis{font:600 11px/1 var(--sans);letter-spacing:.1em;text-transform:uppercase;color:var(--ink3)}
+
+/* ---- clause editor: the control ---------------------------------------- */
+.cl{display:grid;gap:0;border:1px solid var(--rule2);background:var(--panel)}
+.cl .clh{display:flex;align-items:baseline;gap:10px;padding:8px 11px;background:var(--sink);
+  border-bottom:1px solid var(--rule2);font:700 11.5px/1 var(--sans);letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ink3)}
+.cl .clh .r{margin-left:auto;font:600 12px/1 var(--mono);color:var(--ink2);letter-spacing:0}
+.cl .cr{display:grid;grid-template-columns:minmax(0,1fr) 108px 74px;gap:10px;align-items:center;
+  padding:8px 11px;border-bottom:1px solid var(--rule)}
+.cl .cr:last-child{border-bottom:0}
+.cl .cr.add{background:#EAF3FA;box-shadow:inset 3px 0 0 var(--reach)}
+.cl .cr.gone{background:#F4F1EA}
+.cl .cr .g{font:600 14px/1.3 var(--mono)}
+.cl .cr.gone .g{text-decoration:line-through;color:var(--ink3)}
+.sel{display:flex;align-items:center;gap:6px;border:1px solid var(--rule2);background:#fff;
+  padding:4px 8px;font:600 13px/1 var(--sans);border-radius:3px}
+.sel::after{content:"";width:0;height:0;border:4px solid transparent;border-top-color:var(--ink3);
+  margin-left:auto;margin-top:3px}
+.chg{font:700 11.5px/1 var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--reach)}
+.chg.rm{color:var(--ink3)}
+
+/* ---- buttons and verbs -------------------------------------------------- */
+.btn{display:inline-flex;align-items:center;gap:7px;font:600 14px/1 var(--sans);
+  padding:9px 14px;border:1px solid var(--rule3);background:#fff;color:var(--ink);
+  border-radius:4px;cursor:default}
+.btn.pri{background:var(--ink);border-color:var(--ink);color:#FBF9F4;font-weight:700}
+.btn.dgr{background:#fff;border-color:var(--warn);color:var(--warn);font-weight:700}
+.btn.dgr.solid{background:var(--warn);color:#fff}
+.btn kbd{font:600 11px/1 var(--mono);border:1px solid rgba(0,0,0,.22);border-radius:2px;
+  padding:2px 4px;background:rgba(0,0,0,.05)}
+.btn.pri kbd{border-color:rgba(255,255,255,.4);background:rgba(255,255,255,.14)}
+.verbs{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+
+/* ---- generic blocks ----------------------------------------------------- */
+.box{border:1px solid var(--rule2);background:var(--panel)}
+.box .bh{padding:8px 12px;background:var(--sink);border-bottom:1px solid var(--rule2);
+  font:700 11.5px/1 var(--sans);letter-spacing:.1em;text-transform:uppercase;color:var(--ink3);
+  display:flex;gap:10px;align-items:baseline}
+.box .bb{padding:12px}
+.kv{display:grid;grid-template-columns:150px minmax(0,1fr);gap:5px 12px;font:500 13.5px/1.45 var(--sans)}
+.kv dt{color:var(--ink3);font-weight:600}
+.kv dd{font-family:var(--mono);font-size:13px;color:var(--ink)}
+.prose{font:400 16px/1.55 var(--serif);color:#1B1915;max-width:70ch}
+.prose b{font-weight:700}
+.pre{font:500 13px/1.65 var(--mono);background:#FFFDF7;border:1px solid var(--rule2);
+  padding:11px 13px;white-space:pre;overflow:hidden;color:#26231D}
+.warnline{display:flex;gap:9px;align-items:baseline;padding:8px 16px;background:var(--warn-tint);
+  border-bottom:1px solid #E3C4B4;font:600 13.5px/1.4 var(--sans);color:#5F2409;flex:none}
+.warnline .w{font:700 11px/1 var(--sans);letter-spacing:.1em;text-transform:uppercase;
+  color:#fff;background:var(--warn);padding:3px 5px;border-radius:2px;flex:none}
+.band{font:700 11.5px/1 var(--sans);letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);
+  padding:12px 16px 6px;display:flex;gap:10px;align-items:baseline}
+.band .c{font:600 11.5px/1 var(--mono);color:var(--ink3);letter-spacing:0}
+.struck{padding:7px 16px;border-bottom:1px solid var(--rule);display:flex;gap:10px;
+  align-items:baseline;background:#F4F1EA}
+.struck .s{font:400 15px/1.4 var(--serif);color:#6E6759;text-decoration:line-through;
+  text-decoration-thickness:1px}
+.empty{padding:40px 16px;text-align:left}
+
+/* ---- chain: provenance and supersession as a line you follow ------------ */
+.chain{position:relative;padding:6px 0 6px 26px}
+.chain::before{content:"";position:absolute;left:7px;top:14px;bottom:14px;width:2px;background:var(--rule2)}
+.node{position:relative;padding:9px 0 13px}
+.node::before{content:"";position:absolute;left:-24px;top:14px;width:12px;height:12px;
+  border:2px solid var(--ink);background:var(--paper);border-radius:50%}
+.node.live::before{background:var(--ink)}
+.node .when{font:700 11.5px/1 var(--sans);letter-spacing:.09em;text-transform:uppercase;color:var(--ink3)}
+.node .val{font:400 17px/1.4 var(--serif);margin:5px 0 4px}
+.node.retired .val{color:#5C564A;text-decoration:line-through;text-decoration-thickness:1px}
+.node .by{font:500 12.5px/1.4 var(--mono);color:var(--ink2)}
+.slot{border:1px dashed var(--rule2);background:#FAF7EF;padding:7px 10px;
+  font:600 12.5px/1.35 var(--sans);color:var(--ink3);border-radius:3px}
+
+/* ---- queue -------------------------------------------------------------- */
+.qi{border-bottom:1px solid var(--rule2);padding:14px 16px;display:grid;gap:9px;background:var(--panel)}
+.qi .qh{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+.qi .qk{font:700 11.5px/1 var(--sans);letter-spacing:.11em;text-transform:uppercase;color:var(--ink)}
+.qi .qn{font:600 12.5px/1 var(--mono);color:var(--ink2);margin-left:auto}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid var(--rule2)}
+.pair .side{padding:11px 13px;background:#FFFDF7}
+.pair .side + .side{border-left:1px solid var(--rule2)}
+.pair .side.older{background:#F5F2EB}
+.pair .v{font:400 17px/1.4 var(--serif);margin-bottom:6px}
+.pair .pv{font:500 12.5px/1.5 var(--mono);color:var(--ink2)}
+.pair .tag{font:700 10.5px/1 var(--sans);letter-spacing:.09em;text-transform:uppercase;
+  color:var(--ink3);display:block;margin-bottom:5px}
+
+/* ---- phone -------------------------------------------------------------- */
+.screen.p .bar{height:52px;padding:0 14px;gap:10px}
+.screen.p .brand{font-size:13px;letter-spacing:.16em}
+.pnav{display:flex;border-bottom:1px solid var(--rule2);background:var(--panel);flex:none}
+.pnav .t{flex:1;text-align:center;padding:11px 4px;font:600 13.5px/1 var(--sans);color:var(--ink3);
+  border-bottom:3px solid transparent}
+.pnav .t[aria-current]{color:var(--ink);font-weight:700;border-bottom-color:var(--ink)}
+.plist .r{padding:10px 14px;border-bottom:1px solid var(--rule);display:grid;gap:3px}
+.plist .r.private{background:var(--priv-tint);box-shadow:inset 3px 0 0 var(--priv)}
+.plist .r.sealed{background:var(--seal-tint);box-shadow:inset 3px 0 0 var(--seal)}
+.plist .tx{font:400 15.5px/1.4 var(--serif)}
+.plist .pv{font:500 12.5px/1.35 var(--mono);color:var(--ink2)}
+.sheet{margin-top:auto;background:var(--panel);border-top:2px solid var(--warn);padding:16px 14px;
+  display:grid;gap:12px;flex:none}
+.stack-cols{display:grid;gap:0}
+.pnsrow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;
+  padding:10px 14px;border-bottom:1px solid var(--rule)}
+.pnsrow b{font:600 14px/1.2 var(--mono)}
+.pnsrow .bits{display:flex;gap:7px;align-items:center;font:600 12.5px/1 var(--mono);color:var(--ink2)}
+
+/* ---- floors table ------------------------------------------------------- */
+table.fl{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--rule2)}
+table.fl th{text-align:left;font:700 11.5px/1.3 var(--sans);letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink3);padding:10px 12px;border-bottom:1px solid var(--rule2);background:var(--sink);
+  vertical-align:bottom}
+table.fl td{padding:10px 12px;border-bottom:1px solid var(--rule);vertical-align:top;
+  font:400 14.5px/1.5 var(--sans);color:#26231D}
+table.fl td:first-child{font:700 13px/1.5 var(--mono);width:40px;color:var(--ink3)}
+table.fl td b{font-weight:700}
+table.fl code{font:500 13px/1.4 var(--mono)}
+table.fl tr:last-child td{border-bottom:0}
+ol.plain,ul.plain{padding-left:20px;max-width:74ch}
+ol.plain li,ul.plain li{font:400 16px/1.55 var(--serif);margin:9px 0;color:#1B1915}
+ol.plain li b,ul.plain li b{font-weight:700}
+.rule{height:1px;background:var(--rule2);margin:34px 0 0}
+</style>
+</head>
+<body>
+
+<header class="docbar">
+  <span class="who">Policy map <i>&middot; lumberroom console, style 5</i></span>
+  <nav class="docnav" id="docnav">
+    <a href="#thesis">Thesis</a>
+    <a href="#reading">Reading the map</a>
+    <a href="#map">1. Map</a>
+    <a href="#reach">2. Reach</a>
+    <a href="#bearer">3. Bearer</a>
+    <a href="#approve">4. Approve</a>
+    <a href="#lens">5. Lens</a>
+    <a href="#chain">6. Chain</a>
+    <a href="#queue">7. Queue</a>
+    <a href="#phone">8. Phone</a>
+    <a href="#states">9. States</a>
+    <a href="#floors">Floors</a>
+    <a href="#verdict">Verdict</a>
+  </nav>
+</header>
+
+<div class="wrap">
+
+<section class="doc" id="thesis">
+  <h2 class="dh"><span class="n">Thesis</span>A grant is already a rectangle. Draw it as one.</h2>
+  <div class="cols2">
+    <div>
+      <p class="lede">A lumberroom grant is a namespace glob and a sensitivity ceiling. That is a
+      coordinate pair, so the set of facts it admits is an area over a two-axis field. <b>Draw the
+      store as that field and a grant stops being a sentence the owner has to trust and becomes a
+      shape they can see before committing it.</b></p>
+      <p class="lede">Nothing else in this console needs inventing. The map is the inventory for
+      job 1, the reach overlay is job 2, the same field re-rendered under another client's grant is
+      job 8, and a supersession is a line between two points in one cell.</p>
+      <p class="lede">One structural rule holds the whole thing together: <b>the map is output and
+      never input.</b> Clauses are the control, and the field redraws as the consequence. The
+      specification bans a grant matrix as an editing surface because globs overlap and nest, and
+      that ban is correct. A read-only grid of concrete namespaces is allowed, so the field shows
+      the <i>resolved</i> ceiling per namespace, which is the union rule in
+      <span class="tiny">domain/policy.rs&nbsp;ceiling()</span>: the most generous matching clause
+      wins, and the clause that won is named when the owner focuses the cell.</p>
+    </div>
+    <div>
+      <h3 class="sh">Optimised for</h3>
+      <p class="lede" style="margin-top:0"><b>Job 2</b>, decide what a surface may see and see the
+      consequence first. <b>Job 8</b>, what one client would get for one question. <b>Job 1's
+      inventory half</b>, which is the field itself, sitting beside an arrivals rail that carries
+      the other half.</p>
+      <h3 class="sh">Sacrificed, on purpose</h3>
+      <p class="lede" style="margin-top:0"><b>Job 6</b> gets a list docked under the map instead of
+      a ritual of its own. A triage inbox will beat this at conflicts and should. <b>Job 9</b> is a
+      strip inside the fact panel, four lines tall, and it earns no more.</p>
+      <h3 class="sh">The second visit, not the first</h3>
+      <p class="lede" style="margin-top:0">A spatial interface that impresses once and dies is the
+      known failure of this style. The counter is in the cells: every cell carries what arrived
+      this week under its total, so the field is different on Monday than it was on Friday. That
+      number comes from <span class="tiny">created_at</span> through ledger item 1 and needs no
+      visit tracking, which nothing has funded.</p>
+    </div>
+  </div>
+</section>
+
+<section class="doc" id="reading">
+  <h2 class="dh"><span class="n">Reading the map</span>Seven rows, three columns, one union.</h2>
+  <p class="lede">Rows are namespaces, sorted so that a glob covers a contiguous block:
+  <span class="tiny">global</span>, then <span class="tiny">user:me</span>, then every
+  <span class="tiny">project:</span>, then every <span class="tiny">personal:</span>, then
+  <span class="tiny">credentials:</span>. Columns are the sensitivity axis in its own order, open
+  to sealed. A clause is therefore a rectangle, and a grant is the union of its rectangles.</p>
+  <p class="lede">The sort order is the design work. Put <span class="tiny">personal:health</span>
+  between two project namespaces and <span class="tiny">project:*</span> stops being a rectangle,
+  which is the failure mode named in the closing panel.</p>
+
+  <div class="stage">
+    <div class="cap"><span class="t">The field, with one clause drawn over it</span>
+      <span class="v">detail, rendered at native size</span></div>
+    <div class="field" style="background:var(--paper);border:1px solid var(--rule3);width:min-content">
+      <div class="axis" style="margin:0 0 6px 150px">sensitivity &rarr;</div>
+      <div class="grid">
+        <div class="hd ax">namespace</div>
+        <div class="hd">open</div><div class="hd">private</div><div class="hd">sealed</div>
+        <div class="nsl"><b>global</b></div>
+        <div class="c"><span class="n">214</span></div>
+        <div class="c zero"><span class="n">0</span></div>
+        <div class="c zero"><span class="n">0</span></div>
+        <div class="nsl"><b>user:me</b></div>
+        <div class="c"><span class="n">402</span></div>
+        <div class="c priv"><span class="n">118</span></div>
+        <div class="c zero"><span class="n">0</span></div>
+        <div class="nsl"><b>project:lumberroom</b></div>
+        <div class="c"><span class="n">289</span></div>
+        <div class="c priv"><span class="n">24</span></div>
+        <div class="c zero"><span class="n">0</span></div>
+        <div class="region" style="left:150px;top:30px;width:116px;height:120px">
+          <span class="lbl">read global,user:me,project:lumberroom at open</span></div>
+      </div>
+      <div class="legend">
+        <span><i class="mk open"></i><span class="sw open">open</span></span>
+        <span><i class="mk private"></i><span class="sw private">private</span></span>
+        <span><i class="mk sealed"></i><span class="sw sealed">sealed</span></span>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <div class="mark"><span class="k">i</span><span>Sensitivity travels on four channels before
+      hue: the printed word, the marker shape, the fill texture, and the column the count sits in.
+      A greyscale print still sorts the rows.</span></div>
+  </div>
+</section>
+
+<section class="doc" id="map">
+  <h2 class="dh"><span class="n">Screen 1 &middot; job 1, job 7</span>Map. The shape of the store, and what landed in it this week.</h2>
+  <p class="lede">The inventory and the arrivals sit side by side without scrolling, which is what
+  §10.3 asks of job 1. The field answers <i>how much of me is in here and at what exposure</i>. The
+  rail answers <i>what did the last week write</i>. Selecting a cell filters the rail to that cell,
+  so the two halves are one control.</p>
+  <p class="lede">Job 7 is the line at the top right. It stays one line on every screen and gets a
+  full treatment on none of them, because a healthy store should not be paying rent for a banner.</p>
+
+  <div class="stage">
+    <div class="cap"><span class="t">Map, resting state</span><span class="v">1440 &times; 900 &middot; store healthy &middot; nothing selected</span></div>
+    <div class="fit"><div class="screen d">
+      <div class="bar">
+        <span class="brand">lumberroom</span>
+        <nav>
+          <button class="tab" aria-current="page">Map</button>
+          <button class="tab">Reach</button>
+          <button class="tab">Lens</button>
+          <button class="tab">Chain</button>
+          <button class="tab">Queue<span style="opacity:.6"> 3</span></button>
+        </nav>
+        <span class="grow"></span>
+        <span class="health"><i class="dot"></i>key verified &middot; embedder bge-small-en-v1.5 &middot; last write 14 min ago</span>
+      </div>
+      <div class="body">
+        <div class="pane" style="width:640px;flex:none">
+          <div class="ph"><h1>Store</h1><span class="sub">1,240 live &middot; 63 retired</span></div>
+          <div class="field">
+            <div class="axis" style="margin:0 0 6px 150px">sensitivity &rarr;</div>
+            <div class="grid" style="grid-template-columns:150px repeat(3,116px) 82px">
+        <div class="hd ax">namespace</div>
+        <div class="hd">open</div>
+        <div class="hd">private</div>
+        <div class="hd">sealed</div>
+        <div class="hd" style="justify-content:flex-end">live</div>
+        <div class="nsl"><b>global</b><i>shared facts</i></div>
+        <div class="c"><span class="n">214</span><span class="d">+3 this week</span></div>
+        <div class="c priv zero"><span class="n">0</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">214</div>
+        <div class="nsl"><b>user:me</b><i>the owner</i></div>
+        <div class="c"><span class="n">402</span><span class="d">+4 this week</span></div>
+        <div class="c priv"><span class="n">118</span><span class="d">+3 this week</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">520</div>
+        <div class="nsl"><b>project:lumberroom</b><i>this project</i></div>
+        <div class="c"><span class="n">289</span><span class="d">+7 this week</span></div>
+        <div class="c priv"><span class="n">24</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">313</div>
+        <div class="nsl"><b>project:lumen</b><i>household product</i></div>
+        <div class="c"><span class="n">96</span><span class="d">+2 this week</span></div>
+        <div class="c priv"><span class="n">11</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">107</div>
+        <div class="nsl"><b>personal:finance</b><i>money</i></div>
+        <div class="c zero"><span class="n">0</span></div>
+        <div class="c priv"><span class="n">47</span><span class="d">+1 this week</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">47</div>
+        <div class="nsl"><b>personal:health</b><i>body</i></div>
+        <div class="c zero"><span class="n">0</span></div>
+        <div class="c priv"><span class="n">22</span><span class="d">+1 this week</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">22</div>
+        <div class="nsl"><b>credentials:oci</b><i>keys and endpoints</i></div>
+        <div class="c zero"><span class="n">0</span></div>
+        <div class="c priv zero"><span class="n">0</span></div>
+        <div class="c seal"><span class="n">17</span><span class="d">+1 this week</span></div>
+        <div class="rowtot">17</div>
+            </div>
+            <div class="legend">
+              <span><i class="mk open"></i><span class="sw open">open</span> any granted tool</span>
+              <span><i class="mk private"></i><span class="sw private">private</span> encrypted, shown to you</span>
+              <span><i class="mk sealed"></i><span class="sw sealed">sealed</span> counted, never read here</span>
+            </div>
+          </div>
+          <div style="margin-top:auto;border-top:1px solid var(--rule2)">
+            <div class="ph" style="border-bottom:1px solid var(--rule)"><h1>To decide</h1><span class="sub">3 items</span></div>
+            <div style="padding:4px 16px 14px">
+              <div style="display:grid;gap:0">
+                <div style="display:grid;grid-template-columns:1fr auto;gap:10px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--rule)">
+                  <span style="font:400 15px/1.4 var(--serif)">One pair contradicts itself in <span class="tiny">user:me</span></span>
+                  <span class="btn" style="padding:5px 10px;font-size:13px">Open <kbd>1</kbd></span></div>
+                <div style="display:grid;grid-template-columns:1fr auto;gap:10px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--rule)">
+                  <span style="font:400 15px/1.4 var(--serif)">One fact has sat unread for 140 days</span>
+                  <span class="btn" style="padding:5px 10px;font-size:13px">Open <kbd>2</kbd></span></div>
+                <div style="display:grid;grid-template-columns:1fr auto;gap:10px;align-items:baseline;padding:9px 0">
+                  <span style="font:400 15px/1.4 var(--serif)">One registry value is due for review</span>
+                  <span class="btn" style="padding:5px 10px;font-size:13px">Open <kbd>3</kbd></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="pane" style="flex:1">
+          <div class="ph"><h1>Arrived this week</h1>
+            <span style="font:500 12.5px/1 var(--mono);color:var(--ink3)">all namespaces</span>
+            <span class="sub">22 facts &middot; 14 to 19 Aug</span></div>
+          <div class="scrollish">
+            <div class="arr" style="grid-template-columns:20px 120px minmax(0,1fr)">
+        <div class="r"><i class="mk open"></i><span class="ns">user:me</span><span class="tx">The lumberroom dev server listens on port 8787. <span class="pv">claude-code-mac &middot; 19 Aug &middot; <b>&#10003; confirmed</b></span></span></div>
+        <div class="r"><i class="mk open"></i><span class="ns">project:lumberroom</span><span class="tx">Migrations are forward-only; an old image cannot boot. <span class="pv">claude-code-mac &middot; 19 Aug</span></span></div>
+        <div class="r"><i class="mk open"></i><span class="ns">project:lumberroom</span><span class="tx">cargo test needs -j 1 or the linker gets OOM-killed. <span class="pv">claude-code-mac &middot; 19 Aug</span></span></div>
+        <div class="r"><i class="mk open"></i><span class="ns">project:lumberroom</span><span class="tx">The integration suite skips when no database is up. <span class="pv">claude-code-mac &middot; 19 Aug</span></span></div>
+        <div class="r private"><i class="mk private"></i><span class="ns">user:me</span><span class="tx">Weekdays in Bangalore, one week a month in Kochi. <span class="pv">claude-code-mac &middot; 18 Aug</span></span></div>
+        <div class="r"><i class="mk open"></i><span class="ns">project:lumberroom</span><span class="tx">The CLI stays dependency-free. <span class="pv">claude-code-mac &middot; 18 Aug &middot; <b>&#10003; confirmed</b></span></span></div>
+        <div class="r"><i class="mk open"></i><span class="ns">global</span><span class="tx">Commit subjects in the imperative, no scope prefix. <span class="pv">claude-code-mac &middot; 18 Aug</span></span></div>
+        <div class="r private"><i class="mk private"></i><span class="ns">personal:finance</span><span class="tx">The index-fund SIP debits on the 3rd of each month. <span class="pv">claude-code-mac &middot; 18 Aug</span></span></div>
+        <div class="r"><i class="mk open"></i><span class="ns">project:lumen</span><span class="tx">Comparison pages carry competitor logos from source. <span class="pv">claude-code-mac &middot; 18 Aug</span></span></div>
+        <div class="r"><i class="mk open"></i><span class="ns">user:me</span><span class="tx">Reads documentation adversarially. <span class="pv">claude-code-mac &middot; 17 Aug &middot; <b>&#10003; confirmed</b></span></span></div>
+        <div class="r"><i class="mk open"></i><span class="ns">project:lumberroom</span><span class="tx">sqlx runs without the compile-time macros. <span class="pv">claude-code-mac &middot; 17 Aug</span></span></div>
+        <div class="r sealed"><i class="mk sealed"></i><span class="ns">credentials:oci</span><span class="tx"><span class="sealedline">312 bytes &middot; lumberroom unseal oci-api-key</span> <span class="pv">claude-code-mac &middot; 17 Aug</span></span></div>
+        <div class="r private"><i class="mk private"></i><span class="ns">personal:health</span><span class="tx">Physio on the left shoulder, Tuesdays, to September. <span class="pv">claude-code-mac &middot; 17 Aug</span></span></div>
+        <div class="r"><i class="mk open"></i><span class="ns">project:lumberroom</span><span class="tx">The wire contract is snake_case, and a test pins it. <span class="pv">claude-code-mac &middot; 16 Aug</span></span></div>
+        <div class="r"><i class="mk open"></i><span class="ns">global</span><span class="tx">No AI attribution in commits, docs or comments. <span class="pv">claude-code-mac &middot; 16 Aug &middot; <b>&#10003; confirmed</b></span></span></div>
+        <div class="r private"><i class="mk private"></i><span class="ns">user:me</span><span class="tx">The Oracle box stays on; the desktop sleeps at night. <span class="pv">claude-code-mac &middot; 16 Aug</span></span></div>
+        <div class="r"><i class="mk open"></i><span class="ns">project:lumberroom</span><span class="tx">rmcp checks Host against a loopback-only allowlist. <span class="pv">claude-code-mac &middot; 16 Aug</span></span></div>
+        <div class="r"><i class="mk open"></i><span class="ns">project:lumen</span><span class="tx">One owner per household, with a ledger per member. <span class="pv">claude-code-mac &middot; 15 Aug</span></span></div>
+        <div class="r"><i class="mk open"></i><span class="ns">user:me</span><span class="tx">Runs eight AI surfaces over one store. <span class="pv">claude-code-mac &middot; 15 Aug &middot; <b>&#10003; confirmed</b></span></span></div>
+        <div class="r private"><i class="mk private"></i><span class="ns">personal:finance</span><span class="tx">Term insurance renews in November. <span class="pv">claude-code-mac &middot; 15 Aug</span></span></div>
+        <div class="r"><i class="mk open"></i><span class="ns">project:lumberroom</span><span class="tx">PUBLIC_URL is the only source of external URLs. <span class="pv">claude-code-mac &middot; 15 Aug</span></span></div>
+        <div class="r"><i class="mk open"></i><span class="ns">global</span><span class="tx">Two items beat three in any list for the owner. <span class="pv">claude-code-mac &middot; 14 Aug</span></span></div>
+            </div>
+            <div style="padding:9px 16px;border-top:1px solid var(--rule2);display:flex;gap:16px;align-items:baseline">
+              <span class="tiny">Older arrivals load on scroll, newest first, keyset paged.</span>
+              <span class="grow"></span>
+              <span class="btn" style="padding:5px 10px;font-size:13px">Filter to a cell <kbd>f</kbd></span>
+              <span class="btn" style="padding:5px 10px;font-size:13px">Open fact <kbd>&crarr;</kbd></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+  <div class="notes">
+    <div class="mark needs"><span class="k">1</span><span><b>Ledger item 1.</b> The arrivals rail
+      needs the newest-first, keyset-paged, both-axes-filtered listing.
+      <span class="m">list_for_export</span> is oldest first and ceilinged at
+      <span class="m">EXPORT_MAX_SENSITIVITY</span>, so it cannot serve this. One port method, one
+      query, one route, no migration.</span></div>
+    <div class="mark"><span class="k">i</span><span>The field, the totals and the to-decide counts
+      all answer from <span class="m">context_bootstrap</span> and
+      <span class="m">GET /admin/review/*</span> today. The week deltas ride on item 1 with the
+      rest of the rail.</span></div>
+    <div class="mark"><span class="k">i</span><span>Row 12 is the sealed row. It prints the
+      namespace, the byte length and the command that reads it where the key is, and it never
+      prints a stand-in for the content. <span class="m">sealedCapable: false</span> on the
+      console's own grant makes that the server's answer rather than a layout choice.</span></div>
+    <div class="mark"><span class="k">i</span><span>Counted at 1440 &times; 900: <b>22 fact rows
+      visible</b> at 15px, with 45px of slack below the last one. Floor 1 asks for 20.</span></div>
+  </div>
+</section>
+
+<section class="doc" id="reach">
+  <h2 class="dh"><span class="n">Screen 2 &middot; job 2</span>Reach. The clause is the control, the field is the consequence.</h2>
+  <p class="lede">The owner is wiring ChatGPT this week. It registered itself on 16 August, took the
+  <span class="tiny">narrow</span> preset at the consent screen, and has read 41 times since without
+  writing once. Now it needs the lumberroom project notes.</p>
+  <p class="lede">Everything job 2 has to hold above the fold sits in the middle column: read
+  clauses, write clauses, and the fourteen-day read and write counts. The owner edits text on the
+  left of that column and watches an area change on the right. <b>Typing in the map is impossible
+  by construction, because the map has no inputs in it.</b></p>
+
+  <div class="stage">
+    <div class="cap"><span class="t">Reach, with one clause added and not yet applied</span><span class="v">1440 &times; 900 &middot; client chatgpt &middot; oauth</span></div>
+    <div class="fit"><div class="screen d">
+      <div class="bar">
+        <span class="brand">lumberroom</span>
+        <nav>
+          <button class="tab">Map</button>
+          <button class="tab" aria-current="page">Reach</button>
+          <button class="tab">Lens</button>
+          <button class="tab">Chain</button>
+          <button class="tab">Queue<span style="opacity:.6"> 3</span></button>
+        </nav>
+        <span class="grow"></span>
+        <span class="health"><i class="dot"></i>key verified &middot; embedder bge-small-en-v1.5 &middot; last write 14 min ago</span>
+      </div>
+      <div class="body">
+        <div class="pane" style="width:200px;flex:none">
+          <div class="ph"><h1>Clients</h1></div>
+          <div style="display:grid">
+            <div style="padding:10px 12px;border-bottom:1px solid var(--rule);display:grid;gap:2px">
+              <b style="font:600 13.5px/1.2 var(--mono)">claude-code-mac</b>
+              <span class="tiny">bearer &middot; wrote 14 min ago</span></div>
+            <div style="padding:10px 12px;border-bottom:1px solid var(--rule);display:grid;gap:2px;background:var(--ink);color:#FBF9F4">
+              <b style="font:600 13.5px/1.2 var(--mono)">chatgpt</b>
+              <span style="font:500 12px/1.4 var(--mono);color:#C9C1AF">oauth &middot; grant open in editor</span></div>
+            <div style="padding:10px 12px;border-bottom:1px solid var(--rule);display:grid;gap:2px">
+              <b style="font:600 13.5px/1.2 var(--mono)">lumberroom-ui</b>
+              <span class="tiny">bearer &middot; this console</span></div>
+            <div style="padding:12px;font:400 14px/1.45 var(--serif);color:var(--ink2)">
+              Two clients hold a credential. No other surface has registered.</div>
+          </div>
+        </div>
+        <div class="pane" style="width:520px;flex:none">
+          <div class="ph"><h1>chatgpt</h1><span class="sub">registered 16 Aug</span></div>
+          <div style="padding:12px 14px;display:grid;gap:12px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <div class="box"><div class="bb" style="padding:9px 11px">
+                <div style="font:700 22px/1 var(--mono)">41</div>
+                <div class="tiny" style="margin-top:4px">reads, last 14 days</div></div></div>
+              <div class="box"><div class="bb" style="padding:9px 11px">
+                <div style="font:700 22px/1 var(--mono)">0</div>
+                <div class="tiny" style="margin-top:4px">writes, last 14 days</div></div></div>
+            </div>
+            <div class="cl">
+              <div class="clh">Read clauses <span class="r">3 clauses</span></div>
+              <div class="cr"><span class="g">global</span><span class="sel">open</span><span class="chg rm">unchanged</span></div>
+              <div class="cr"><span class="g">user:me</span><span class="sel">open</span><span class="chg rm">unchanged</span></div>
+              <div class="cr add"><span class="g">project:lumberroom</span><span class="sel">open</span><span class="chg">added</span></div>
+            </div>
+            <div class="cl">
+              <div class="clh">Write clauses <span class="r">1 clause</span></div>
+              <div class="cr add"><span class="g">project:lumberroom</span><span class="sel">open</span><span class="chg">added</span></div>
+            </div>
+            <div class="box"><div class="bb" style="padding:10px 12px">
+              <dl class="kv" style="grid-template-columns:130px minmax(0,1fr)">
+                <dt>Registry write</dt><dd>no</dd>
+                <dt>Sealed capable</dt><dd>no</dd>
+                <dt>May delete</dt><dd>no</dd>
+                <dt>Grant lives in</dt><dd>oauth_client, editable here</dd>
+              </dl></div></div>
+            <div class="verbs">
+              <span class="btn pri">Apply this grant <kbd>&#8984;&crarr;</kbd></span>
+              <span class="btn">Discard <kbd>esc</kbd></span>
+              <span class="btn">Revoke client</span>
+            </div>
+          </div>
+        </div>
+        <div class="pane" style="flex:1">
+          <div class="ph"><h1>What chatgpt would reach</h1><span class="sub">905 of 1,240 facts</span></div>
+          <div class="field">
+            <div class="axis" style="margin:0 0 6px 150px">sensitivity &rarr;</div>
+            <div class="grid" style="grid-template-columns:150px repeat(3,116px) 82px">
+        <div class="hd ax">namespace</div>
+        <div class="hd">open</div>
+        <div class="hd">private</div>
+        <div class="hd">sealed</div>
+        <div class="hd" style="justify-content:flex-end">live</div>
+        <div class="nsl"><b>global</b><i>shared facts</i></div>
+        <div class="c reach"><span class="n">214</span></div>
+        <div class="c priv zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">214</div>
+        <div class="nsl"><b>user:me</b><i>the owner</i></div>
+        <div class="c reach"><span class="n">402</span></div>
+        <div class="c priv norch"><span class="nr">no reach</span><span class="n">118</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">520</div>
+        <div class="nsl"><b>project:lumberroom</b><i>this project</i></div>
+        <div class="c reach"><span class="n">289</span></div>
+        <div class="c priv norch"><span class="nr">no reach</span><span class="n">24</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">313</div>
+        <div class="nsl"><b>project:lumen</b><i>household product</i></div>
+        <div class="c norch"><span class="nr">no reach</span><span class="n">96</span></div>
+        <div class="c priv norch"><span class="nr">no reach</span><span class="n">11</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">107</div>
+        <div class="nsl"><b>personal:finance</b><i>money</i></div>
+        <div class="c zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="c priv norch"><span class="nr">no reach</span><span class="n">47</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">47</div>
+        <div class="nsl"><b>personal:health</b><i>body</i></div>
+        <div class="c zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="c priv norch"><span class="nr">no reach</span><span class="n">22</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">22</div>
+        <div class="nsl"><b>credentials:oci</b><i>keys and endpoints</i></div>
+        <div class="c zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="c priv zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="c seal norch"><span class="nr">no reach</span><span class="n">17</span></div>
+        <div class="rowtot">17</div>
+              <div class="region" style="left:150px;top:110px;width:116px;height:40px">
+                <span class="lbl">+289 facts</span></div>
+            </div>
+            <div class="legend"><span><i class="mk open"></i>reached</span>
+              <span><span class="nr" style="position:static;transform:none">no reach</span> withheld, with its count</span></div>
+          </div>
+          <div class="box" style="margin:0 16px 14px">
+            <div class="bh">Before you apply</div>
+            <div class="bb">
+              <p class="prose" style="font-size:16.5px">This admits <b>289 more facts</b>, all in
+              <span class="tiny">project:lumberroom</span>, all open. Nothing private and nothing sealed
+              enters reach.</p>
+              <div style="margin-top:11px;display:grid;gap:7px">
+                <div style="font:400 15px/1.4 var(--serif)">Migrations are forward-only; an old image cannot boot.
+                  <span class="tiny">claude-code-mac &middot; 19 Aug</span></div>
+                <div style="font:400 15px/1.4 var(--serif)">cargo test needs -j 1 or the linker gets OOM-killed.
+                  <span class="tiny">claude-code-mac &middot; 19 Aug</span></div>
+                <div style="font:400 15px/1.4 var(--serif)">The CLI stays dependency-free.
+                  <span class="tiny">claude-code-mac &middot; 18 Aug &middot; <b style="color:var(--good)">&#10003; confirmed</b></span></div>
+                <div class="tiny">3 of 289 shown, newest first.</div>
+              </div>
+              <div style="margin-top:12px;border-top:1px solid var(--rule);padding-top:10px">
+                <p class="prose" style="font-size:15.5px"><b>Two regions are empty and would still
+                be open.</b> <span class="tiny">personal:finance</span> and
+                <span class="tiny">personal:health</span> hold no open facts today, so a clause of
+                <span class="tiny">*</span> at open admits nothing from them now and everything
+                written there later.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+  <div class="notes">
+    <div class="mark needs"><span class="k">2</span><span><b>Ledger item 2.</b> Every number in the
+      preview panel and every count in a reached cell comes from
+      <span class="m">count_visible(tenant, &amp;[NamespaceCeiling])</span>, which does not exist.
+      <span class="m">namespace_counts</span> is pre-policy and its contract forbids its numbers
+      reaching a response, so this reuses the digest's grant-filtered SQL rather than copying it.
+      One port method, one query, one guard on <span class="m">reads_whole_store</span>, one route.</span></div>
+    <div class="mark needs"><span class="k">2</span><span>The three sample rows come from the same
+      item. Until it lands the panel draws the sentence and leaves the count and the samples
+      out.</span></div>
+    <div class="mark needs"><span class="k">5</span><span><b>Ledger item 5.</b> Per-clause grant
+      editing.  <span class="m">set_client_grant</span> already takes clause lists with per-clause
+      ceilings, and only the consent POST calls it. One route, plus the ruling that the three
+      profiles become presets over clauses rather than a fourth profile.</span></div>
+    <div class="mark needs"><span class="k">14</span><span><b>Ledger item 14.</b> The client rail
+      shows two bearer clients and the console's own row. <span class="m">GET /oauth/clients</span>
+      returns OAuth clients alone, so today that rail holds one entry. One route, one query, no
+      migration.</span></div>
+    <div class="mark"><span class="k">i</span><span>The 41 reads and 0 writes answer from
+      <span class="m">GET /statsz?by=client&amp;hours=336</span> today. A client that made no call
+      inside the window returns no row at all, so the console prints
+      <span class="m">no calls in this window</span> rather than a zero it did not
+      measure.</span></div>
+  </div>
+</section>
+
+<section class="doc" id="bearer">
+  <h2 class="dh"><span class="n">Screen 3 &middot; job 2, the bearer case</span>A grant the console may read and must not write.</h2>
+  <p class="lede">Decision 0003 keeps a static bearer client's grant in <span class="tiny">AUTH_TOKENS</span>
+  and keeps it authoritative there. So this screen does half of job 2 and says which half: the
+  preview works, the clause block is ready to paste, and the console names the file that owns the
+  truth. The map carries the drift as a dashed region, because drift is a difference in area and
+  that is the one thing this style can say better than a sentence.</p>
+
+  <div class="stage">
+    <div class="cap"><span class="t">Reach, bearer client, read-only with drift</span><span class="v">1440 &times; 900 &middot; client claude-code-mac</span></div>
+    <div class="fit"><div class="screen d">
+      <div class="bar">
+        <span class="brand">lumberroom</span>
+        <nav><button class="tab">Map</button><button class="tab" aria-current="page">Reach</button>
+          <button class="tab">Lens</button><button class="tab">Chain</button>
+          <button class="tab">Queue<span style="opacity:.6"> 3</span></button></nav>
+        <span class="grow"></span>
+        <span class="health"><i class="dot"></i>key verified &middot; embedder bge-small-en-v1.5 &middot; last write 14 min ago</span>
+      </div>
+      <div class="body">
+        <div class="pane" style="width:200px;flex:none">
+          <div class="ph"><h1>Clients</h1></div>
+          <div style="display:grid">
+            <div style="padding:10px 12px;border-bottom:1px solid var(--rule);display:grid;gap:2px;background:var(--ink);color:#FBF9F4">
+              <b style="font:600 13.5px/1.2 var(--mono)">claude-code-mac</b>
+              <span style="font:500 12px/1.4 var(--mono);color:#C9C1AF">bearer &middot; wrote 14 min ago</span></div>
+            <div style="padding:10px 12px;border-bottom:1px solid var(--rule);display:grid;gap:2px">
+              <b style="font:600 13.5px/1.2 var(--mono)">chatgpt</b>
+              <span class="tiny">oauth &middot; read 41 times</span></div>
+            <div style="padding:10px 12px;border-bottom:1px solid var(--rule);display:grid;gap:2px">
+              <b style="font:600 13.5px/1.2 var(--mono)">lumberroom-ui</b>
+              <span class="tiny">bearer &middot; this console</span></div>
+          </div></div>
+        <div class="pane" style="width:520px;flex:none">
+          <div class="ph"><h1>claude-code-mac</h1><span class="sub">bearer token</span></div>
+          <div style="padding:12px 14px;display:grid;gap:12px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <div class="box"><div class="bb" style="padding:9px 11px">
+                <div style="font:700 22px/1 var(--mono)">2,914</div>
+                <div class="tiny" style="margin-top:4px">reads, last 14 days</div></div></div>
+              <div class="box"><div class="bb" style="padding:9px 11px">
+                <div style="font:700 22px/1 var(--mono)">186</div>
+                <div class="tiny" style="margin-top:4px">writes, last 14 days</div></div></div>
+            </div>
+            <div class="cl">
+              <div class="clh">Read clauses <span class="r">set in AUTH_TOKENS</span></div>
+              <div class="cr" style="grid-template-columns:minmax(0,1fr) 108px"><span class="g">*</span><span class="sel" style="background:var(--sink)">private</span></div>
+              <div class="cr" style="grid-template-columns:minmax(0,1fr) 108px"><span class="g">credentials:*</span><span class="sel" style="background:var(--sink)">sealed</span></div>
+            </div>
+            <div class="cl">
+              <div class="clh">Write clauses <span class="r">set in AUTH_TOKENS</span></div>
+              <div class="cr" style="grid-template-columns:minmax(0,1fr) 108px"><span class="g">*</span><span class="sel" style="background:var(--sink)">private</span></div>
+              <div class="cr" style="grid-template-columns:minmax(0,1fr) 108px"><span class="g">credentials:*</span><span class="sel" style="background:var(--sink)">sealed</span></div>
+            </div>
+            <div class="box">
+              <div class="bh">To change it, paste this and restart</div>
+              <div class="bb" style="padding:0">
+                <div class="pre" style="border:0">{ "client": "claude-code-mac",
+  "read":  [ { "namespace": "*", "max": "private" },
+             { "namespace": "personal:*", "max": "open" },
+             { "namespace": "credentials:*", "max": "sealed" } ],
+  "write": [ { "namespace": "*", "max": "private" },
+             { "namespace": "credentials:*", "max": "sealed" } ],
+  "mayDelete": true, "sealedCapable": true }</div>
+                <div style="padding:9px 12px;border-top:1px solid var(--rule);display:flex;gap:10px;align-items:center">
+                  <span class="btn">Copy block <kbd>c</kbd></span>
+                  <span class="tiny">Single-quote it in the shell or the JSON loses its quotes.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="pane" style="flex:1">
+          <div class="ph"><h1>What claude-code-mac reaches</h1><span class="sub">1,240 of 1,240 facts</span></div>
+          <div class="warnline"><span class="w">drift</span>
+            <span>The live grant differs from the block you previewed on 12 Aug.</span></div>
+          <div class="field">
+            <div class="axis" style="margin:0 0 6px 150px">sensitivity &rarr;</div>
+            <div class="grid" style="grid-template-columns:150px repeat(3,116px) 82px">
+        <div class="hd ax">namespace</div>
+        <div class="hd">open</div>
+        <div class="hd">private</div>
+        <div class="hd">sealed</div>
+        <div class="hd" style="justify-content:flex-end">live</div>
+        <div class="nsl"><b>global</b><i>shared facts</i></div>
+        <div class="c reach"><span class="n">214</span></div>
+        <div class="c priv zero reach"><span class="n">0</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">214</div>
+        <div class="nsl"><b>user:me</b><i>the owner</i></div>
+        <div class="c reach"><span class="n">402</span></div>
+        <div class="c priv reach"><span class="n">118</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">520</div>
+        <div class="nsl"><b>project:lumberroom</b><i>this project</i></div>
+        <div class="c reach"><span class="n">289</span></div>
+        <div class="c priv reach"><span class="n">24</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">313</div>
+        <div class="nsl"><b>project:lumen</b><i>household product</i></div>
+        <div class="c reach"><span class="n">96</span></div>
+        <div class="c priv reach"><span class="n">11</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">107</div>
+        <div class="nsl"><b>personal:finance</b><i>money</i></div>
+        <div class="c zero reach"><span class="n">0</span></div>
+        <div class="c priv reach"><span class="n">47</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">47</div>
+        <div class="nsl"><b>personal:health</b><i>body</i></div>
+        <div class="c zero reach"><span class="n">0</span></div>
+        <div class="c priv reach"><span class="n">22</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">22</div>
+        <div class="nsl"><b>credentials:oci</b><i>keys and endpoints</i></div>
+        <div class="c zero reach"><span class="n">0</span></div>
+        <div class="c priv zero reach"><span class="n">0</span></div>
+        <div class="c seal reach"><span class="n">17</span></div>
+        <div class="rowtot">17</div>
+              <div class="region drift" style="left:266px;top:190px;width:116px;height:80px">
+                <span class="lbl">69 facts in dispute</span></div>
+            </div>
+            <div class="legend"><span><i class="mk open"></i>reached</span>
+              <span style="color:var(--warn);font-weight:700">dashed: live grant wider than your block</span></div>
+          </div>
+          <div class="box" style="margin:0 16px 14px">
+            <div class="bh">The difference, in words</div>
+            <div class="bb">
+              <p class="prose" style="font-size:16.5px">The live grant reads
+              <span class="tiny">personal:*</span> at <b>private</b>. The block you previewed caps
+              it at <b>open</b>, and the two personal namespaces hold <b>69 private facts and no
+              open ones</b>, so applying the block takes this client from all 69 to none of
+              them.</p>
+              <p class="prose" style="font-size:15.5px;margin-top:9px;color:var(--ink2)">Nothing here
+              changes until you edit the file and restart the server. The console never writes a
+              bearer grant.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+  <div class="notes">
+    <div class="mark needs"><span class="k">14</span><span><b>Ledger item 14.</b> This whole screen
+      depends on bearer clients existing as data. Nothing lists an
+      <span class="m">AUTH_TOKENS</span> client today, including the console itself. One route
+      shaped roughly like <span class="m">/admin/whoami</span> over the whole list, plus an
+      unwindowed <span class="m">max(created_at)</span> per client so silence renders as a date
+      instead of an absence.</span></div>
+    <div class="mark needs"><span class="k">2</span><span>The 69 facts in dispute and the reached
+      counts come from item 2, the same grant-filtered count as the preview on screen 2.</span></div>
+    <div class="mark"><span class="k">i</span><span>The drift comparison needs the console to
+      remember the last block it produced for this client. That is console-side state in the
+      backend from item 0, not a store change.</span></div>
+  </div>
+</section>
+
+<section class="doc" id="approve">
+  <h2 class="dh"><span class="n">Screen 4 &middot; job 3</span>Approve. Three presets, drawn as three shapes.</h2>
+  <p class="lede">A stranger registered itself and holds nothing. The owner has one decision to make
+  and the three presets are the same three shapes the reach screen draws, at thumbnail size, with
+  the count each one admits printed beside it. The descriptions are the ones already in
+  <span class="tiny">GrantProfile::describe</span>, word for word, so the console and the consent
+  screen never disagree.</p>
+
+  <div class="stage">
+    <div class="cap"><span class="t">Approve, out of band</span><span class="v">1440 &times; 760 &middot; 16 Aug, three days before screen 2</span></div>
+    <div class="fit"><div class="screen d" style="height:760px">
+      <div class="bar">
+        <span class="brand">lumberroom</span>
+        <nav><button class="tab">Map</button><button class="tab" aria-current="page">Reach</button>
+          <button class="tab">Lens</button><button class="tab">Chain</button>
+          <button class="tab">Queue<span style="opacity:.6"> 3</span></button></nav>
+        <span class="grow"></span>
+        <span class="health"><i class="dot"></i>key verified &middot; embedder bge-small-en-v1.5 &middot; last write 6 min ago</span>
+      </div>
+      <div class="body">
+        <div class="pane" style="width:460px;flex:none">
+          <div class="ph"><h1>Waiting for you</h1><span class="sub">1 registration</span></div>
+          <div style="padding:14px">
+            <p class="prose" style="font-size:18px;line-height:1.45">A client calling itself
+            <b>ChatGPT</b> registered on 16 August at 09:02 and holds nothing.</p>
+            <div class="box" style="margin-top:14px"><div class="bb">
+              <dl class="kv">
+                <dt>Client id</dt><dd>c_7Kq3nR2xVb</dd>
+                <dt>Self-declared name</dt><dd>ChatGPT</dd>
+                <dt>Redirect URI</dt><dd style="word-break:break-all">https://chatgpt.com/<wbr>connector_platform_oauth_redirect</dd>
+                <dt>How it registered</dt><dd>dynamic registration, RFC 7591</dd>
+                <dt>Holds now</dt><dd>nothing</dd>
+                <dt>Calls made</dt><dd>none</dd>
+              </dl></div></div>
+            <p class="prose" style="font-size:15.5px;margin-top:14px;color:var(--ink2)">
+            The name is what the client called itself. Nothing verified it.</p>
+            <div class="verbs" style="margin-top:16px">
+              <span class="btn pri">Approve as narrow <kbd>&#8984;&crarr;</kbd></span>
+              <span class="btn dgr">Refuse and block</span>
+            </div>
+            <p class="prose" style="font-size:15px;margin-top:12px;color:var(--ink2)">
+            Refusing deletes the registration. The client can register again under a new id.</p>
+          </div>
+        </div>
+        <div class="pane" style="flex:1">
+          <div class="ph"><h1>What each preset admits</h1><span class="sub">shapes over the same field</span></div>
+          <div style="padding:14px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px;align-items:start">
+<div style="border:1px solid var(--rule2);background:var(--panel);padding:13px;display:grid;gap:9px">
+      <div style="display:flex;gap:8px;align-items:baseline">
+        <b style="font:700 15px/1 var(--sans);text-transform:capitalize">full</b>
+        <span class="tiny" style="margin-left:auto">1,240 of 1,240</span></div>
+      <div style="display:grid;grid-template-columns:92px repeat(3,30px);border:1px solid var(--rule2);width:min-content"><div style="height:15px"></div><div style="height:15px;background:var(--sink);border-bottom:1px solid var(--rule2);font:700 9px/15px var(--sans);text-align:center;color:var(--ink3);text-transform:uppercase">o</div><div style="height:15px;background:var(--sink);border-bottom:1px solid var(--rule2);font:700 9px/15px var(--sans);text-align:center;color:var(--ink3);text-transform:uppercase">p</div><div style="height:15px;background:var(--sink);border-bottom:1px solid var(--rule2);font:700 9px/15px var(--sans);text-align:center;color:var(--ink3);text-transform:uppercase">s</div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">global</div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">user:me</div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">project:lumberroom</div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">project:lumen</div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">personal:finance</div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">personal:health</div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">credentials:oci</div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div></div>
+      <p style="font:400 14.5px/1.4 var(--serif);color:#26231D;max-width:34ch">Every namespace at every level, including sealed items. Can delete memories and change the registry.</p>
+    </div><div style="border:1px solid var(--rule2);background:var(--panel);padding:13px;display:grid;gap:9px">
+      <div style="display:flex;gap:8px;align-items:baseline">
+        <b style="font:700 15px/1 var(--sans);text-transform:capitalize">standard</b>
+        <span class="tiny" style="margin-left:auto">1,001 of 1,240</span></div>
+      <div style="display:grid;grid-template-columns:92px repeat(3,30px);border:1px solid var(--rule2);width:min-content"><div style="height:15px"></div><div style="height:15px;background:var(--sink);border-bottom:1px solid var(--rule2);font:700 9px/15px var(--sans);text-align:center;color:var(--ink3);text-transform:uppercase">o</div><div style="height:15px;background:var(--sink);border-bottom:1px solid var(--rule2);font:700 9px/15px var(--sans);text-align:center;color:var(--ink3);text-transform:uppercase">p</div><div style="height:15px;background:var(--sink);border-bottom:1px solid var(--rule2);font:700 9px/15px var(--sans);text-align:center;color:var(--ink3);text-transform:uppercase">s</div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">global</div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">user:me</div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">project:lumberroom</div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">project:lumen</div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">personal:finance</div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">personal:health</div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">credentials:oci</div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div></div>
+      <p style="font:400 14.5px/1.4 var(--serif);color:#26231D;max-width:34ch">Your own notes, shared facts and project notes. Nothing private or sealed, no deletes, no registry changes.</p>
+    </div><div style="border:2px solid var(--ink);background:var(--panel);padding:13px;display:grid;gap:9px">
+      <div style="display:flex;gap:8px;align-items:baseline">
+        <b style="font:700 15px/1 var(--sans);text-transform:capitalize">narrow</b>
+        <span class="tiny" style="margin-left:auto">616 of 1,240</span></div>
+      <div style="display:grid;grid-template-columns:92px repeat(3,30px);border:1px solid var(--rule2);width:min-content"><div style="height:15px"></div><div style="height:15px;background:var(--sink);border-bottom:1px solid var(--rule2);font:700 9px/15px var(--sans);text-align:center;color:var(--ink3);text-transform:uppercase">o</div><div style="height:15px;background:var(--sink);border-bottom:1px solid var(--rule2);font:700 9px/15px var(--sans);text-align:center;color:var(--ink3);text-transform:uppercase">p</div><div style="height:15px;background:var(--sink);border-bottom:1px solid var(--rule2);font:700 9px/15px var(--sans);text-align:center;color:var(--ink3);text-transform:uppercase">s</div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">global</div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">user:me</div><div style="height:15px;background:var(--reach);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">project:lumberroom</div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">project:lumen</div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">personal:finance</div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">personal:health</div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;font:500 9.5px/15px var(--mono);padding-left:5px;color:var(--ink2);background:var(--sink);border-bottom:1px solid var(--rule);overflow:hidden;white-space:nowrap">credentials:oci</div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div><div style="height:15px;background:#EEEAE0;background-image:repeating-linear-gradient(45deg,transparent 0 3px,rgba(25,23,19,.20) 3px 4px);border-bottom:1px solid var(--rule);border-left:1px solid var(--rule)"></div></div>
+      <p style="font:400 14.5px/1.4 var(--serif);color:#26231D;max-width:34ch">Your own notes and shared facts. No project notes, nothing private or sealed, no deletes, no registry changes.</p>
+    </div>          </div>
+          <div style="padding:0 14px 14px">
+            <div class="box"><div class="bb">
+              <p class="prose" style="font-size:16px"><b>None of these is the shape you usually
+              want.</b> A preset sets read and write to the same clauses, which is how the
+              enumeration is written. Approve with one now, then narrow the write side on the reach
+              screen.</p>
+              <div class="verbs" style="margin-top:11px">
+                <span class="btn">Approve with custom clauses</span>
+                <span class="btn">Compare two presets</span>
+              </div>
+            </div></div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+  <div class="notes">
+    <div class="mark needs"><span class="k">4</span><span><b>Ledger item 4.</b> Approval and
+      revocation out of band. <span class="m">set_client_grant</span> takes clause lists and
+      <span class="m">revoke_client</span> is implemented with no caller, so this is two routes
+      behind the owner session plus the §4.3 decision about what a console session may grant.
+      Revoke lives on the reach screen, beside the grant it destroys.</span></div>
+    <div class="mark"><span class="k">i</span><span>The three descriptions and the three clause
+      sets are read straight from <span class="m">GrantProfile</span> in
+      <span class="m">src/domain/oauth.rs</span>. The counts beside them ride on item 2 with every
+      other count in this proposal.</span></div>
+  </div>
+</section>
+
+<section class="doc" id="lens">
+  <h2 class="dh"><span class="n">Screen 5 &middot; job 8</span>Lens. The same field, under someone else's grant.</h2>
+  <p class="lede">The lens is the reason to build this style. It re-renders the field, it answers a
+  real question through the enforcing path, and what it withholds stays visible as a counted line
+  with the content gone. The chrome changes with it, because a control that says the view is
+  another client's and leaves the view alone is the defect that sank the last design.</p>
+
+  <div class="stage">
+    <div class="cap"><span class="t">Lens, one question, one client</span><span class="v">1440 &times; 900 &middot; chatgpt after the grant on screen 2</span></div>
+    <div class="fit"><div class="screen d">
+      <div class="bar" style="background:var(--ink);border-bottom:2px solid var(--reach)">
+        <span class="brand" style="color:#FBF9F4">lumberroom</span>
+        <nav><button class="tab" style="color:#A79E8B">Map</button>
+          <button class="tab" style="color:#A79E8B">Reach</button>
+          <button class="tab" aria-current="page" style="background:#FBF9F4;color:var(--ink)">Lens</button>
+          <button class="tab" style="color:#A79E8B">Chain</button>
+          <button class="tab" style="color:#A79E8B">Queue<span style="opacity:.6"> 3</span></button></nav>
+        <span class="grow"></span>
+        <span style="font:700 13px/1 var(--sans);letter-spacing:.06em;color:#FBF9F4;background:var(--reach);padding:7px 11px;border-radius:3px">Seeing as chatgpt</span>
+        <span class="health" style="color:#C9C1AF"><i class="dot"></i>key verified &middot; last write 14 min ago</span>
+      </div>
+      <div class="body">
+        <div class="pane" style="width:640px;flex:none">
+          <div class="ph"><h1>What chatgpt can reach</h1><span class="sub">905 of 1,240 facts</span></div>
+          <div class="field">
+            <div class="axis" style="margin:0 0 6px 150px">sensitivity &rarr;</div>
+            <div class="grid" style="grid-template-columns:150px repeat(3,116px) 82px">
+        <div class="hd ax">namespace</div>
+        <div class="hd">open</div>
+        <div class="hd">private</div>
+        <div class="hd">sealed</div>
+        <div class="hd" style="justify-content:flex-end">live</div>
+        <div class="nsl"><b>global</b><i>shared facts</i></div>
+        <div class="c reach"><span class="n">214</span></div>
+        <div class="c priv zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">214</div>
+        <div class="nsl"><b>user:me</b><i>the owner</i></div>
+        <div class="c reach"><span class="n">402</span></div>
+        <div class="c priv norch"><span class="nr">no reach</span><span class="n">118</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">520</div>
+        <div class="nsl"><b>project:lumberroom</b><i>this project</i></div>
+        <div class="c reach"><span class="n">289</span></div>
+        <div class="c priv norch"><span class="nr">no reach</span><span class="n">24</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">313</div>
+        <div class="nsl"><b>project:lumen</b><i>household product</i></div>
+        <div class="c norch"><span class="nr">no reach</span><span class="n">96</span></div>
+        <div class="c priv norch"><span class="nr">no reach</span><span class="n">11</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">107</div>
+        <div class="nsl"><b>personal:finance</b><i>money</i></div>
+        <div class="c zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="c priv norch"><span class="nr">no reach</span><span class="n">47</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">47</div>
+        <div class="nsl"><b>personal:health</b><i>body</i></div>
+        <div class="c zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="c priv norch"><span class="nr">no reach</span><span class="n">22</span></div>
+        <div class="c seal zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="rowtot">22</div>
+        <div class="nsl"><b>credentials:oci</b><i>keys and endpoints</i></div>
+        <div class="c zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="c priv zero norch"><span class="nr">no reach</span><span class="n">0</span></div>
+        <div class="c seal norch"><span class="nr">no reach</span><span class="n">17</span></div>
+        <div class="rowtot">17</div>
+            </div>
+            <div class="legend">
+              <span><i class="mk open"></i>reachable by chatgpt</span>
+              <span><span class="nr" style="position:static;transform:none">no reach</span> withheld, with the count</span>
+            </div>
+          </div>
+          <div class="box" style="margin:0 16px 14px">
+            <div class="bh">Withheld from this question</div>
+            <div class="bb">
+              <p class="prose" style="font-size:16.5px">Two rows matched and stayed behind:
+              one in <span class="tiny">user:me</span> at private, one in
+              <span class="tiny">credentials:oci</span> at sealed.</p>
+              <p class="prose" style="font-size:15.5px;margin-top:9px;color:var(--ink2)">
+              The lens runs the real query with chatgpt's ceilings substituted, so a row it may not
+              see never enters the answer. The count is all this screen knows about them.</p>
+            </div>
+          </div>
+        </div>
+        <div class="pane" style="flex:1">
+          <div class="ph"><h1>Question</h1><span class="sub">answered as chatgpt, not as you</span></div>
+          <div style="padding:12px 16px 10px">
+            <div style="display:flex;gap:10px;align-items:center">
+              <div style="flex:1;border:2px solid var(--ink);background:#fff;padding:10px 12px;
+                font:400 17px/1.3 var(--serif)">what port does the dev server run on</div>
+              <span class="btn pri">Ask <kbd>&crarr;</kbd></span>
+            </div>
+          </div>
+          <div class="band">close match <span class="c">1 row</span></div>
+          <div class="arr" style="grid-template-columns:20px 120px minmax(0,1fr)">
+            <div class="r"><i class="mk open"></i><span class="ns">user:me</span>
+              <span class="tx">The lumberroom dev server listens on port 8787.
+              <span class="pv">claude-code-mac &middot; 19 Aug &middot; <b>&#10003; confirmed</b></span></span></div>
+          </div>
+          <div class="band">possible <span class="c">2 rows</span></div>
+          <div class="arr" style="grid-template-columns:20px 120px minmax(0,1fr)">
+            <div class="r"><i class="mk open"></i><span class="ns">project:lumberroom</span>
+              <span class="tx">PUBLIC_URL is the only source of external URLs.
+              <span class="pv">claude-code-mac &middot; 15 Aug</span></span></div>
+            <div class="r"><i class="mk open"></i><span class="ns">project:lumberroom</span>
+              <span class="tx">rmcp checks Host against a loopback-only allowlist.
+              <span class="pv">claude-code-mac &middot; 16 Aug</span></span></div>
+          </div>
+          <div class="band">nothing matched well <span class="c">0 rows</span></div>
+          <div class="band">withheld from chatgpt <span class="c">2 rows</span></div>
+          <div>
+            <div class="struck"><i class="mk private"></i>
+              <span class="s">one fact in user:me</span>
+              <span class="tiny" style="margin-left:auto">private &middot; above this client's ceiling</span></div>
+            <div class="struck"><i class="mk sealed"></i>
+              <span class="s">one item in credentials:oci</span>
+              <span class="tiny" style="margin-left:auto">sealed &middot; no client without the key reads it</span></div>
+          </div>
+          <div style="padding:14px 16px;display:flex;gap:12px;align-items:center;border-top:1px solid var(--rule)">
+            <span class="btn">Leave the lens <kbd>esc</kbd></span>
+            <span class="btn">Change client</span>
+            <span class="tiny">Hold <b>&#8997;</b> to print the score the server returned.</span>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+
+  <div class="stage">
+    <div class="cap"><span class="t">Two lens states the design answers rather than leaves open</span><span class="v">1440 &times; 340 &middot; detail</span></div>
+    <div class="fit"><div class="screen d" style="height:340px;flex-direction:row">
+      <div class="pane" style="width:720px;flex:none;border-right:1px solid var(--rule2)">
+        <div class="ph"><h1>Empty question</h1><span class="sub">lens on chatgpt</span></div>
+        <div style="padding:18px 20px">
+          <p class="prose" style="font-size:19px;line-height:1.4">Ask something. The field on the
+          left is everything chatgpt can reach, and this panel fills with what it would actually get
+          back.</p>
+          <p class="prose" style="font-size:16px;margin-top:12px;color:var(--ink2)">A lens with no
+          question shows no rows on purpose. The shape of the grant is the answer to the other
+          question, and it is already drawn.</p>
+          <div class="verbs" style="margin-top:16px">
+            <span class="btn">Use the last question you asked</span>
+            <span class="btn">Leave the lens <kbd>esc</kbd></span></div>
+        </div>
+      </div>
+      <div class="pane" style="flex:1">
+        <div class="ph"><h1>Lens on lumberroom-ui</h1><span class="sub">this console's own credential</span></div>
+        <div style="padding:18px 20px">
+          <p class="prose" style="font-size:19px;line-height:1.4">lumberroom-ui reaches every namespace at
+          every level, so this lens shows you exactly what you already see. <b>Nothing is
+          withheld.</b></p>
+          <p class="prose" style="font-size:16px;margin-top:12px;color:var(--ink2)">The console holds
+          the widest grant in the system. It cannot demonstrate policy against itself, and it says so
+          here rather than looking broken.</p>
+          <div class="verbs" style="margin-top:16px">
+            <span class="btn">Point the lens at chatgpt</span>
+            <span class="btn">Leave the lens <kbd>esc</kbd></span></div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+  <div class="notes">
+    <div class="mark needs"><span class="k">3</span><span><b>Ledger item 3.</b> The whole screen.
+      A <span class="m">Principal</span> is built from the presented credential and nothing else, so
+      the lens needs the client's ceilings substituted at
+      <span class="m">filter_readable</span> in <span class="m">search::run</span>
+      <i>and</i> at the second call inside <span class="m">other_namespaces</span>, plus a resolver
+      from a client id to a grant that spans two authorities, plus the
+      <span class="m">reads_whole_store</span> guard, plus a route. There is no HTTP search route
+      either; the console backend calls <span class="m">POST /mcp</span> the way the CLI
+      does.</span></div>
+    <div class="mark needs"><span class="k">3</span><span><b>Suppress
+      <span class="m">touch_accessed</span> for a lens query.</b> Without it, every rehearsal ages
+      the store, which corrupts the staleness detector and the read history job 4 depends on. That
+      is one line and it is the easiest part of item 3 to forget.</span></div>
+    <div class="mark needs"><span class="k">10</span><span><b>Ledger item 10.</b> The band headers
+      are printed words and no cosine score appears at rest. The held-key readout prints only what
+      the server returns, and the lexical contribution is not returned today. Until item 10 lands
+      the readout shows the blended score alone, with no claim about wording against
+      meaning.</span></div>
+  </div>
+</section>
+
+<section class="doc" id="chain">
+  <h2 class="dh"><span class="n">Screen 6 &middot; jobs 5, 9 and 4</span>Chain. One fact, where it sits, and what it replaced.</h2>
+  <p class="lede">Provenance reads as a sentence and history reads as intervals, which is the
+  distinction §5 draws. The field stays on the left with the fact's own cell outlined, so opening a
+  fact never loses the place it came from. This is the port conflict <b>after</b> the verdict on
+  screen 7, and the queue count in the tab has dropped from three to two.</p>
+
+  <div class="stage">
+    <div class="cap"><span class="t">Chain, one fact</span><span class="v">1440 &times; 900 &middot; 19 Aug, 15:02, after the verdict</span></div>
+    <div class="fit"><div class="screen d">
+      <div class="bar">
+        <span class="brand">lumberroom</span>
+        <nav><button class="tab">Map</button><button class="tab">Reach</button>
+          <button class="tab">Lens</button><button class="tab" aria-current="page">Chain</button>
+          <button class="tab">Queue<span style="opacity:.6"> 2</span></button></nav>
+        <span class="grow"></span>
+        <span class="health"><i class="dot"></i>key verified &middot; embedder bge-small-en-v1.5 &middot; last write 14 min ago</span>
+      </div>
+      <div class="body">
+        <div class="pane" style="width:640px;flex:none">
+          <div class="ph"><h1>Store</h1><span class="sub">1,240 live &middot; 63 retired</span></div>
+          <div class="field">
+            <div class="axis" style="margin:0 0 6px 150px">sensitivity &rarr;</div>
+            <div class="grid" style="grid-template-columns:150px repeat(3,116px) 82px">
+        <div class="hd ax">namespace</div>
+        <div class="hd">open</div>
+        <div class="hd">private</div>
+        <div class="hd">sealed</div>
+        <div class="hd" style="justify-content:flex-end">live</div>
+        <div class="nsl"><b>global</b><i>shared facts</i></div>
+        <div class="c"><span class="n">214</span></div>
+        <div class="c priv zero"><span class="n">0</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">214</div>
+        <div class="nsl"><b>user:me</b><i>the owner</i></div>
+        <div class="c"><span class="n">402</span></div>
+        <div class="c priv"><span class="n">118</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">520</div>
+        <div class="nsl"><b>project:lumberroom</b><i>this project</i></div>
+        <div class="c"><span class="n">289</span></div>
+        <div class="c priv"><span class="n">24</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">313</div>
+        <div class="nsl"><b>project:lumen</b><i>household product</i></div>
+        <div class="c"><span class="n">96</span></div>
+        <div class="c priv"><span class="n">11</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">107</div>
+        <div class="nsl"><b>personal:finance</b><i>money</i></div>
+        <div class="c zero"><span class="n">0</span></div>
+        <div class="c priv"><span class="n">47</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">47</div>
+        <div class="nsl"><b>personal:health</b><i>body</i></div>
+        <div class="c zero"><span class="n">0</span></div>
+        <div class="c priv"><span class="n">22</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">22</div>
+        <div class="nsl"><b>credentials:oci</b><i>keys and endpoints</i></div>
+        <div class="c zero"><span class="n">0</span></div>
+        <div class="c priv zero"><span class="n">0</span></div>
+        <div class="c seal"><span class="n">17</span></div>
+        <div class="rowtot">17</div>
+              <div class="region" style="left:150px;top:70px;width:116px;height:40px">
+                <span class="lbl">this fact</span></div>
+            </div>
+            <div class="legend"><span>The outline is where the open fact you are reading sits.</span></div>
+          </div>
+          <div style="margin-top:auto;border-top:1px solid var(--rule2);padding:14px 16px">
+            <div class="verbs">
+              <span class="btn">Previous fact <kbd>k</kbd></span>
+              <span class="btn">Next fact <kbd>j</kbd></span>
+              <span class="btn">Back to the map <kbd>esc</kbd></span>
+            </div>
+            <p class="tiny" style="margin-top:10px">Holding j or k moves through the rail at zero
+            transition. No held key reaches a verb.</p>
+          </div>
+        </div>
+        <div class="pane" style="flex:1">
+          <div class="ph"><h1>Fact</h1><span class="sub">user:me &middot; open &middot; 7f2c1a9e</span></div>
+          <div style="padding:16px 20px 0">
+            <div style="display:flex;gap:10px;align-items:baseline">
+              <i class="mk open"></i><span class="sw open">open</span>
+              <span class="tiny">user:me</span></div>
+            <p style="font:400 25px/1.35 var(--serif);margin:10px 0 12px;max-width:62ch">
+              The lumberroom dev server listens on port 8787.</p>
+            <p class="prose" style="font-size:17px">claude-code-mac wrote this on 19 August at
+            09:41. <b>You confirmed it the same day.</b> It replaced a value that had stood since
+            2 July.</p>
+            <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:16px">
+              <div class="box"><div class="bb" style="padding:10px 12px">
+                <div style="font:700 24px/1 var(--mono)">7</div>
+                <div class="tiny" style="margin-top:5px">times served</div></div></div>
+              <div class="box"><div class="bb" style="padding:10px 12px">
+                <div style="font:700 24px/1 var(--mono)">14:20</div>
+                <div class="tiny" style="margin-top:5px">last read, today</div></div></div>
+              <div class="slot" style="display:flex;align-items:center">which client read it last</div>
+            </div>
+            <div class="verbs" style="margin-top:18px">
+              <span class="btn dgr">Delete this fact <kbd>d</kbd></span>
+              <span class="btn">Copy id</span>
+              <span class="btn">Ask the lens about it</span>
+            </div>
+            <p class="prose" style="font-size:15px;margin-top:10px;color:var(--ink2)">Delete asks
+            once more and cannot be undone. The store keeps no tombstone.</p>
+          </div>
+          <div style="padding:20px 20px 0">
+            <h1 style="font:700 12px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--ink3)">What you used to believe</h1>
+            <div class="chain">
+              <div class="node live">
+                <div class="when">19 Aug, still true</div>
+                <div class="val">The lumberroom dev server listens on port 8787.</div>
+                <div class="by">claude-code-mac &middot; you confirmed it &middot; 7 reads</div>
+              </div>
+              <div class="node retired">
+                <div class="when">2 Jul to 19 Aug, 48 days</div>
+                <div class="val">The lumberroom dev server listens on port 8080.</div>
+                <div class="by">claude-code-mac &middot; you retired it on 19 Aug &middot; 23 reads</div>
+              </div>
+            </div>
+            <div class="verbs" style="margin-top:6px">
+              <span class="btn">Undo this supersede</span>
+              <span class="tiny">Restores both rows and clears the link. It writes no new text.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+  <div class="notes">
+    <div class="mark needs"><span class="k">7</span><span><b>Ledger item 7.</b> The third tile is
+      drawn empty and stays empty until the reading client is stored beside
+      <span class="m">last_accessed_at</span>. One migration, one port signature change, one adapter
+      change. No mockup in this proposal ever fills it.</span></div>
+    <div class="mark needs"><span class="k">15</span><span><b>Ledger item 15.</b> Undoing a
+      supersede. <span class="m">review::supersede</span> refuses the direct reversal and deleting
+      the winner clears the links while destroying the correction, so this needs a route that clears
+      <span class="m">superseded_by</span>, <span class="m">superseded_at</span> and
+      <span class="m">supersedes</span> across the pair. It is the only recovery in the triage flow
+      and it is what lets a verdict cost one act instead of two.</span></div>
+    <div class="mark"><span class="k">i</span><span>The fact, its provenance, its access count and
+      both ends of the chain answer from <span class="m">GET /admin/memory/{id}</span> today.</span></div>
+  </div>
+</section>
+
+<section class="doc" id="queue">
+  <h2 class="dh"><span class="n">Screen 7 &middot; job 6</span>Queue. A list docked under the map, and the week it is empty.</h2>
+  <p class="lede">This is the job this style serves worst, so it gets a list and not a ceremony. The
+  field earns its place here for one reason: a contradiction is two points in one cell, and the
+  outline says which cell before the owner reads a word.</p>
+
+  <div class="stage">
+    <div class="cap"><span class="t">Queue, three items</span><span class="v">1440 &times; 900 &middot; 19 Aug, 09:12, before the verdict on screen 6</span></div>
+    <div class="fit"><div class="screen d">
+      <div class="bar">
+        <span class="brand">lumberroom</span>
+        <nav><button class="tab">Map</button><button class="tab">Reach</button>
+          <button class="tab">Lens</button><button class="tab">Chain</button>
+          <button class="tab" aria-current="page">Queue<span style="opacity:.6"> 3</span></button></nav>
+        <span class="grow"></span>
+        <span class="health"><i class="dot"></i>key verified &middot; embedder bge-small-en-v1.5 &middot; last write 14 min ago</span>
+      </div>
+      <div class="body">
+        <div class="pane" style="width:560px;flex:none">
+          <div class="ph"><h1>Where the work is</h1><span class="sub">3 items, 2 namespaces</span></div>
+          <div class="field">
+            <div class="axis" style="margin:0 0 6px 150px">sensitivity &rarr;</div>
+            <div class="grid" style="grid-template-columns:150px repeat(3,116px) 82px">
+        <div class="hd ax">namespace</div>
+        <div class="hd">open</div>
+        <div class="hd">private</div>
+        <div class="hd">sealed</div>
+        <div class="hd" style="justify-content:flex-end">live</div>
+        <div class="nsl"><b>global</b><i>shared facts</i></div>
+        <div class="c"><span class="n">214</span></div>
+        <div class="c priv zero"><span class="n">0</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">214</div>
+        <div class="nsl"><b>user:me</b><i>the owner</i></div>
+        <div class="c"><span class="n">402</span></div>
+        <div class="c priv"><span class="n">118</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">520</div>
+        <div class="nsl"><b>project:lumberroom</b><i>this project</i></div>
+        <div class="c"><span class="n">289</span></div>
+        <div class="c priv"><span class="n">24</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">313</div>
+        <div class="nsl"><b>project:lumen</b><i>household product</i></div>
+        <div class="c"><span class="n">96</span></div>
+        <div class="c priv"><span class="n">11</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">107</div>
+        <div class="nsl"><b>personal:finance</b><i>money</i></div>
+        <div class="c zero"><span class="n">0</span></div>
+        <div class="c priv"><span class="n">47</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">47</div>
+        <div class="nsl"><b>personal:health</b><i>body</i></div>
+        <div class="c zero"><span class="n">0</span></div>
+        <div class="c priv"><span class="n">22</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">22</div>
+        <div class="nsl"><b>credentials:oci</b><i>keys and endpoints</i></div>
+        <div class="c zero"><span class="n">0</span></div>
+        <div class="c priv zero"><span class="n">0</span></div>
+        <div class="c seal"><span class="n">17</span></div>
+        <div class="rowtot">17</div>
+              <div class="region" style="left:150px;top:70px;width:116px;height:40px">
+                <span class="lbl">2 items</span></div>
+            </div>
+            <div class="legend"><span>Outlined cells hold something to decide. Everything else is
+              settled.</span></div>
+          </div>
+          <div style="margin-top:auto;border-top:1px solid var(--rule2);padding:14px 16px">
+            <p class="prose" style="font-size:16px">Two of the three sit in
+            <span class="tiny">user:me</span> at open. The third is a registry value in
+            <span class="tiny">project:lumberroom</span>.</p>
+            <p class="prose" style="font-size:15px;margin-top:9px;color:var(--ink2)">Nothing private
+            and nothing sealed is waiting on you this week.</p>
+          </div>
+        </div>
+        <div class="pane" style="flex:1">
+          <div class="ph"><h1>To decide</h1><span class="sub">j and k move, a verdict asks again</span></div>
+          <div class="qi" style="box-shadow:inset 4px 0 0 var(--ink)">
+            <div class="qh"><span class="qk">Contradiction</span>
+              <span class="tiny">near-identical wording</span>
+              <span class="qn">user:me &middot; open</span></div>
+            <div class="pair">
+              <div class="side"><span class="tag">Newer &middot; 19 Aug</span>
+                <div class="v">The lumberroom dev server listens on port 8787.</div>
+                <div class="pv">claude-code-mac &middot; 19 Aug 09:41 &middot; you confirmed it &middot; 0 reads</div></div>
+              <div class="side older"><span class="tag">Older &middot; 2 Jul</span>
+                <div class="v">The lumberroom dev server listens on port 8080.</div>
+                <div class="pv">claude-code-mac &middot; 2 Jul 11:08 &middot; unconfirmed &middot; 23 reads</div></div>
+            </div>
+            <div class="verbs">
+              <span class="btn pri">Retire the older <kbd>o</kbd></span>
+              <span class="btn">Retire the newer <kbd>n</kbd></span>
+              <span class="btn">Both are true <kbd>b</kbd></span>
+              <span class="tiny">Retiring asks once more. It cannot be undone from here.</span>
+            </div>
+          </div>
+          <div class="qi">
+            <div class="qh"><span class="qk">Never read</span>
+              <span class="tiny">140 days old</span>
+              <span class="qn">user:me &middot; open</span></div>
+            <div style="font:400 17px/1.4 var(--serif)">The desktop has 32 GB of RAM and a 3090.</div>
+            <div class="pv" style="font:500 12.5px/1.5 var(--mono);color:var(--ink2)">claude-code-mac &middot; 1 Apr &middot; unconfirmed &middot; never served</div>
+            <div class="verbs">
+              <span class="btn pri">Keep it <kbd>k</kbd></span>
+              <span class="btn dgr">Delete it <kbd>d</kbd></span>
+              <span class="tiny">Delete asks once more and takes the only copy.</span>
+            </div>
+          </div>
+          <div class="qi">
+            <div class="qh"><span class="qk">Registry value due for review</span>
+              <span class="qn">project:lumberroom &middot; open</span></div>
+            <div style="display:grid;grid-template-columns:250px minmax(0,1fr);gap:10px;align-items:baseline">
+              <span style="font:600 15px/1.4 var(--mono)">services.postgres.endpoint</span>
+              <span style="font:400 17px/1.4 var(--serif)">db:5432</span></div>
+            <div class="pv" style="font:500 12.5px/1.5 var(--mono);color:var(--ink2)">claude-code-mac &middot; 2 Jul &middot; unconfirmed &middot; review date passed 12 Aug</div>
+            <div class="verbs">
+              <span class="btn pri">Still true <kbd>y</kbd></span>
+              <span class="btn">Open the registry entry</span>
+            </div>
+          </div>
+          <div style="padding:14px 16px;border-top:1px solid var(--rule2)">
+            <span class="tiny">Hold <b>&#8997;</b> to print the similarity the server returned for the pair above.</span>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+  <div class="notes">
+    <div class="mark needs"><span class="k">8</span><span><b>Ledger item 8.</b> <b>Both are true</b>
+      is drawn and does not survive the night. <span class="m">conflicts()</span> recomputes from
+      similarity on demand, so without a not-a-conflict record the pair returns tomorrow and the
+      queue stops being opened. One migration, one port method, one query change. The verdict ships
+      with the migration or the control comes off the screen.</span></div>
+    <div class="mark needs"><span class="k">9</span><span><b>Ledger item 9.</b> A credential
+      tripwire refusal is the item the old design ranked above everything else in this queue, and
+      nothing records one. It is absent from this mockup rather than drawn empty, because a queue
+      with a permanent placeholder in it is worse than a shorter queue.</span></div>
+    <div class="mark"><span class="k">i</span><span>The pair, the stale row and the registry value
+      all answer from <span class="m">GET /admin/review/*</span> today, and both verdicts on the
+      pair go through <span class="m">POST /admin/memory/{id}/supersede</span>.</span></div>
+  </div>
+
+  <div class="stage" style="margin-top:26px">
+    <div class="cap"><span class="t">Queue, empty, on a store with nothing wrong</span><span class="v">1440 &times; 900 &middot; the state most weeks</span></div>
+    <div class="fit"><div class="screen d">
+      <div class="bar">
+        <span class="brand">lumberroom</span>
+        <nav><button class="tab">Map</button><button class="tab">Reach</button>
+          <button class="tab">Lens</button><button class="tab">Chain</button>
+          <button class="tab" aria-current="page">Queue</button></nav>
+        <span class="grow"></span>
+        <span class="health"><i class="dot"></i>key verified &middot; embedder bge-small-en-v1.5 &middot; last write 14 min ago</span>
+      </div>
+      <div class="body">
+        <div class="pane" style="width:560px;flex:none">
+          <div class="ph"><h1>Where the work is</h1><span class="sub">nothing outlined</span></div>
+          <div class="field">
+            <div class="axis" style="margin:0 0 6px 150px">sensitivity &rarr;</div>
+            <div class="grid" style="grid-template-columns:150px repeat(3,116px) 82px">
+        <div class="hd ax">namespace</div>
+        <div class="hd">open</div>
+        <div class="hd">private</div>
+        <div class="hd">sealed</div>
+        <div class="hd" style="justify-content:flex-end">live</div>
+        <div class="nsl"><b>global</b><i>shared facts</i></div>
+        <div class="c"><span class="n">214</span><span class="d">+3 this week</span></div>
+        <div class="c priv zero"><span class="n">0</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">214</div>
+        <div class="nsl"><b>user:me</b><i>the owner</i></div>
+        <div class="c"><span class="n">402</span><span class="d">+4 this week</span></div>
+        <div class="c priv"><span class="n">118</span><span class="d">+3 this week</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">520</div>
+        <div class="nsl"><b>project:lumberroom</b><i>this project</i></div>
+        <div class="c"><span class="n">289</span><span class="d">+7 this week</span></div>
+        <div class="c priv"><span class="n">24</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">313</div>
+        <div class="nsl"><b>project:lumen</b><i>household product</i></div>
+        <div class="c"><span class="n">96</span><span class="d">+2 this week</span></div>
+        <div class="c priv"><span class="n">11</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">107</div>
+        <div class="nsl"><b>personal:finance</b><i>money</i></div>
+        <div class="c zero"><span class="n">0</span></div>
+        <div class="c priv"><span class="n">47</span><span class="d">+1 this week</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">47</div>
+        <div class="nsl"><b>personal:health</b><i>body</i></div>
+        <div class="c zero"><span class="n">0</span></div>
+        <div class="c priv"><span class="n">22</span><span class="d">+1 this week</span></div>
+        <div class="c seal zero"><span class="n">0</span></div>
+        <div class="rowtot">22</div>
+        <div class="nsl"><b>credentials:oci</b><i>keys and endpoints</i></div>
+        <div class="c zero"><span class="n">0</span></div>
+        <div class="c priv zero"><span class="n">0</span></div>
+        <div class="c seal"><span class="n">17</span><span class="d">+1 this week</span></div>
+        <div class="rowtot">17</div>
+            </div>
+            <div class="legend"><span>Counts with a green figure under them grew this week.</span></div>
+          </div>
+        </div>
+        <div class="pane" style="flex:1">
+          <div class="ph"><h1>To decide</h1><span class="sub">nothing</span></div>
+          <div class="empty" style="padding:30px 24px">
+            <p style="font:400 30px/1.25 var(--serif);max-width:22ch">Nothing contradicts itself
+            this week.</p>
+            <p class="prose" style="font-size:17.5px;margin-top:16px">The store holds
+            <b>1,240 live facts</b> and 63 retired ones. The last write landed 14 minutes ago from
+            <span class="tiny">claude-code-mac</span>, in
+            <span class="tiny">project:lumberroom</span>.</p>
+            <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:22px;max-width:640px">
+              <div class="box"><div class="bb" style="padding:12px">
+                <div style="font:700 26px/1 var(--mono)">214</div>
+                <div class="tiny" style="margin-top:6px">never served</div>
+                <div class="tiny" style="margin-top:2px">17% of the store</div></div></div>
+              <div class="box"><div class="bb" style="padding:12px">
+                <div style="font:700 26px/1 var(--mono)">41 d</div>
+                <div class="tiny" style="margin-top:6px">median age</div>
+                <div class="tiny" style="margin-top:2px">of a live fact</div></div></div>
+              <div class="box"><div class="bb" style="padding:12px">
+                <div style="font:700 26px/1 var(--mono)">1 Apr</div>
+                <div class="tiny" style="margin-top:6px">oldest never served</div>
+                <div class="tiny" style="margin-top:2px">in user:me</div></div></div>
+            </div>
+            <p class="prose" style="font-size:16px;margin-top:20px;color:var(--ink2)">Writes have
+            kept pace with reads for six weeks. A store that is read often and written rarely is
+            decaying, and this one is not.</p>
+            <div class="verbs" style="margin-top:18px">
+              <span class="btn">Show the 214 never served</span>
+              <span class="btn">Back to the map <kbd>esc</kbd></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+  <div class="notes">
+    <div class="mark"><span class="k">i</span><span>Every figure in the empty state answers from
+      <span class="m">GET /statsz?staleness</span> and the digest today. The empty state is not an
+      achievement and not an error; it reports the store.</span></div>
+  </div>
+</section>
+
+<section class="doc" id="phone">
+  <h2 class="dh"><span class="n">Screen 8 &middot; jobs 1, 4, 5, 7 on a phone</span>Phone. The field collapses and the style stops helping.</h2>
+  <p class="lede">At 390 points wide there is no room for two axes, so the field becomes a stacked
+  list of namespaces with the sensitivity counts inline. <b>The spatial idea contributes nothing
+  here.</b> Jobs 1, 4, 5 and 7 work end to end as lists, which any of the other four proposals will
+  also manage, and grant editing is absent because a fat-fingered ceiling change is the mistake this
+  system exists to prevent.</p>
+  <p class="lede">Job 4 is the reason the phone matters. The surface that wrote the thing the owner
+  regrets is usually the phone in their hand, and the clock starts at the lock screen.</p>
+
+  <div class="stage">
+    <div class="cap"><span class="t">Job 1, then job 4 end to end</span><span class="v">390 &times; 844, four states</span></div>
+    <div class="phones">
+      <div class="fit"><div class="screen p">
+        <div class="bar"><span class="brand">lumberroom</span><span class="grow"></span>
+          <span class="btn" style="padding:7px 10px;font-size:13px">Search</span></div>
+        <div style="padding:7px 14px;border-bottom:1px solid var(--rule);background:var(--panel)">
+          <span class="health" style="font-size:12px"><i class="dot"></i>key verified &middot; last write 14 min ago</span></div>
+        <div class="pnav"><span class="t" aria-current="page">Store</span><span class="t">Arrived</span><span class="t">Decide</span></div>
+        <div class="ph" style="padding:9px 14px 7px"><h1>Namespaces</h1><span class="sub">1,240 live</span></div>
+        <div class="stack-cols">
+<div class="pnsrow"><b>global</b><span class="bits"><span style="display:flex;gap:4px;align-items:center"><i class="mk open"></i>214</span></span></div><div class="pnsrow"><b>user:me</b><span class="bits"><span style="display:flex;gap:4px;align-items:center"><i class="mk open"></i>402</span><span style="display:flex;gap:4px;align-items:center;color:var(--priv)"><i class="mk private"></i>118</span></span></div><div class="pnsrow"><b>project:lumberroom</b><span class="bits"><span style="display:flex;gap:4px;align-items:center"><i class="mk open"></i>289</span><span style="display:flex;gap:4px;align-items:center;color:var(--priv)"><i class="mk private"></i>24</span></span></div><div class="pnsrow"><b>project:lumen</b><span class="bits"><span style="display:flex;gap:4px;align-items:center"><i class="mk open"></i>96</span><span style="display:flex;gap:4px;align-items:center;color:var(--priv)"><i class="mk private"></i>11</span></span></div><div class="pnsrow"><b>personal:finance</b><span class="bits"><span style="display:flex;gap:4px;align-items:center"><i class="mk open"></i>0</span><span style="display:flex;gap:4px;align-items:center;color:var(--priv)"><i class="mk private"></i>47</span></span></div><div class="pnsrow"><b>personal:health</b><span class="bits"><span style="display:flex;gap:4px;align-items:center"><i class="mk open"></i>0</span><span style="display:flex;gap:4px;align-items:center;color:var(--priv)"><i class="mk private"></i>22</span></span></div><div class="pnsrow"><b>credentials:oci</b><span class="bits"><span style="display:flex;gap:4px;align-items:center"><i class="mk open"></i>0</span><span style="display:flex;gap:4px;align-items:center;color:var(--seal)"><i class="mk sealed"></i>17</span></span></div>        </div>
+        <div class="ph" style="padding:9px 14px 7px"><h1>Arrived this week</h1><span class="sub">22 facts</span></div>
+        <div class="plist">
+<div class="r open"><div class="tx">The lumberroom dev server listens on port 8787.</div><div class="pv">user:me &middot; claude-code-mac &middot; 19 Aug &middot; <b>&#10003; confirmed</b></div></div><div class="r open"><div class="tx">Migrations are forward-only; an old image cannot boot.</div><div class="pv">project:lumberroom &middot; claude-code-mac &middot; 19 Aug</div></div><div class="r open"><div class="tx">cargo test needs -j 1 or the linker gets OOM-killed.</div><div class="pv">project:lumberroom &middot; claude-code-mac &middot; 19 Aug</div></div><div class="r private"><div class="tx">Weekdays in Bangalore, one week a month in Kochi.</div><div class="pv">user:me &middot; claude-code-mac &middot; 18 Aug</div></div><div class="r open"><div class="tx">Commit subjects in the imperative, no scope prefix.</div><div class="pv">global &middot; claude-code-mac &middot; 18 Aug</div></div><div class="r private"><div class="tx">The index-fund SIP debits on the 3rd of each month.</div><div class="pv">personal:finance &middot; claude-code-mac &middot; 18 Aug</div></div>        </div>
+      </div></div>
+
+      <div class="fit"><div class="screen p">
+        <div class="bar"><span class="btn" style="padding:7px 10px;font-size:13px">Back</span>
+          <span class="grow"></span><span class="brand">fact</span></div>
+        <div style="padding:14px">
+          <div style="display:flex;gap:8px;align-items:center">
+            <i class="mk open"></i><span class="sw open">open</span>
+            <span class="tiny">user:me</span></div>
+          <p style="font:400 21px/1.35 var(--serif);margin:11px 0 12px">The lumberroom dev server listens on port 8787.</p>
+          <p class="prose" style="font-size:16px">claude-code-mac wrote this on 19 August.
+          <b>You confirmed it the same day.</b> It replaced a value that stood since 2 July.</p>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px">
+            <div class="box"><div class="bb" style="padding:10px">
+              <div style="font:700 22px/1 var(--mono)">7</div>
+              <div class="tiny" style="margin-top:4px">times served</div></div></div>
+            <div class="box"><div class="bb" style="padding:10px">
+              <div style="font:700 22px/1 var(--mono)">14:20</div>
+              <div class="tiny" style="margin-top:4px">last read, today</div></div></div>
+          </div>
+          <div class="slot" style="margin-top:10px">which client read it last</div>
+          <div style="margin-top:16px;display:grid;gap:10px">
+            <span class="btn dgr" style="justify-content:center;padding:13px">Delete this fact</span>
+            <span class="btn" style="justify-content:center;padding:13px">See what it replaced</span>
+          </div>
+          <p class="prose" style="font-size:14.5px;margin-top:11px;color:var(--ink2)">There is no
+          undo. The store keeps no tombstone.</p>
+        </div>
+      </div></div>
+
+      <div class="fit"><div class="screen p">
+        <div class="bar"><span class="btn" style="padding:7px 10px;font-size:13px">Back</span>
+          <span class="grow"></span><span class="brand">fact</span></div>
+        <div style="padding:14px;opacity:.32">
+          <div style="display:flex;gap:8px;align-items:center">
+            <i class="mk open"></i><span class="sw open">open</span><span class="tiny">user:me</span></div>
+          <p style="font:400 21px/1.35 var(--serif);margin:11px 0 12px">The lumberroom dev server listens on port 8787.</p>
+          <p class="prose" style="font-size:16px">claude-code-mac wrote this on 19 August.</p>
+        </div>
+        <div class="sheet">
+          <div style="font:700 12px/1 var(--sans);letter-spacing:.12em;text-transform:uppercase;color:var(--warn)">Delete, second ask</div>
+          <p style="font:400 20px/1.35 var(--serif)">This takes the only copy.</p>
+          <p class="prose" style="font-size:15.5px">It has been served <b>7 times</b>, last at 14:20
+          today. Deleting it does not recall what was already served.</p>
+          <div style="display:grid;gap:10px">
+            <span class="btn dgr solid" style="justify-content:center;padding:14px">Delete it now</span>
+            <span class="btn" style="justify-content:center;padding:14px">Keep it</span>
+          </div>
+        </div>
+      </div></div>
+
+      <div class="fit"><div class="screen p">
+        <div class="bar"><span class="btn" style="padding:7px 10px;font-size:13px">Back to the store</span>
+          <span class="grow"></span></div>
+        <div style="padding:16px 14px">
+          <p style="font:400 27px/1.25 var(--serif)">Gone.</p>
+          <p class="prose" style="font-size:16.5px;margin-top:12px">The server confirmed the delete
+          at <b>15:04:11</b>. The row is no longer in the store.</p>
+          <div class="box" style="margin-top:16px"><div class="bb">
+            <p class="prose" style="font-size:16px">Before it went it had been served
+            <b>7 times</b>, and the last read was at 14:20 today.</p>
+            <div class="slot" style="margin-top:10px">which client read it last</div>
+          </div></div>
+          <p class="prose" style="font-size:16px;margin-top:16px"><span class="tiny">user:me</span>
+          now holds <b>401</b> open facts and 118 private ones.</p>
+          <div style="margin-top:18px;display:grid;gap:10px">
+            <span class="btn" style="justify-content:center;padding:13px">Find another fact</span>
+            <span class="btn" style="justify-content:center;padding:13px">Back to the store</span>
+          </div>
+          <p class="prose" style="font-size:14.5px;margin-top:14px;color:var(--ink2)">Every number
+          above came back with the server's answer. The console did not compute them.</p>
+        </div>
+      </div></div>
+    </div>
+  </div>
+  <div class="notes">
+    <div class="mark needs"><span class="k">7</span><span>The last-reader slot appears twice and
+      stays empty in both. It fills when item 7's migration stores the reading client beside
+      <span class="m">last_accessed_at</span>.</span></div>
+    <div class="mark needs"><span class="k">0</span><span><b>Ledger item 0.</b> Whether job 4 works
+      from a phone at all is decided by the console backend: the session TTL, and whether a phone
+      gets a longer one than a laptop. A password prompt on a signed-out phone spends the whole
+      thirty seconds before the owner reaches the row.</span></div>
+    <div class="mark"><span class="k">i</span><span>A sealed delete uses the same sheet with
+      different copy: it names the key, says the server never held a readable copy, and says this
+      destroys the only one. It is the one confirm that prints a key name.</span></div>
+    <div class="mark"><span class="k">i</span><span>Counted at 390 &times; 844: <b>6 fact rows</b>
+      under the seven namespace rows, at 15.5px. Floor 1 asks for 6.</span></div>
+  </div>
+</section>
+
+<section class="doc" id="states">
+  <h2 class="dh"><span class="n">Screen 9</span>States. The five screens a designer improvises at the end.</h2>
+  <p class="lede">Each of these gets drawn now because the worst place to invent the offline screen
+  is a phone in the middle of a panic. The empty healthy queue is on screen 7, where it belongs.</p>
+
+  <div class="stage">
+    <div class="cap"><span class="t">Five states</span><span class="v">700 &times; 430 each &middot; the console frame, cropped</span></div>
+    <div class="phones">
+      <div class="fit"><div class="screen d" style="width:700px;height:430px">
+        <div class="bar"><span class="brand">lumberroom</span>
+          <nav><button class="tab" aria-current="page">Map</button></nav>
+          <span class="grow"></span><span class="health"><i class="dot"></i>key verified &middot; last write 14 min ago</span></div>
+        <div style="padding:26px 24px">
+          <p style="font:400 28px/1.25 var(--serif);max-width:24ch">Nothing is in the store yet.</p>
+          <p class="prose" style="font-size:17px;margin-top:14px">Write the first fact from a
+          terminal, and the map draws its first row.</p>
+          <div class="pre" style="margin-top:14px">lumberroom write "The lumberroom dev server listens on port 8787." \
+  --namespace user:me</div>
+          <p class="prose" style="font-size:16px;margin-top:16px">To have Claude Code write on its
+          own, add the SessionStart hook. After that the store fills without you asking.</p>
+          <div class="pre" style="margin-top:10px">lumberroom bootstrap --hook</div>
+        </div>
+      </div></div>      <div class="fit"><div class="screen d" style="width:700px;height:430px">
+        <div class="bar"><span class="brand">lumberroom</span>
+          <nav><button class="tab" aria-current="page">Map</button></nav>
+          <span class="grow"></span><span class="health bad"><i class="dot"></i>no answer from the server</span></div>
+        <div class="warnline"><span class="w">offline</span>
+          <span>The console cannot reach lumberroom.</span></div>
+        <div style="padding:24px">
+          <p style="font:400 26px/1.28 var(--serif);max-width:26ch">Nothing on this screen is live.</p>
+          <p class="prose" style="font-size:17px;margin-top:13px">The last answer came back at
+          <b>14:52</b>, eleven minutes ago. Counts, grants and the queue are from then, and no
+          verdict will commit until the server answers again.</p>
+          <div class="verbs" style="margin-top:16px">
+            <span class="btn pri">Try again</span>
+            <span class="btn">Show what failed</span></div>
+          <p class="prose" style="font-size:15px;margin-top:14px;color:var(--ink2)">Connection
+          refused on <span class="tiny">https://lumberroom.example.net/readyz</span>.</p>
+        </div>
+      </div></div>      <div class="fit"><div class="screen d" style="width:700px;height:430px">
+        <div class="bar"><span class="brand">lumberroom</span>
+          <nav><button class="tab" aria-current="page">Queue</button></nav>
+          <span class="grow"></span><span class="health"><i class="dot"></i>key verified &middot; last write 14 min ago</span></div>
+        <div class="warnline"><span class="w">403</span>
+          <span>lumberroom refused this route to the console.</span></div>
+        <div style="padding:24px">
+          <p style="font:400 26px/1.28 var(--serif);max-width:28ch">The console's own grant is
+          narrower than this screen needs.</p>
+          <p class="prose" style="font-size:16.5px;margin-top:13px">
+          <span class="tiny">GET /admin/review/conflicts</span> came back 403. Reading a conflict
+          pair needs read at the row's level in the row's namespace, and
+          <span class="tiny">lumberroom-ui</span> holds <span class="tiny">*</span> at open.</p>
+          <p class="prose" style="font-size:16px;margin-top:12px">Widen it in
+          <span class="tiny">AUTH_TOKENS</span> and restart. The console cannot widen itself, which
+          is the point.</p>
+          <div class="verbs" style="margin-top:14px">
+            <span class="btn">Copy the clause block</span>
+            <span class="btn">Retry</span></div>
+        </div>
+      </div></div>      <div class="fit"><div class="screen d" style="width:700px;height:430px">
+        <div class="bar"><span class="brand">lumberroom</span>
+          <nav><button class="tab" aria-current="page">Chain</button></nav>
+          <span class="grow"></span><span class="health"><i class="dot"></i>key verified &middot; last write 14 min ago</span></div>
+        <div class="warnline"><span class="w">failed</span>
+          <span>The delete did not complete.</span></div>
+        <div style="padding:22px 24px">
+          <p style="font:400 25px/1.3 var(--serif);max-width:30ch">The fact is still in the store.</p>
+          <p class="prose" style="font-size:16.5px;margin-top:12px">You asked at
+          <b>15:04:09</b>. The server answered <span class="tiny">500</span> at 15:04:11 and the row
+          is unchanged.</p>
+          <div class="pre" style="margin-top:12px">DELETE /admin/memory/7f2c1a9e
+500 &middot; database connection closed mid-transaction</div>
+          <div class="verbs" style="margin-top:14px">
+            <span class="btn dgr">Ask again</span>
+            <span class="btn">Leave it</span></div>
+          <p class="prose" style="font-size:15px;margin-top:12px;color:var(--ink2)">Asking again
+          repeats the second act. Nothing is queued and nothing retries on its own.</p>
+        </div>
+      </div></div>      <div class="fit"><div class="screen d" style="width:700px;height:430px">
+        <div class="bar"><span class="brand">lumberroom</span>
+          <nav><button class="tab" aria-current="page">Map</button></nav>
+          <span class="grow"></span><span class="health bad"><i class="dot"></i>key mismatch &middot; private writes refused</span></div>
+        <div class="warnline"><span class="w">key</span>
+          <span>Private writes are being refused.</span></div>
+        <div style="padding:22px 24px">
+          <p style="font:400 25px/1.3 var(--serif);max-width:30ch">The key on the box does not match
+          the key your private rows were sealed with.</p>
+          <p class="prose" style="font-size:16.5px;margin-top:12px">Every open read and every open
+          write still works, which is why the server calls itself healthy. <b>187 private rows are
+          unreadable and every new private write is refused.</b></p>
+          <p class="prose" style="font-size:16px;margin-top:11px">Nothing has been lost. The rows
+          are on disk and they need the key they were written with.</p>
+          <div class="verbs" style="margin-top:14px">
+            <span class="btn">Show which namespaces hold them</span>
+            <span class="btn">Read the key runbook</span></div>
+        </div>
+      </div></div>    </div>
+  </div>
+  <div class="notes">
+    <div class="mark"><span class="k">i</span><span>Floor 7 in one sentence: the key mismatch is a
+      single line in the status area of every screen, and the fifth frame above is the one screen
+      that gives it a full treatment. It never outranks the content of a screen it did not
+      cause.</span></div>
+    <div class="mark"><span class="k">i</span><span>The 403 copy names the route and the file. A
+      console that says <span class="m">something went wrong</span> when its own grant is the cause
+      teaches the owner to distrust the store instead of the configuration.</span></div>
+  </div>
+</section>
+
+<section class="doc" id="floors">
+  <h2 class="dh"><span class="n">Floors</span>Ten lines, ten tests, ten results.</h2>
+  <p class="lede">Clearing these is the entry fee. Every contrast ratio below is computed from the
+  hex values in this file's stylesheet, and every count is counted in the mockup above rather than
+  intended.</p>
+  <table class="fl" style="margin-top:14px">
+    <thead><tr><th>#</th><th style="width:26%">Floor</th><th>How this design meets it, and what the test returns</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>20 facts at 1440&times;900, 6 at 390&times;844, text 15px or larger, prose capped at 75 characters</td>
+        <td><b>22 fact rows</b> on screen 1 at 15px, with 45px of slack under the last one. <b>6 rows</b>
+        on the phone at 15.5px, under seven namespace rows. Fact text is capped at
+        <code>75ch</code> in the stylesheet. There is no comfortable mode; this is the resting state.</td></tr>
+      <tr><td>2</td><td>Two of size, weight and family separate each level</td>
+        <td>Fact text is 15px serif at 400. Metadata is 12.5px mono at 400. Chrome is 14px sans at
+        600. A section label is 11.5px sans at 700, uppercase. <b>Every adjacent pair differs by
+        family and by one more axis</b>, so flattening a screenshot to three tones keeps the levels
+        apart. Lightness carries nothing on its own.</td></tr>
+      <tr><td>3</td><td>Client, date and confirmation within 20 characters of the fact, never a ragged column</td>
+        <td>Provenance is <b>inline in the same text flow</b> as the fact, one middot after the last
+        word, so it wraps with the sentence it belongs to. There is no provenance column to go
+        ragged. Cover every row but one and the row still reads as a unit.</td></tr>
+      <tr><td>4</td><td>Sensitivity on three channels beyond hue</td>
+        <td><b>Four.</b> The printed word, the marker shape (hollow, filled, crosshatched), the row
+        or cell texture, and the column the count sits in on the field. A black and white print
+        sorts by any one of them.</td></tr>
+      <tr><td>5</td><td>An ungranted cell reads at 4.5:1 or better; the widest grant is not the hardest text</td>
+        <td><code>no reach</code> measures <b>14.11:1</b> and the withheld count beside it
+        <b>7.68:1</b>. The widest grant is a filled region with its ceiling printed in the clause
+        list at 14px semibold, and the sealed word on its own tint measures <b>9.60:1</b>. The
+        darkest thing on the screen is a fact at 17.62:1; the lightest is metadata at 5.05:1.</td></tr>
+      <tr><td>6</td><td>Nothing hover-only, every keyboard verb has a visible control, Escape steps out</td>
+        <td>Every verb in every mockup is a labelled button with its key printed on its face. <b>No
+        affordance in this design appears on hover.</b> Escape is drawn on Discard, on Leave the
+        lens and on Back to the map, and it destroys nothing anywhere. Unplug either input and the
+        console still operates.</td></tr>
+      <tr><td>7</td><td>No status band outweighs the content beneath it</td>
+        <td>The health line is one line of 13px mono in the top bar and is the same line on all five
+        screens. A warning band is one sentence at 13.5px with 8px of padding. The key mismatch gets
+        a full treatment on <b>one</b> screen, in states frame five.</td></tr>
+      <tr><td>8</td><td>Nothing moves by default; held keys transition at zero; a hold gate is timed in JavaScript</td>
+        <td><b>This file declares no transition and no animation on any product element.</b> Holding
+        j or k moves the selection with nothing to interpolate. <b>There is no hold-to-confirm gate
+        at all:</b> the second act is a discrete press on a control that was not on screen a moment
+        earlier, so there is no timer for a motion preference to shorten.</td></tr>
+      <tr><td>9</td><td>No cosine score at rest; bands with printed headers; the third says nothing matched well</td>
+        <td>The lens prints <code>close match</code>, <code>possible</code> and
+        <code>nothing matched well</code> in those words, and the queue prints
+        <code>near-identical wording</code> instead of 0.94. The raw figure sits behind a held
+        Option key and prints only the blended score the server returns.</td></tr>
+      <tr><td>10</td><td>No implementation-status chips and no annotation inside the product</td>
+        <td>Search the mockups for <code>wired</code>, <code>not built</code> or a ledger number and
+        you find none. <b>Every marker in this document sits in a bordered block below the frame,
+        outside the bezel, in this document's voice.</b> The owner can cover the markers with a hand
+        and judge the product.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="doc" id="verdict">
+  <h2 class="dh"><span class="n">The one decision</span>Grants are drawn as resolved shapes and edited as clauses.</h2>
+  <p class="lede" style="font-size:19px;max-width:74ch">The other four proposals will hand the owner
+  a grant as text and leave them to simulate its consequence in their head; this one makes the
+  simulation the artifact, so the question <i>what does this admit</i> gets answered by an area
+  before anything is committed. And it refuses to let the owner type into that picture, because the
+  moment the drawing becomes the input, the overlapping-glob problem that got the grant matrix
+  banned in the first place walks straight back in.</p>
+
+  <div class="rule"></div>
+
+  <h2 class="dh" style="margin-top:34px"><span class="n">Closing</span>What this style is bad at.</h2>
+  <ol class="plain">
+    <li><b>It dies on a phone.</b> Two axes need width and there is none, so the field becomes a
+    stacked list and the whole idea contributes nothing to jobs 1, 4, 5 and 7 on the surface where
+    job 4 actually happens. Judge the phone screens against the other four proposals and expect this
+    one to come third.</li>
+    <li><b>It holds together only while the namespace set is small and sorts well.</b> Seven rows
+    read at a glance. Forty rows is a scroll, and the day the owner writes to
+    <span class="tiny">personal:travel</span> the sort that made
+    <span class="tiny">project:*</span> a clean rectangle starts fragmenting. The design leans on a
+    property of the store that the owner can break by accident.</li>
+    <li><b>Job 6 is worse here than in a triage inbox.</b> Knowing a contradiction sits in
+    <span class="tiny">user:me</span> at open helps once. It says nothing about which side wins,
+    which is the entire decision, and a proposal built around the queue will move faster through
+    thirty items than this one moves through three.</li>
+    <li><b>It is the most expensive of the five.</b> The two screens that justify the style, reach
+    and lens, are ledger items 2 and 3, and item 3 is the largest non-migration item in the
+    document. Build this without them and the owner gets an outline with no numbers in it, which is
+    a diagram of a promise.</li>
+    <li><b>The second visit is thinner than the first.</b> Inventory moves slowly. The week deltas
+    are the honest answer and they are small numbers, so on most Mondays the map looks like last
+    Monday and the arrivals rail carries the visit on its own.</li>
+    <li><b>The map is a skill.</b> It takes one explanation, and this document spent a whole section
+    giving it. An interface that needs an explanation has already lost an argument to a list, and
+    the owner should hold that against this proposal.</li>
+  </ol>
+
+  <h3 class="sh">About the data on these screens</h3>
+  <p class="lede">Every fact shown is invented, written against this project's real history and this
+  repository's real vocabulary. The counts describe a plausible store of 1,240 live rows and 63
+  retired ones; nobody has measured the owner's store, so read them as a shape rather than a
+  figure. <b>Client counts are not padded.</b> Two clients hold a credential in this story,
+  <span class="tiny">claude-code-mac</span> and <span class="tiny">chatgpt</span>, plus the console's
+  own row. <span class="tiny">openwebui</span>, <span class="tiny">hermes</span> and
+  <span class="tiny">claude-ai</span> appear nowhere on a screen, because they have not registered.</p>
+  <p class="lede">The 22 arrival rows are filler in the sense that floor 1 needed twenty and the
+  invented week supplied twenty-two. The conflict is the real one from this project's history: the
+  port fact in <span class="tiny">user:me</span>, near-identical wording, which is the case
+  supersession exists for.</p>
+  <p class="lede">Frames render at the viewport printed in their caption and scale down to fit this
+  page. Every size quoted in the floors table is the native one.</p>
+</section>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* Frames are drawn at their true viewport and scaled to fit the page, so a
+     1440-wide screen can be judged inside a narrower document column. Sizes
+     quoted in the floors table are the native ones. */
+  function fit() {
+    var stages = document.querySelectorAll(".stage");
+    for (var i = 0; i < stages.length; i++) {
+      var stage = stages[i];
+      var avail = stage.clientWidth;
+      var group = stage.querySelector(".phones");
+      var fits, natural = 0, j;
+
+      if (group) {
+        fits = group.querySelectorAll(":scope > .fit");
+        for (j = 0; j < fits.length; j++) {
+          natural += fits[j].firstElementChild.offsetWidth;
+        }
+        natural += 20 * (fits.length - 1);
+        scale(fits, Math.min(1, avail / natural));
+      } else {
+        fits = stage.querySelectorAll(".fit");
+        for (j = 0; j < fits.length; j++) {
+          var one = fits[j].firstElementChild.offsetWidth;
+          scale([fits[j]], Math.min(1, avail / one));
+        }
+      }
+    }
+  }
+
+  function scale(fits, k) {
+    for (var i = 0; i < fits.length; i++) {
+      var box = fits[i], screen = box.firstElementChild;
+      screen.style.transform = k < 1 ? "scale(" + k + ")" : "none";
+      box.style.width = Math.round(screen.offsetWidth * k) + "px";
+      box.style.height = Math.round(screen.offsetHeight * k) + "px";
+    }
+  }
+
+  /* The current section has to be obvious without the owner tracking a scrollbar. */
+  function markNav() {
+    var links = document.querySelectorAll("#docnav a");
+    var best = null, bestTop = -Infinity;
+    for (var i = 0; i < links.length; i++) {
+      var target = document.getElementById(links[i].getAttribute("href").slice(1));
+      if (!target) { continue; }
+      var top = target.getBoundingClientRect().top - 70;
+      if (top <= 0 && top > bestTop) { bestTop = top; best = links[i]; }
+    }
+    if (!best) { best = links[0]; }
+    for (var j = 0; j < links.length; j++) {
+      links[j].classList.toggle("on", links[j] === best);
+    }
+  }
+
+  var pending = false;
+  function onScroll() {
+    if (pending) { return; }
+    pending = true;
+    requestAnimationFrame(function () { pending = false; markNav(); });
+  }
+
+  window.addEventListener("resize", function () { fit(); markNav(); });
+  window.addEventListener("scroll", onScroll, { passive: true });
+  fit();
+  markNav();
+}());
+</script>
+</body>
+</html>
