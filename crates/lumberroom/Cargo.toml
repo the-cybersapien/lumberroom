@@ -36,7 +36,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 # PKCE S256 is a SHA-256 over the verifier, base64url-encoded with no padding.
 sha2 = "0.10"
-base64 = "0.22"
+base64 = "0.23"
 # CSPRNG bytes for the PKCE verifier and the OAuth state. getrandom rather than rand for the same
 # reason the server picked it: this is the only randomness here.
 getrandom = "0.3"
