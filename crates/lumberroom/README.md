@@ -11,6 +11,16 @@ cargo install lumberroom
 lumberroom doctor
 ```
 
+Homebrew works too, and carries a prebuilt binary rather than compiling one:
+
+```bash
+brew install the-cybersapien/lumberroom/lumberroom
+```
+
+The [releases page](https://github.com/the-cybersapien/lumberroom/releases) also carries plain
+binaries, `.tar.gz` archives, and a `.deb` and `.rpm` per architecture, each covered by one
+`SHA256SUMS`.
+
 `doctor` reports the endpoint, whether your credential is accepted, and which tools it opens. It is
 the command to run first and the command to run when something is wrong.
 
