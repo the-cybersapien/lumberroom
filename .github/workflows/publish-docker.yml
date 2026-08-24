@@ -1,5 +1,16 @@
 # A published image bakes the default embedding model (EMBED_MODEL in the Dockerfile), so a
 # pulled image serves one model. Set EMBED_MODEL when building from source if you need another.
+#
+# # Why each architecture builds on its own runner
+#
+# This workflow used to hand both platforms to one buildx invocation behind QEMU. The cli image
+# survived that; the server image did not. Cutting v0.1.0-rc.1 left the server job compiling Rust
+# for linux/arm64 under emulation for over half an hour with no end in sight, on a build that links
+# ONNX Runtime and bakes 209MB of weights. A six hour job limit is not a release process.
+#
+# Each platform now builds natively, pushes by digest, and a merge job joins the digests into one
+# manifest list. The two halves run in parallel rather than one waiting on an emulator, and the tag
+# a consumer pulls is identical to what the single-invocation build produced.
 name: publish-docker
 
 on:
@@ -12,21 +23,30 @@ permissions:
   packages: write
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
+  build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - image: ghcr.io/the-cybersapien/lumberroom-server
             target: runtime
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - image: ghcr.io/the-cybersapien/lumberroom-server
+            target: runtime
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
           - image: ghcr.io/the-cybersapien/lumberroom
             target: cli-runtime
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - image: ghcr.io/the-cybersapien/lumberroom
+            target: cli-runtime
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
-      - name: Check out the repository
-        uses: actions/checkout@v7
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - uses: actions/checkout@v5
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
@@ -38,7 +58,58 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Derive tags and labels
+      # No tag here. A digest push per platform, collected by the merge job below, because two
+      # runners pushing the same tag would each overwrite the other's manifest.
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: ${{ matrix.platform }}
+          push: true
+          outputs: type=image,name=${{ matrix.image }},push-by-digest=true,name-canonical=true
+
+      - name: Record the digest
+        run: |
+          slug="$(echo '${{ matrix.image }}-${{ matrix.platform }}' | tr '/:' '--')"
+          mkdir -p digests
+          touch "digests/${{ steps.build.outputs.digest }}"
+          echo "SLUG=$slug" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ env.SLUG }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        image:
+          - ghcr.io/the-cybersapien/lumberroom-server
+          - ghcr.io/the-cybersapien/lumberroom
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: digests
+          pattern: digest-*
+          merge-multiple: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -47,12 +118,26 @@ jobs:
             type=match,pattern=v(.*),group=1
             type=raw,value=latest
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: ${{ matrix.target }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+      - name: Join the per-platform digests into one manifest
+        run: |
+          slug="$(echo '${{ matrix.image }}' | tr '/:' '--')"
+          refs=""
+          for dir in digests/digest-"$slug"-*; do
+            [ -d "$dir" ] || continue
+            for d in "$dir"/*; do
+              refs="$refs ${{ matrix.image }}@$(basename "$d")"
+            done
+          done
+          if [ -z "$refs" ]; then
+            echo "no digests found for ${{ matrix.image }}" >&2
+            exit 1
+          fi
+          # shellcheck disable=SC2086
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $refs
+
+      - name: Show what was published
+        run: |
+          tag="$(jq -r '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
+          docker buildx imagetools inspect "$tag"

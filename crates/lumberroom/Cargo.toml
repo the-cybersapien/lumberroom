@@ -65,3 +65,33 @@ fs2 = "0.4"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time"] }
+
+# ── distribution packages ─────────────────────────────────────────────────────────────────────────
+# The binary these package is the musl build, statically linked, so neither package declares a
+# runtime dependency and both install on anything with the right architecture. That is unusual for
+# a .deb and it is the property worth having: a memory client that refuses to start because the
+# host has the wrong libc is a support burden nobody signed up for.
+
+[package.metadata.deb]
+maintainer = "Aditya Aggarwal <the-cybersapien@users.noreply.github.com>"
+copyright = "2026, lumberroom contributors"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+Command line client for a lumberroom memory server. Reads and writes the durable facts every AI \
+tool you use shares, seals secrets the server cannot read, and walks transcripts into a review \
+queue. The server it talks to is a container image, not this package."""
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/lumberroom", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/lumberroom/README.md", "644"],
+]
+
+[package.metadata.generate-rpm]
+summary = "Command line client for a lumberroom memory server"
+license = "Apache-2.0"
+assets = [
+    { source = "target/release/lumberroom", dest = "/usr/bin/lumberroom", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/lumberroom/README.md", mode = "644" },
+    { source = "../../LICENSE", dest = "/usr/share/licenses/lumberroom/LICENSE", mode = "644" },
+]

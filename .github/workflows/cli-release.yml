@@ -1,8 +1,13 @@
 # Builds every lumberroom binary a release carries, and attaches them to the release for the tag.
 #
-# Four targets, two bare binaries and two archives each, plus one SHA256SUMS covering all of it.
-# The bare binary is for whoever wants one file; the .tar.gz is what a Homebrew formula pins a
-# sha256 against.
+# Four targets, a bare binary and an archive each, a .deb and an .rpm for the two linux
+# architectures, and one SHA256SUMS covering all of it. The bare binary is for whoever wants one
+# file, the .tar.gz is what a Homebrew formula pins a sha256 against, and the distribution packages
+# are for the machines where `apt install` and `dnf install` are how software arrives.
+#
+# The packages carry the musl binary, statically linked, so neither declares a runtime dependency.
+# Unusual for a .deb, and the property worth having: a client that will not start because the host
+# has the wrong libc is a support burden nobody signed up for.
 #
 # # Why the linux legs are built here rather than locally
 #
@@ -66,7 +71,10 @@ jobs:
       - name: build ${{ matrix.target }}
         run: cargo build --release --locked -p lumberroom --target ${{ matrix.target }}
 
-      - name: stage the binary and its archive
+      - name: packaging tools
+        run: cargo install --locked cargo-deb cargo-generate-rpm
+
+      - name: stage the binary, its archive, and the distribution packages
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
@@ -78,10 +86,19 @@ jobs:
             "target/${{ matrix.target }}/release/lumberroom" \
             "${{ matrix.target }}" "$version" dist
 
+          # Both tools read target/release/, and the build above wrote to target/<triple>/release/.
+          # Copying rather than building again keeps every artifact in this release derived from
+          # one compile.
+          mkdir -p target/release
+          cp "target/${{ matrix.target }}/release/lumberroom" target/release/lumberroom
+
+          cargo deb --no-build --no-strip -p lumberroom -o dist/
+          cargo generate-rpm -p crates/lumberroom -o dist/
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.target }}
-          path: dist/lumberroom-*
+          path: dist/lumberroom[-_]*
           if-no-files-found: error
 
   darwin:
@@ -115,7 +132,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: dist-darwin
-          path: dist/lumberroom-*
+          path: dist/lumberroom[-_]*
           if-no-files-found: error
 
   attach:
@@ -135,13 +152,13 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           repo="$GITHUB_REPOSITORY"
-          mkdir -p dist && mv staged/lumberroom-* dist/
+          mkdir -p dist && mv staged/lumberroom[-_]* dist/
 
           # Every asset in one place before the checksum runs, which is the point of collecting the
           # jobs here rather than having each attach its own. A SHA256SUMS written by one job covers
           # what that job happened to hold.
           cd dist
-          sha256sum lumberroom-* > SHA256SUMS
+          sha256sum lumberroom[-_]* > SHA256SUMS
           cat SHA256SUMS
           cd ..
 
@@ -163,4 +180,4 @@ jobs:
             fi
           fi
 
-          gh release upload "$TAG" --repo "$repo" --clobber dist/lumberroom-* dist/SHA256SUMS
+          gh release upload "$TAG" --repo "$repo" --clobber dist/lumberroom[-_]* dist/SHA256SUMS
