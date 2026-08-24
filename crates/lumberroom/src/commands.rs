@@ -1168,7 +1168,7 @@ fn eval_lines(s: &EvalScore) -> Vec<String> {
 }
 
 /// `encodeURIComponent` for a path segment. Ids are UUIDs, so this is a guard rather than a need.
-fn urlencode(s: &str) -> String {
+pub(crate) fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
@@ -1498,4 +1498,121 @@ month or year cannot be represented, so omit occurred_at rather than choosing a 
         let e = parse_eval_fixture("\n\n", "/tmp/f.jsonl").unwrap_err();
         assert!(e.message.starts_with("fixture /tmp/f.jsonl holds no cases"), "{}", e.message);
     }
+}
+
+/// Below this the two arms took comparable time, which means one plan ran twice.
+const SELF_COMPARISON_SPEEDUP: f64 = 2.0;
+
+/// How much slower the exact scan was than the indexed one, or `None` when the timings are too
+/// small to divide.
+fn two_arm_speedup(report: &Value) -> Option<f64> {
+    if let Some(given) = report.get("exact_speedup").and_then(Value::as_f64) {
+        return Some(given);
+    }
+    let index_ms = report.get("index_ms").and_then(Value::as_f64)?;
+    let exact_ms = report.get("exact_ms").and_then(Value::as_f64)?;
+    if !index_ms.is_finite() || !exact_ms.is_finite() || index_ms <= 0.0 {
+        return None;
+    }
+    Some(exact_ms / index_ms)
+}
+
+/// The HNSW recall monitor.
+///
+/// The recall figure is the least trustworthy line this command prints. The monitor has twice
+/// compared an exact scan against an exact scan and reported perfect recall: once because
+/// `SET LOCAL` on a pooled connection outside a transaction is a warning and no effect, and once
+/// because the planner declines the index at k=1. Neither showed up in the recall number and both
+/// showed up as two timings that matched, which is why the timings are printed and guarded rather
+/// than summarised away.
+pub async fn recall(c: &Client, args: &Args) -> Result<()> {
+    require_token(c, &c.file.borrow().path.display().to_string())?;
+    let sample = args.int("sample", 25);
+    let k = args.int("k", 10);
+    let (status, body) = c.http_get(&format!("/admin/recall?sample={sample}&k={k}")).await?;
+    if status != 200 {
+        return Err(err(format!("recall failed ({status}): {}", compact(&body))));
+    }
+    if args.present("json") {
+        out_json(&body);
+        return Ok(());
+    }
+
+    let sampled = body.get("sampled").and_then(Value::as_i64).unwrap_or(0);
+    if sampled == 0 {
+        out("store is empty, nothing to measure");
+        return Ok(());
+    }
+    let k_used = body.get("k").and_then(Value::as_i64).unwrap_or(k);
+    let recall_at_k = body.get("recall_at_k").and_then(Value::as_f64).unwrap_or(0.0);
+    let misses = body.get("top_one_misses").and_then(Value::as_i64).unwrap_or(0);
+    let index_ms = body.get("index_ms").and_then(Value::as_f64).unwrap_or(0.0);
+    let exact_ms = body.get("exact_ms").and_then(Value::as_f64).unwrap_or(0.0);
+
+    out(&format!(
+        "sampled {sampled} stored memories, comparing indexed search against an exact scan"
+    ));
+    out(&format!("recall@{k_used}: {:.1}%", recall_at_k * 100.0));
+    out(&format!("nearest-neighbour misses: {misses} of {sampled}"));
+    out(&format!("indexed {index_ms}ms total, exact {exact_ms}ms total"));
+
+    let speedup = two_arm_speedup(&body);
+    let self_comparison = speedup.is_some_and(|s| s < SELF_COMPARISON_SPEEDUP);
+    match speedup {
+        None => {
+            out("");
+            out("WARNING: the timings are too small to divide, so nothing here says the index ran at");
+            out("all. Raise --sample, or run this against a store with more rows in it.");
+        }
+        Some(s) => out(&format!("exact scan took {s:.1}x the indexed time")),
+    }
+    if self_comparison {
+        out("");
+        out("WARNING: the two arms took comparable time, so this is very likely an exact scan");
+        out("compared against an exact scan and the recall figure above means nothing. The");
+        out("planner declines the index at small k and on small stores. Raise k, or seed more");
+        out("rows, then run it again.");
+    }
+
+    if recall_at_k < 0.9 && !self_comparison {
+        out("");
+        out("recall is below 90%. Raise hnsw.ef_search, or rebuild the index with a higher");
+        out("ef_construction. Weakest queries:");
+        for w in body.get("worst").and_then(Value::as_array).unwrap_or(&vec![]) {
+            let pct = w.get("recall").and_then(Value::as_f64).unwrap_or(0.0) * 100.0;
+            let query = w.get("query").and_then(Value::as_str).unwrap_or("");
+            out(&format!("  {pct:.0}%  {query}"));
+        }
+    }
+    Ok(())
+}
+
+/// Every tool this credential can call, as the server lists them.
+///
+/// `tools/list` is filtered per credential, so this doubles as the answer to what a grant opens.
+pub async fn tools(c: &Client) -> Result<()> {
+    require_token(c, &c.file.borrow().path.display().to_string())?;
+    c.initialize().await?;
+    let result = c.rpc("tools/list", json!({})).await?;
+    for tool in result.get("tools").and_then(Value::as_array).unwrap_or(&vec![]) {
+        let name = tool.get("name").and_then(Value::as_str).unwrap_or("");
+        let description = tool.get("description").and_then(Value::as_str).unwrap_or("");
+        out(&format!("{name}\n  {description}\n"));
+    }
+    Ok(())
+}
+
+/// argon2 lives in the server image, so this prints the command rather than hashing here.
+///
+/// Computing it locally would mean either a second argon2 implementation to keep in step with the
+/// one that verifies, or a weaker hash that looks the same in `.env`.
+pub fn hash_password() -> Result<()> {
+    out("argon2 is not in this client, so this does not compute a hash itself.");
+    out("Run it inside the server image, which already links argon2:");
+    out("");
+    out("  docker compose run --rm -T server lumberroom-server hash-password");
+    out("");
+    out("It reads the password from stdin and prints an argon2 PHC string. Put that in .env as");
+    out("OWNER_PASSWORD_HASH and restart the server before switching AUTH_MODE=oauth.");
+    Ok(())
 }

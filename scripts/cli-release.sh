@@ -1,12 +1,21 @@
 #!/bin/sh
-# Build lumberroom for every target this machine can produce today, and write the binaries plus a
-# SHA256SUMS file into a directory it names. This script never publishes anything: no git tag, no
-# git push, no `gh release`. That last step stays a human decision once the binaries exist.
+# Build lumberroom for every target this machine can produce today, and write the binaries, a
+# gzipped tar archive of each, and a SHA256SUMS file into a directory it names. This script never
+# publishes anything: no git tag, no git push, no `gh release`. That last step stays a human
+# decision once the binaries exist.
 #
 #   ./scripts/cli-release.sh              # dry run: prints the plan, builds nothing
 #   ./scripts/cli-release.sh --build      # builds every target this machine can reach
 #   ./scripts/cli-release.sh --build --linux-only
 #   ./scripts/cli-release.sh --build --out /path/to/dir
+#
+# Each target produces two artifacts: the bare binary (lumberroom-X.Y.Z-<target>, for a container
+# that wants one file with nothing to untar) and an archive of the same name with .tar.gz appended.
+# The archive holds the binary renamed to the plain `lumberroom` PATH name, plus LICENSE and
+# README.md from the repository root, because that is the shape Homebrew's formula expects: it
+# downloads and unpacks the tarball, and whatever comes out lands on PATH under that name.
+# SHA256SUMS covers both the bare binaries and the archives, since a formula needs the archive's
+# checksum and this file is where every checksum here already lives.
 #
 # Two build paths, because they need different toolchains:
 #
@@ -29,6 +38,16 @@
 # Windows is never attempted. crates/lumberroom resolves its config path from $HOME with no
 # %USERPROFILE% fallback and `restrict()` no-ops outside unix, so a Windows binary today would
 # write an unprotected token file. Fix config.rs first.
+#
+# Archiving runs on whatever tar is on this host's PATH: bsdtar on macOS, GNU tar on Linux. Both
+# get --format=ustar plus zeroed owner/group and a fixed mtime on every staged file, and the
+# archive is piped through `gzip -n` so the gzip header carries no timestamp or filename either;
+# that makes two runs of the same commit produce identical bytes ON THE SAME TAR. It was verified
+# by running bsdtar twice in a row and comparing output byte for byte. It was NOT verified across
+# bsdtar and GNU tar: pax/ustar implementations differ enough between libarchive and GNU tar
+# (padding, extended-header handling) that --format=ustar narrows the gap but does not close it
+# for certain, and this machine has no GNU tar to check against. Treat cross-flavour byte parity
+# as unverified, not achieved.
 set -e
 cd "$(dirname "$0")/.."
 
@@ -129,6 +148,14 @@ fi
 mkdir -p "$OUT"
 PRODUCED=""
 
+# One packaging implementation, in scripts/package-archive.sh, because CI needs the identical bytes
+# and a Homebrew formula pins a sha256 per archive. Two callers whose archives differ by a timestamp
+# produce two hashes for one build.
+package_archive() {
+  archive="$(scripts/package-archive.sh "$1" "$2" "$VERSION" "$OUT")"
+  PRODUCED="$PRODUCED $archive"
+}
+
 build_linux() {
   echo
   echo "== linux (musl) =="
@@ -163,6 +190,7 @@ build_linux() {
       cp "$src" "$dest"
       chmod 755 "$dest"
       PRODUCED="$PRODUCED $dest"
+      package_archive "$dest" "$t"
     else
       echo "warning: expected $src, not found after build" >&2
     fi
@@ -188,6 +216,7 @@ build_darwin() {
       cp "$src" "$dest"
       chmod 755 "$dest"
       PRODUCED="$PRODUCED $dest"
+      package_archive "$dest" "$t"
     else
       echo "warning: expected $src, not found after build" >&2
     fi

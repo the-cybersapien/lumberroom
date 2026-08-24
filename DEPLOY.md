@@ -46,10 +46,11 @@ which you need before any `private` write can land.
   the installer with `--domain`.
 - Inbound 80 and 443 open in your cloud firewall. Port 80 is required for the ACME challenge.
 - SSH key-only, on a non-default port if you like. Nothing here depends on it.
-- Outbound HTTPS during `docker compose build`, once. The build downloads the embedding weights
-  and a prebuilt ONNX Runtime, and bakes both into the image. After the build the server needs no
-  outbound access at all. On a box with no egress, build the image elsewhere and
-  `docker save`/`docker load` it across.
+- Outbound HTTPS once, either to pull the published image from `ghcr.io` (the default, a few
+  seconds to a minute) or, if that pull fails or you pass `--build-local`, to build it: the build
+  downloads the embedding weights and a prebuilt ONNX Runtime and bakes both in, a few minutes.
+  After that the server needs no outbound access at all. On a box with no egress, pull or build the
+  image elsewhere and `docker save`/`docker load` it across.
 
 ## 2. Get the repo onto the VM
 
@@ -80,16 +81,33 @@ throwaways, and copying it skips the fresh secret generation the installer does.
 
 ## 3. Install
 
-Prebuilt images publish to `ghcr.io/the-cybersapien/lumberroom-server` and `ghcr.io/the-cybersapien/lumberroom`
-on each tagged release:
+`docker-compose.yml` pins `server` and `cleanup` to `ghcr.io/the-cybersapien/lumberroom-server:0.1.0`
+and `ghcr.io/the-cybersapien/lumberroom:0.1.0`, the images `.github/workflows/publish-docker.yml`
+pushes on every `v*` tag. `install.sh` pulls those by default, a few seconds to a minute, and falls
+back to building from this checkout when the pull fails: no network, `ghcr.io` unreachable, no
+manifest for this architecture, or a working tree ahead of the last tagged release. Either path,
+the script says out loud which one it took.
+
+Force the build path yourself with `--build-local`, for a different `EMBED_PROVIDER` or
+`EMBED_MODEL` than the published image carries, or to run something ahead of the last release on
+purpose:
 
 ```bash
-docker pull ghcr.io/the-cybersapien/lumberroom-server:latest
+sudo ./deploy/install.sh --build-local
 ```
 
-The steps below build from source instead, which stays the path when you want a different
-embedding model than the one baked into the published image, or when you're tracking `main`
-ahead of a release.
+To move to a different version, set `LUMBERROOM_SERVER_IMAGE` and `LUMBERROOM_CLIENT_IMAGE` before
+running the installer, or edit them in `.env`:
+
+```bash
+LUMBERROOM_SERVER_IMAGE=ghcr.io/the-cybersapien/lumberroom-server:0.2.0 \
+LUMBERROOM_CLIENT_IMAGE=ghcr.io/the-cybersapien/lumberroom:0.2.0 \
+  sudo -E ./deploy/install.sh
+```
+
+Both variables are read by `docker-compose.yml` and default to `0.1.0`. Neither tracks `latest`: a
+memory store should not upgrade itself on a routine restart, so the version in `.env` or the shell
+is the version that runs until you change it by hand.
 
 ```bash
 cd lumberroom
@@ -105,15 +123,15 @@ sudo ./deploy/install.sh --domain memory.example.com --email you@example.com --a
 ```
 
 Add `--dry-run` first if you want to see every action without changing anything. Other flags:
-`--kek-provider none|file|env` (section 8), `--no-firewall`, `--no-backups`, `--yes` (never
-prompt; fails rather than blocks on anything that needs a TTY).
+`--kek-provider none|file|env` (section 8), `--build-local` (above), `--no-firewall`,
+`--no-backups`, `--yes` (never prompt; fails rather than blocks on anything that needs a TTY).
 
 Nine steps:
 
 1. preflight: Docker, the compose plugin, architecture, available memory
 2. configuration: `.env` with a fresh Postgres password and client token, `chmod 600`
 3. key-encryption key: generates `secrets/lumberroom-kek`, sets ownership and mode
-4. build, baking the embedding weights into the image
+4. image: pulls the pinned `ghcr.io` image, or builds from source on a failed pull or `--build-local`
 5. oauth credentials: prompts for the owner password, hashes it, generates the cookie secret
 6. start: Postgres, the server, and Caddy when a domain was given
 7. verify: polls `/readyz` until the server answers, and dumps logs if it does not
@@ -426,12 +444,20 @@ Nothing here retires a memory on its own. The queue is at `/console/cleanup` and
 **Migrations are forward-only.** `sqlx` embeds them at compile time, so once a newer binary has
 migrated the store, an older image cannot boot against it. This bit during verification: the
 running image knew migrations 1 to 3, a newer binary applied 4 to 8, and the old image would not
-start. The safe order is back up, then build, then recreate:
+start. The safe order is back up, then get the new image, then recreate:
 
 ```bash
 ./deploy/backup.sh
-git pull && docker compose build && docker compose up -d
+git pull
+LUMBERROOM_SERVER_IMAGE=ghcr.io/the-cybersapien/lumberroom-server:0.2.0 \
+LUMBERROOM_CLIENT_IMAGE=ghcr.io/the-cybersapien/lumberroom:0.2.0 \
+  docker compose pull server cleanup
+docker compose up -d
 ```
+
+Pin the new version in `.env` too, or the next `up -d` with no override falls back to `0.1.0`.
+Building from source instead is `docker compose build server cleanup && docker compose up -d`, or
+re-run the installer with `--build-local`.
 
 `docker compose up -d` recreates the container against the new image, which is what runs the
 migrations at boot. `docker compose restart` is not an upgrade: it reuses the image id already

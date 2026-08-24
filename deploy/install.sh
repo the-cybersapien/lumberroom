@@ -16,13 +16,17 @@
 #   --kek-provider <p>       file (default, and what .env.example ships) | env | none. `file` is what
 #                            makes a `private` write possible at all; `none` refuses one rather than
 #                            storing plaintext. See .env.example.
+#   --build-local            skip the ghcr.io pull and build the image from this checkout instead.
+#                            The default already falls back to this when the pull fails, so this
+#                            flag is for a working tree ahead of the last release, or a different
+#                            EMBED_PROVIDER/EMBED_MODEL than the published image carries.
 #   --no-firewall            skip ufw/firewalld changes
 #   --no-backups             skip the daily backup cron
 #   --dry-run                print every action, change nothing
 #   --yes                    never prompt (fails rather than blocks on anything that needs a TTY)
 #
-# What it does: preflight, .env with generated secrets, the KEK file, build, oauth credentials,
-# start, verify, firewall, backups. It is idempotent: existing secrets in .env are kept, so
+# What it does: preflight, .env with generated secrets, the KEK file, pull the image (or build it),
+# oauth credentials, start, verify, firewall, backups. It is idempotent: existing secrets in .env are kept, so
 # re-running it will not invalidate the token or password your clients already hold, unless you
 # pass --auth-mode or --kek-provider explicitly to change them.
 
@@ -37,6 +41,7 @@ BEHIND_PROXY=0
 EMAIL=""
 AUTH_MODE_FLAG=""
 KEK_PROVIDER_FLAG=""
+BUILD_LOCAL=0
 DRY_RUN=0
 ASSUME_YES=0
 DO_FIREWALL=1
@@ -51,11 +56,12 @@ while [ $# -gt 0 ]; do
     --email) EMAIL="${2:?}"; shift 2 ;;
     --auth-mode) AUTH_MODE_FLAG="${2:?}"; shift 2 ;;
     --kek-provider) KEK_PROVIDER_FLAG="${2:?}"; shift 2 ;;
+    --build-local) BUILD_LOCAL=1; shift ;;
     --no-firewall) DO_FIREWALL=0; shift ;;
     --no-backups) DO_BACKUPS=0; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
-    -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 1 ;;
   esac
 done
@@ -355,17 +361,32 @@ case "$KEK_PROVIDER_NOW" in
     ;;
 esac
 
-# ── build ─────────────────────────────────────────────────────────────────────
-say "4/9 build (this bakes the embedding model into the image; first run takes a few minutes)"
+# ── image ─────────────────────────────────────────────────────────────────────
+say "4/9 image"
 # What the built binary reports on /readyz. `docker restart` and `docker compose up -d` both reuse a
 # container's original image, so a rebuilt image can sit on disk while the old binary keeps serving.
 # Stamped here because compose cannot run git itself, and resolved against the repository this
-# script lives in rather than whatever directory the operator is standing in.
+# script lives in rather than whatever directory the operator is standing in. Only the build path
+# below reads these; a pulled image already carries its own labels from the release that built it.
 export LUMBERROOM_BUILD_SHA="$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 export LUMBERROOM_BUILD_TAG="${LUMBERROOM_BUILD_TAG:-lumberroom-server:0.1.0}"
 export LUMBERROOM_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-run "${COMPOSE[@]}" build
+if [ "$BUILD_LOCAL" = 1 ]; then
+  info "--build-local: building the image from this checkout (bakes the embedding model in; a few minutes)"
+  run "${COMPOSE[@]}" build server cleanup
+else
+  info "pulling ${LUMBERROOM_SERVER_IMAGE:-ghcr.io/the-cybersapien/lumberroom-server:0.1.0} (a few seconds to a minute)"
+  if [ "$DRY_RUN" = 1 ]; then
+    info "would run: docker compose pull server cleanup, and build from source on failure"
+  elif "${COMPOSE[@]}" pull server cleanup; then
+    info "pulled the published image"
+  else
+    warn "pull failed: no network, ghcr.io unreachable, no manifest for $(uname -m), or this checkout is ahead of the last tagged release"
+    warn "building from source instead (bakes the embedding model in; a few minutes)"
+    run "${COMPOSE[@]}" build server cleanup
+  fi
+fi
 
 # ── oauth credentials ────────────────────────────────────────────────────────
 say "5/9 oauth credentials"
