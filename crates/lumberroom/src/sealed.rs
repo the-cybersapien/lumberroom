@@ -63,7 +63,17 @@ pub fn seal_key_path(env: &dyn Env) -> PathBuf {
 /// file wants to hear about it.
 pub fn load_or_create_key(env: &dyn Env) -> Result<[u8; KEY_LEN]> {
     let path = seal_key_path(env);
-    match std::fs::read_to_string(&path) {
+    // Read, and only if that fails try to create. A second attempt to read follows a lost creation
+    // race below, which is why this is a function rather than a match arm.
+    if let Some(key) = read_key(&path)? {
+        return Ok(key);
+    }
+    create_key(&path)
+}
+
+/// The key already on disk, or `None` when there is no file yet.
+fn read_key(path: &std::path::Path) -> Result<Option<[u8; KEY_LEN]>> {
+    match std::fs::read_to_string(path) {
         Ok(text) => {
             let raw = B64.decode(text.trim()).map_err(|_| {
                 err(format!(
@@ -79,21 +89,53 @@ pub fn load_or_create_key(env: &dyn Env) -> Result<[u8; KEY_LEN]> {
                     raw.len()
                 ))
             })?;
-            Ok(key)
+            Ok(Some(key))
         }
-        Err(_) => {
-            let mut key = [0u8; KEY_LEN];
-            getrandom::fill(&mut key)
-                .map_err(|e| err(format!("no randomness available for a new seal key: {e}")))?;
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir)
-                    .map_err(|e| err(format!("could not create {}: {e}", dir.display())))?;
-            }
-            std::fs::write(&path, format!("{}\n", B64.encode(key)))
+        Err(_) => Ok(None),
+    }
+}
+
+/// A new key, created so that nothing else can read it and nothing else can lose to it silently.
+///
+/// Two properties, both learned the hard way in other people's key handling. The file is created
+/// with mode 0600 rather than created and chmodded after, because between those two calls a 022
+/// umask leaves a decryption key world readable. And it is created with `create_new`, so two `seal`
+/// runs starting at once cannot each generate a key and have the loser's write replace the key the
+/// winner already sealed a row under. That row would never open again, and nothing would report it.
+fn create_key(path: &std::path::Path) -> Result<[u8; KEY_LEN]> {
+    let mut key = [0u8; KEY_LEN];
+    getrandom::fill(&mut key)
+        .map_err(|e| err(format!("no randomness available for a new seal key: {e}")))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| err(format!("could not create {}: {e}", dir.display())))?;
+    }
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+
+    match opts.open(path) {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(format!("{}\n", B64.encode(key)).as_bytes())
                 .map_err(|e| err(format!("could not write {}: {e}", path.display())))?;
-            let _ = config::restrict(&path);
+            // Windows has no mode on open, and a key written there is protected by the profile
+            // directory rather than by this call.
+            let _ = config::restrict(path);
             Ok(key)
         }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Another process created it between the read and here. Its key is the real one.
+            read_key(path)?.ok_or_else(|| {
+                err(format!("{} appeared and then could not be read", path.display()))
+            })
+        }
+        Err(e) => Err(err(format!("could not create {}: {e}", path.display()))),
     }
 }
 
@@ -308,6 +350,28 @@ mod tests {
     fn a_truncated_blob_is_refused_rather_than_panicking() {
         let key = [3u8; KEY_LEN];
         assert!(decrypt(&key, &B64.encode([0u8; 8])).is_err());
+    }
+
+    #[test]
+    fn a_new_key_file_is_owner_only_from_the_moment_it_exists() {
+        let dir = std::env::temp_dir().join(format!("lumberroom-seal-{}", std::process::id()));
+        let path = dir.join("seal-key");
+        let _ = std::fs::remove_dir_all(&dir);
+        let e = env(&[("LUMBERROOM_SEAL_KEY", path.to_str().unwrap())]);
+
+        let first = load_or_create_key(&e).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "a decryption key was readable by other accounts");
+        }
+
+        // A second call reads rather than regenerates. Regenerating would strand every row the
+        // first key sealed.
+        let second = load_or_create_key(&e).unwrap();
+        assert_eq!(first, second);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

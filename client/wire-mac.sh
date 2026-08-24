@@ -154,15 +154,23 @@ fi
 # server cannot accidentally accommodate, and it has caught protocol bugs the Rust tests could not.
 # Nothing installs it.
 install_lumberroom_binary() {
+  # An earlier run of this script installed bin/lumberroom.mjs to exactly this name, so on any
+  # machine already wired, `command -v lumberroom` finds the prototype. Accepting it would leave
+  # every existing user on the client this change exists to retire, and the upgrade would report
+  # success. A node script announces itself in its first line; a Rust binary does not.
   if command -v lumberroom >/dev/null 2>&1; then
     local existing
     existing="$(command -v lumberroom)"
-    say "  found lumberroom on PATH: $existing"
-    if [ "$existing" != "$BIN_DIR/lumberroom" ]; then
-      run ln -sf "$existing" "$BIN_DIR/lumberroom"
+    if head -c 200 "$existing" 2>/dev/null | head -1 | grep -q node; then
+      say "  found the node prototype at $existing; replacing it"
+    else
+      say "  found lumberroom on PATH: $existing"
+      if [ "$existing" != "$BIN_DIR/lumberroom" ]; then
+        run ln -sf "$existing" "$BIN_DIR/lumberroom"
+      fi
+      say "  chose: PATH ($existing)"
+      return 0
     fi
-    say "  chose: PATH ($existing)"
-    return 0
   fi
 
   if ! command -v curl >/dev/null 2>&1; then
