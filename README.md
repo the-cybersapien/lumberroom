@@ -53,6 +53,12 @@ browser has to reach it.
 ./client/wire-mac.sh --url http://127.0.0.1:8787 --token <token>
 ```
 
+The client on its own, for a machine that talks to a server someone else runs:
+
+```bash
+brew install the-cybersapien/lumberroom/lumberroom
+```
+
 Then prove the loop, which states a fact in one session and recovers it in a fresh one:
 
 ```bash
