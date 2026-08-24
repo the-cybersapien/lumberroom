@@ -95,7 +95,21 @@ jobs:
           tag="${{ inputs.tag || github.ref_name }}"
 
           if ! gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-            gh release create "$tag" --repo "$repo" --title "lumberroom $tag" --generate-notes
+            # The changelog is the release notes. `--generate-notes` lists commits, which on a
+            # first release is mostly dependency bumps and tells a reader nothing about what this
+            # is. Fall back to it only when the tag has no section in CHANGELOG.md.
+            notes="$(awk -v tag="${tag#v}" '
+              $0 ~ "^## \\[" tag "\\]" { inside = 1; next }
+              inside && /^## \[/ { exit }
+              inside { print }
+            ' "$GITHUB_WORKSPACE/CHANGELOG.md" 2>/dev/null)"
+            if [ -n "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
+              printf '%s\n' "$notes" > "$RUNNER_TEMP/notes.md"
+              gh release create "$tag" --repo "$repo" --title "lumberroom $tag" \
+                --notes-file "$RUNNER_TEMP/notes.md"
+            else
+              gh release create "$tag" --repo "$repo" --title "lumberroom $tag" --generate-notes
+            fi
           fi
 
           # Pull down only what this job did not just build: the linux legs, if a local
