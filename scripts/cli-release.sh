@@ -108,22 +108,6 @@ sha256() {
   fi
 }
 
-# bsdtar reports itself in --version; GNU tar says "GNU tar". The owner-zeroing flag differs
-# between them (--uid/--gid vs --owner=/--group=), so this has to branch rather than guess.
-tar_flavor() {
-  case "$(tar --version 2>&1)" in
-    *bsdtar*) echo bsd ;;
-    *GNU\ tar*) echo gnu ;;
-    *) echo unknown ;;
-  esac
-}
-TAR_FLAVOR=$(tar_flavor)
-
-# A fixed value, not the current time: pinning every staged file to the same mtime is what makes
-# two runs of the same commit produce the same archive bytes. Neither tar flavour needs to know
-# about this: tar reads a file's real mtime by default, so setting it here works on both.
-ARCHIVE_MTIME=202401010000.00
-
 echo "lumberroom release, version $VERSION"
 echo "output directory: $OUT"
 echo
@@ -164,39 +148,11 @@ fi
 mkdir -p "$OUT"
 PRODUCED=""
 
-# $1 = built binary, $2 = target triple. Stages the binary under its plain PATH name alongside
-# LICENSE and README.md, then tars and gzips that staging directory into $OUT. Called once per
-# target right after the bare binary is copied out, so it shares that binary's build rather than
-# rebuilding anything.
+# One packaging implementation, in scripts/package-archive.sh, because CI needs the identical bytes
+# and a Homebrew formula pins a sha256 per archive. Two callers whose archives differ by a timestamp
+# produce two hashes for one build.
 package_archive() {
-  bin="$1"
-  t="$2"
-  stage="$OUT/.stage-$t"
-  rm -rf "$stage"
-  mkdir -p "$stage"
-  cp "$bin" "$stage/lumberroom"
-  cp LICENSE "$stage/LICENSE"
-  cp README.md "$stage/README.md"
-  chmod 755 "$stage/lumberroom"
-  chmod 644 "$stage/LICENSE" "$stage/README.md"
-  TZ=UTC touch -t "$ARCHIVE_MTIME" "$stage/lumberroom" "$stage/LICENSE" "$stage/README.md"
-
-  archive="$OUT/lumberroom-$VERSION-$t.tar.gz"
-  case "$TAR_FLAVOR" in
-    bsd)
-      tar --format=ustar --uid 0 --gid 0 --numeric-owner -cf - \
-        -C "$stage" lumberroom LICENSE README.md | gzip -n -9 > "$archive"
-      ;;
-    gnu)
-      tar --format=ustar --owner=0 --group=0 --numeric-owner -cf - \
-        -C "$stage" lumberroom LICENSE README.md | gzip -n -9 > "$archive"
-      ;;
-    *)
-      echo "warning: tar is neither bsdtar nor GNU tar; archiving without owner-zeroing flags, byte reproducibility not guaranteed" >&2
-      tar -cf - -C "$stage" lumberroom LICENSE README.md | gzip -n -9 > "$archive"
-      ;;
-  esac
-  rm -rf "$stage"
+  archive="$(scripts/package-archive.sh "$1" "$2" "$VERSION" "$OUT")"
   PRODUCED="$PRODUCED $archive"
 }
 

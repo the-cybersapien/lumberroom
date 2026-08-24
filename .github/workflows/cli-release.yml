@@ -1,33 +1,39 @@
-# Builds the two lumberroom targets this repository's own machine cannot build: aarch64-apple-darwin
-# and x86_64-apple-darwin. There is no cross-compiler for darwin in the lumberroom-builder container (no
-# osxcross, no zig there), so this is the only piece of the release that has to run in CI.
+# Builds every lumberroom binary a release carries, and attaches them to the release for the tag.
 #
-# The linux musl legs are NOT built here. scripts/cli-release.sh already builds both from the
-# existing lumberroom-builder image with no new infrastructure, and rebuilding them again in a second CI
-# job would be paying for coverage this repo already has. See
-# docs/decisions/0012-cli-distribution.md for the split and why zigbuild is the fallback if the
-# cost below stops being worth it.
+# Four targets, two bare binaries and two archives each, plus one SHA256SUMS covering all of it.
+# The bare binary is for whoever wants one file; the .tar.gz is what a Homebrew formula pins a
+# sha256 against.
 #
-# Triggers on a tag push (`v*`), never on push to main: a release is a deliberate act.
+# # Why the linux legs are built here rather than locally
 #
-# Cost: macos-14 runners bill at 10x the linux rate against the account's Actions
-# minutes. A five-minute darwin job here costs roughly fifty linux-equivalent minutes, every tag
-# pushed. There is no linux job in this file to offset it against; the whole cost of this workflow
-# is the darwin build.
+# They were not, until v0.1.0. Decision 0012 split them out because scripts/cli-release.sh already
+# builds both from the lumberroom-builder image, and a second CI job looked like paying for coverage
+# the repo had. What that reasoning missed is that a release nobody can cut without a human running
+# a local script first is a release that eventually goes out with half its assets, and the failure
+# is silent: the tag exists, the darwin binaries are attached, and `brew install` on linux 404s. The
+# cost of the linux jobs is two ubuntu runners at the base rate, which is the cheapest thing in this
+# file.
 #
-# Order-independent by design: this job attaches its two binaries and a recomputed SHA256SUMS to
-# the release for the pushed tag, creating that release if it does not exist yet and downloading
-# whatever is already attached (typically the two linux binaries from a local
-# `cli-release.sh --build` run, uploaded with `gh release create`/`gh release upload` before or
-# after the tag lands) so the checksum file always covers every asset actually present.
+# # Native rather than cross
+#
+# Each musl target builds on a runner of its own architecture, so no cross toolchain and no linker
+# flags. It also sidesteps the C in the TLS stack, which is the part that makes cross-compiling
+# this client tedious. The local script still cross-compiles, because a Mac has one architecture and
+# no choice.
+#
+# # Cost
+#
+# macos-14 bills at 10x the linux rate. The darwin job is the whole cost of this workflow, roughly
+# fifty linux-equivalent minutes per tag. See docs/decisions/0012-cli-distribution.md.
+
 name: cli-release
 
 on:
   push:
     tags:
       - "v*"
-  # A rehearsal. The darwin leg has never run, and finding that out on the tag means a release that
-  # exists and is missing half its assets. Dispatch builds and uploads against a tag you name.
+  # A rehearsal. Dispatch builds and attaches against a tag you name, so the first run of any leg
+  # is not the real release, where failing leaves a tag with half its assets published.
   workflow_dispatch:
     inputs:
       tag:
@@ -38,96 +44,123 @@ permissions:
   contents: write
 
 jobs:
-  darwin:
-    runs-on: macos-14
-    env:
-      CARGO_TERM_COLOR: never
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v5
+
+      - name: musl toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends musl-tools
+          rustup target add ${{ matrix.target }}
+
+      - name: build ${{ matrix.target }}
+        run: cargo build --release --locked -p lumberroom --target ${{ matrix.target }}
+
+      - name: stage the binary and its archive
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/lumberroom" \
+            "dist/lumberroom-${version}-${{ matrix.target }}"
+          scripts/package-archive.sh \
+            "target/${{ matrix.target }}/release/lumberroom" \
+            "${{ matrix.target }}" "$version" dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/lumberroom-*
+          if-no-files-found: error
+
+  darwin:
+    # The one leg that cannot run anywhere else: there is no osxcross and no zig in this repo's
+    # builder image, so a darwin binary needs a darwin runner.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
 
       - name: rustup targets
         run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
 
-      # macos-14 runners are arm64, so aarch64-apple-darwin is the native build and
-      # x86_64-apple-darwin crosses to the Intel slice. Xcode's own toolchain, already on the
-      # runner, links both; nothing extra to install.
       - name: build aarch64-apple-darwin
         run: cargo build --release --locked -p lumberroom --target aarch64-apple-darwin
 
       - name: build x86_64-apple-darwin
         run: cargo build --release --locked -p lumberroom --target x86_64-apple-darwin
 
-      - name: stage the darwin binaries and their archives
+      - name: stage the binaries and their archives
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           version="${TAG#v}"
           mkdir -p dist
-
-          # Both shapes, for the same reason scripts/cli-release.sh produces both: a bare binary is
-          # what someone reaches for when they want one file, and a Homebrew formula needs a
-          # .tar.gz. A release carrying only the bare binaries leaves every `brew install` on macOS
-          # fetching a URL that does not exist.
           for target in aarch64-apple-darwin x86_64-apple-darwin; do
             cp "target/${target}/release/lumberroom" "dist/lumberroom-${version}-${target}"
-
-            stage="dist/.stage-${target}"
-            rm -rf "$stage"; mkdir -p "$stage"
-            cp "target/${target}/release/lumberroom" "$stage/lumberroom"
-            cp LICENSE "$stage/LICENSE"
-            cp README.md "$stage/README.md"
-            chmod 755 "$stage/lumberroom"
-            chmod 644 "$stage/LICENSE" "$stage/README.md"
-            # The same fixed mtime scripts/cli-release.sh uses, so an archive built here and one
-            # built there are comparable rather than differing only by when they ran.
-            TZ=UTC touch -t 202401010000.00 "$stage/lumberroom" "$stage/LICENSE" "$stage/README.md"
-            tar --format=ustar --uid 0 --gid 0 --numeric-owner -cf - \
-              -C "$stage" lumberroom LICENSE README.md \
-              | gzip -n -9 > "dist/lumberroom-${version}-${target}.tar.gz"
-            rm -rf "$stage"
+            scripts/package-archive.sh \
+              "target/${target}/release/lumberroom" "$target" "$version" dist
           done
 
-      - name: attach to the release, checksum everything present
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-darwin
+          path: dist/lumberroom-*
+          if-no-files-found: error
+
+  attach:
+    needs: [linux, darwin]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+          merge-multiple: true
+
+      - name: attach everything, checksummed together
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           repo="$GITHUB_REPOSITORY"
-          tag="${{ inputs.tag || github.ref_name }}"
+          mkdir -p dist && mv staged/lumberroom-* dist/
 
-          if ! gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-            # The changelog is the release notes. `--generate-notes` lists commits, which on a
-            # first release is mostly dependency bumps and tells a reader nothing about what this
-            # is. Fall back to it only when the tag has no section in CHANGELOG.md.
-            notes="$(awk -v tag="${tag#v}" '
+          # Every asset in one place before the checksum runs, which is the point of collecting the
+          # jobs here rather than having each attach its own. A SHA256SUMS written by one job covers
+          # what that job happened to hold.
+          cd dist
+          sha256sum lumberroom-* > SHA256SUMS
+          cat SHA256SUMS
+          cd ..
+
+          if ! gh release view "$TAG" --repo "$repo" >/dev/null 2>&1; then
+            # The changelog is the release notes. `--generate-notes` lists commits, which on a first
+            # release is mostly dependency bumps and says nothing about what this is. Generated
+            # notes stay as the fallback for a tag with no section.
+            notes="$(awk -v tag="${TAG#v}" '
               $0 ~ "^## \\[" tag "\\]" { inside = 1; next }
               inside && /^## \[/ { exit }
               inside { print }
-            ' "$GITHUB_WORKSPACE/CHANGELOG.md" 2>/dev/null)"
+            ' CHANGELOG.md 2>/dev/null)"
             if [ -n "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
               printf '%s\n' "$notes" > "$RUNNER_TEMP/notes.md"
-              gh release create "$tag" --repo "$repo" --title "lumberroom $tag" \
+              gh release create "$TAG" --repo "$repo" --title "lumberroom $TAG" \
                 --notes-file "$RUNNER_TEMP/notes.md"
             else
-              gh release create "$tag" --repo "$repo" --title "lumberroom $tag" --generate-notes
+              gh release create "$TAG" --repo "$repo" --title "lumberroom $TAG" --generate-notes
             fi
           fi
 
-          # Pull down only what this job did not just build: the linux legs, if a local
-          # `cli-release.sh --build` run has already uploaded them. Downloading this job's own
-          # pattern too would let a stale asset from a previous run of this same workflow
-          # overwrite the binary just built above. No `--clobber`: nothing in dist/ can collide
-          # with a linux-only pattern, and `gh release download` may not even support the flag.
-          gh release download "$tag" --repo "$repo" --dir dist \
-            --pattern 'lumberroom-*-unknown-linux-musl' \
-            --pattern 'lumberroom-*-unknown-linux-musl.tar.gz' || true
-
-          cd dist
-          rm -f SHA256SUMS
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum lumberroom-* > SHA256SUMS
-          else
-            shasum -a 256 lumberroom-* > SHA256SUMS
-          fi
-          cat SHA256SUMS
-
-          gh release upload "$tag" --repo "$repo" --clobber lumberroom-* SHA256SUMS
+          gh release upload "$TAG" --repo "$repo" --clobber dist/lumberroom-* dist/SHA256SUMS

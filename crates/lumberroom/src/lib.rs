@@ -47,8 +47,8 @@ pub fn prompt(text: &str) {
 
 const COMMANDS: &str =
     "doctor, whoami, login, clients, bootstrap, search, write, forget, review, supersede, \
-registry, stats, export, ingest, cleanup, history, alias, seal, unseal, eval-longmemeval, \
-version, help";
+registry, stats, export, ingest, cleanup, history, alias, seal, unseal, recall, tools, \
+hash-password, eval-longmemeval, version, help";
 
 /// Parse, dispatch, and turn a failure into the exit code the scripts read.
 pub async fn run(argv: Vec<String>) -> i32 {
@@ -127,9 +127,9 @@ async fn dispatch(client: &Client, args: &Args, command: &str) -> Result<()> {
             out(&format!("usage: lumberroom <command> [options]\n\ncommands: {COMMANDS}"));
             Ok(())
         }
-        "recall" | "tools" | "hash-password" => Err(err(format!(
-            "{command} is not in the Rust client. Use: node bin/lumberroom.mjs {command} ..."
-        ))),
+        "recall" => commands::recall(client, args).await,
+        "tools" => commands::tools(client).await,
+        "hash-password" => commands::hash_password(),
         other => Err(err(format!("unknown command {other}. Try: {COMMANDS}"))),
     }
 }

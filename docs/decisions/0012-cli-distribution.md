@@ -1,7 +1,31 @@
 # 12. Distribute lumberroom as four raw binaries off a git tag, built from two places
 
-**Date:** 22 August 2026 · **Status:** accepted, scripted; the darwin leg unverified · **Decided
-by:** the owner
+**Date:** 22 August 2026 · **Status:** accepted, amended 24 August 2026; no leg has run yet ·
+**Decided by:** the owner
+
+## Amended, 24 August 2026: CI builds all four legs
+
+The split below put the two linux musl legs in `scripts/cli-release.sh` and only the darwin ones in
+CI, on the grounds that the repo already built linux from the `lumberroom-builder` image and a second
+CI job paid for coverage that existed.
+
+That reasoning holds for cost and misses the failure mode. A release nobody can cut without a human
+running a local script first is a release that eventually goes out with half its assets, and it fails
+silently: the tag exists, the darwin binaries are attached, and every linux install fetches a URL
+that is not there. Preparing v0.1.0 found exactly that shape twice over, once in the missing archives
+and once in a download pattern that never matched them.
+
+`.github/workflows/cli-release.yml` now builds all four, each musl target natively on a runner of its
+own architecture, so there is no cross toolchain and no linker configuration to keep working. One
+`attach` job collects every artifact and writes a single `SHA256SUMS` over all of it, which a job
+attaching its own assets cannot do. `scripts/cli-release.sh` stays for building locally and still
+publishes nothing.
+
+The packaging both callers use lives in `scripts/package-archive.sh`. A Homebrew formula pins a
+sha256 per archive, so two callers whose archives differ by a timestamp produce two hashes for one
+build, and only the one the formula was written against installs.
+
+What follows is the original record.
 
 ## Decision
 
