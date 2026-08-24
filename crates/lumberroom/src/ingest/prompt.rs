@@ -5,6 +5,12 @@
 //! subagent and a fact extracted by a provider have to be the same fact or the two modes are two
 //! products.
 //!
+//! **Corrections come first in the extract list on purpose.** A person states a preference once and
+//! repeats it never; they correct a wrong assumption at the moment it costs them something, and that
+//! span is the only place the real fact appears. The first live run bore this out from the other
+//! side: the extractors had almost no owner-typed spans to work with and produced 17 confident
+//! wrong facts out of 99, every one of them inferred from an assistant talking to itself.
+//!
 //! **This prompt is not a line of defence and two of three models proved it.** On 20 August 2026,
 //! five spans went to three GLM models under these rules plus a line telling the extractor not to
 //! extract a memory system's own digest. One span was lumberroom's own digest. Two models pulled lumberroom's
@@ -15,11 +21,19 @@
 pub const BODY: &str = r#"A durable fact is one that will still be true and still be worth knowing in six months. It is
 about the person, their machines, their projects, their preferences or their decisions.
 
+**Look hardest at the spans where the person corrected something.** Those carry the facts nobody
+wrote down, because the person typed them only when the work in front of them had already assumed
+otherwise. A correction sounds like "no, it lives in", "that's not the", "use X instead", "actually
+it is", or a flat statement of a name, a path or a host dropped into the middle of something else.
+Extract what the person said is true. Never extract the mistake they were correcting.
+
 Extract:
+  - a correction, and whatever the person had to supply because the work in front of them had it
+    wrong: where a repository lives, which host runs a service, what an address or a name actually
+    is, which of two things a term refers to
   - a stated preference: how they want work done, which tool they use, what they refuse
   - a fact about their setup: a machine, an OS, a port, a path, a service, a model route
   - a decision with its reason: what was chosen and what it lost to
-  - a correction: something they said was wrong, and what replaced it
 
 Do not extract:
   - anything true only inside one session: a file being edited, a test currently failing
