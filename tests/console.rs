@@ -1426,6 +1426,233 @@ async fn a_stranger_creates_no_client() {
     assert_eq!(after, before, "a request with no session created a client");
 }
 
+// ---- changing a client's access ------------------------------------------------------------------
+//
+// Almost every client arrives by registering itself, so the grant it holds is whatever the consent
+// screen offered on the day. What matters here is that the owner can narrow that grant afterwards
+// without revoking anything, that the narrowing reaches the database, and that a revoked client
+// stays revoked.
+
+/// The token minted for one client's access form.
+fn client_access_token(html: &str, id: &str) -> String {
+    let form = format!("/console/clients/{id}/access");
+    let at = html.find(&form).unwrap_or_else(|| panic!("no access form for {id}"));
+    let rest = &html[at..];
+    let key = "name=\"csrf\" value=\"";
+    let start = rest.find(key).expect("the access form carries no csrf") + key.len();
+    let end = rest[start..].find('"').unwrap();
+    rest[start..start + end].to_string()
+}
+
+/// A consented client with the read-write shape, and its id.
+async fn a_client(h: &Harness, name: &str) -> String {
+    let (_, html) = h.get("/console/clients").await;
+    let csrf = client_form_csrf(&html);
+    let (status, _) = h
+        .post(
+            "/console/clients/new",
+            &[("csrf", &csrf), ("name", name), ("preset", "read-write")],
+            Some(&h.cookie),
+        )
+        .await;
+    assert_eq!(status, 200, "the fixture client was not created");
+    client_row(h, name).await.0
+}
+
+#[tokio::test]
+async fn the_owner_narrows_a_client_to_the_namespaces_it_should_see() {
+    // The request this page exists for: a client that reaches everything, cut down to one project
+    // and the owner's own namespace, without revoking it or sending it back through the flow.
+    let h = harness_or_skip!();
+    let id = a_client(&h, "audit-scoped").await;
+    let (_, page) = h.get("/console/clients").await;
+    let token = client_access_token(&page, &id);
+
+    let (status, _) = h
+        .post(
+            &format!("/console/clients/{id}/access"),
+            &[
+                ("csrf", &token),
+                ("preset", "read-write"),
+                ("scope", "chosen"),
+                ("ns", "user:me"),
+                ("ns", "project:lumberroom"),
+            ],
+            Some(&h.cookie),
+        )
+        .await;
+    assert_eq!(status, 303, "saving access should redirect so a refresh does not repeat it");
+
+    let (_, read, write, ..) = client_row(&h, "audit-scoped").await;
+    // The shape kept its levels and lost its reach: read at sealed, write at open, both only where
+    // the owner pointed them.
+    assert_eq!(
+        read,
+        serde_json::json!([
+            {"namespace":"user:me","max":"sealed"},
+            {"namespace":"project:lumberroom","max":"sealed"}
+        ]),
+        "the read grant was not narrowed to the namespaces picked"
+    );
+    assert_eq!(
+        write,
+        serde_json::json!([
+            {"namespace":"user:me","max":"open"},
+            {"namespace":"project:lumberroom","max":"open"}
+        ]),
+        "the write grant kept the shape's level but not its scope"
+    );
+}
+
+#[tokio::test]
+async fn a_scoped_grant_takes_the_namespaces_typed_beside_the_list() {
+    // A namespace with nothing in it yet is not on the list, and it is exactly the namespace a new
+    // project needs granted before its first write.
+    let h = harness_or_skip!();
+    let id = a_client(&h, "audit-typed").await;
+    let (_, page) = h.get("/console/clients").await;
+    let token = client_access_token(&page, &id);
+
+    let (status, _) = h
+        .post(
+            &format!("/console/clients/{id}/access"),
+            &[
+                ("csrf", &token),
+                ("preset", "read-only"),
+                ("scope", "chosen"),
+                ("more", "project:brand-new, project:*"),
+            ],
+            Some(&h.cookie),
+        )
+        .await;
+    assert_eq!(status, 303);
+
+    let (_, read, write, ..) = client_row(&h, "audit-typed").await;
+    assert_eq!(
+        read,
+        serde_json::json!([
+            {"namespace":"project:brand-new","max":"sealed"},
+            {"namespace":"project:*","max":"sealed"}
+        ])
+    );
+    assert_eq!(write, serde_json::json!([]), "read-only was scoped into a write grant");
+}
+
+#[tokio::test]
+async fn a_scope_of_nothing_is_refused_rather_than_written_as_no_access() {
+    // Ticking "only these" and picking none reads as a mistake, not as an intent to cut the client
+    // off. Writing it would leave a surface that authenticates and then fails every call.
+    let h = harness_or_skip!();
+    let id = a_client(&h, "audit-empty-scope").await;
+    let (_, page) = h.get("/console/clients").await;
+    let token = client_access_token(&page, &id);
+
+    let (status, body) = h
+        .post(
+            &format!("/console/clients/{id}/access"),
+            &[("csrf", &token), ("preset", "read-write"), ("scope", "chosen")],
+            Some(&h.cookie),
+        )
+        .await;
+    assert_eq!(status, 400);
+    assert!(body.contains("Pick at least one namespace"), "it was refused without saying why");
+
+    let (_, read, ..) = client_row(&h, "audit-empty-scope").await;
+    assert_eq!(read, serde_json::json!([{"namespace":"*","max":"sealed"}]), "the grant changed");
+}
+
+#[tokio::test]
+async fn the_advanced_fields_still_replace_the_shape_when_access_is_changed() {
+    let h = harness_or_skip!();
+    let id = a_client(&h, "audit-access-advanced").await;
+    let (_, page) = h.get("/console/clients").await;
+    let token = client_access_token(&page, &id);
+
+    let (status, _) = h
+        .post(
+            &format!("/console/clients/{id}/access"),
+            &[
+                ("csrf", &token),
+                ("preset", "full"),
+                ("advanced", "1"),
+                ("read", "project:*@private"),
+                ("write", ""),
+                ("may_ingest", "1"),
+            ],
+            Some(&h.cookie),
+        )
+        .await;
+    assert_eq!(status, 303);
+
+    let (_, read, _w, reg, sealed, _del, ing, hist, ..) =
+        client_row(&h, "audit-access-advanced").await;
+    assert_eq!(read, serde_json::json!([{"namespace":"project:*","max":"private"}]));
+    assert!(ing, "a ticked box was ignored");
+    assert!(!reg && !sealed && !hist, "the full shape's capabilities survived an untouched box");
+}
+
+#[tokio::test]
+async fn a_revoked_client_cannot_be_granted_access_again() {
+    let h = harness_or_skip!();
+    let id = a_client(&h, "audit-revoked-grant").await;
+    let (_, page) = h.get("/console/clients").await;
+    let token = client_access_token(&page, &id);
+    let revoke = client_revoke_token(&page, &id);
+    h.post(&format!("/console/clients/{id}/revoke"), &[("csrf", &revoke)], Some(&h.cookie)).await;
+
+    let (status, _) = h
+        .post(
+            &format!("/console/clients/{id}/access"),
+            &[("csrf", &token), ("preset", "full")],
+            Some(&h.cookie),
+        )
+        .await;
+    assert_eq!(status, 400, "a revoked client was given a grant");
+
+    let (.., reg, _s, _d, _i, _hh, _c, _v, revoked) = client_row(&h, "audit-revoked-grant").await;
+    assert!(revoked, "the row stopped being revoked");
+    assert!(!reg, "the full shape landed on a revoked client");
+}
+
+#[tokio::test]
+async fn a_token_minted_for_one_client_cannot_change_another_client_access() {
+    let h = harness_or_skip!();
+    let a = a_client(&h, "audit-access-a").await;
+    let b = a_client(&h, "audit-access-b").await;
+    let (_, page) = h.get("/console/clients").await;
+    let for_a = client_access_token(&page, &a);
+
+    let (status, _) = h
+        .post(
+            &format!("/console/clients/{b}/access"),
+            &[("csrf", &for_a), ("preset", "full")],
+            Some(&h.cookie),
+        )
+        .await;
+    assert_ne!(status, 303, "a token minted for one client changed another");
+
+    let (.., reg, _s, _d, _i, _hh, _c, _v, _r) = client_row(&h, "audit-access-b").await;
+    assert!(!reg, "the wrong client was widened");
+}
+
+#[tokio::test]
+async fn a_stranger_changes_no_client_access() {
+    let h = harness_or_skip!();
+    let id = a_client(&h, "audit-access-stranger").await;
+    let (_, body) = h
+        .post(
+            &format!("/console/clients/{id}/access"),
+            &[("csrf", "not-a-token"), ("preset", "full")],
+            None,
+        )
+        .await;
+    // A stranger is sent to the sign-in form, which is a redirect like a saved grant is. What
+    // separates them is where it points.
+    assert!(body.contains("location: /console/login"), "a stranger was not sent to sign in");
+    let (.., reg, _s, _d, _i, _hh, _c, _v, _r) = client_row(&h, "audit-access-stranger").await;
+    assert!(!reg, "a request with no session widened a client");
+}
+
 // ---- rendering every screen for design work ------------------------------------------------------
 
 /// Writes every console screen to `design/current/` with real rows behind it.

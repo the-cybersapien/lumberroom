@@ -257,6 +257,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/console/cleanup/{id}/unreject", post(cleanup::unreject))
         .route("/console/clients", get(clients::index))
         .route("/console/clients/new", post(clients::create))
+        .route("/console/clients/{id}/access", post(clients::access))
         .route("/console/clients/{id}/revoke", post(clients::revoke))
         .route("/console/aliases", get(aliases::index))
         .route("/console/aliases/record", post(aliases::record))

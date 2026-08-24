@@ -58,7 +58,21 @@ fn dump_clients_page() {
     ];
     let token = |_: &str, _: &str| "csrf-token-placeholder".to_string();
 
-    let listing = clients::html(&clients_list, &health(), &token, None, None, None);
+    let namespaces: Vec<String> = ["global", "user:me", "project:lumberroom", "project:sivella"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let health = health();
+    let view = |issued, error| clients::View {
+        clients: &clients_list,
+        namespaces: &namespaces,
+        health: &health,
+        issued,
+        error,
+        done: None,
+    };
+
+    let listing = clients::html(view(None, None), &token);
     std::fs::write("design/current/clients.html", &listing).unwrap();
     println!("wrote design/current/clients.html ({} bytes)", listing.len());
 
@@ -67,17 +81,20 @@ fn dump_clients_page() {
         secret: Some("lumberroom_s_4a91c7e3b58d02f6a1c94e7b3d8056fa".into()),
         name: "claude-desktop".into(),
     };
-    let after = clients::html(&clients_list, &health(), &token, Some(&issued), None, None);
+    let after = clients::html(view(Some(&issued), None), &token);
     std::fs::write("design/current/clients-issued.html", &after).unwrap();
     println!("wrote design/current/clients-issued.html ({} bytes)", after.len());
 
     let empty = clients::html(
-        &[],
-        &health(),
+        clients::View {
+            clients: &[],
+            namespaces: &namespaces,
+            health: &health,
+            issued: None,
+            error: Some("that is not one of the shapes on this form"),
+            done: None,
+        },
         &token,
-        None,
-        Some("that is not one of the shapes on this form"),
-        None,
     );
     std::fs::write("design/current/clients-empty.html", &empty).unwrap();
     println!("wrote design/current/clients-empty.html ({} bytes)", empty.len());
