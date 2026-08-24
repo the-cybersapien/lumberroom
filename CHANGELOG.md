@@ -32,7 +32,9 @@ to them.
 - **A console at `/console`**, gated on the owner password, covering reading, write, registry,
   aliases, the ingest queue, the cleanup queue, and what each client may reach.
 - **Transcript ingestion with a review queue**, so a week of transcripts becomes a proposal list the
-  owner reads rather than facts written straight into the store.
+  owner reads rather than facts written straight into the store. Run once end to end before this
+  release: 99 candidates queued from 15 chunks, 60 approved and 39 rejected, nothing written without
+  a keystroke. `docs/ingestion.md` carries the counters and what the run failed to settle.
 - **A cleanup pass that proposes and never retires on its own** (docs/decisions/0011). Applying a
   proposal goes through the same supersede-or-delete path the console and CLI already use, so a
   retired row leaves the history a correction leaves.
@@ -56,5 +58,10 @@ softened for a release note.
 - A grant change leaves no audit row, so nothing records that a client used to hold less.
 - Nothing rewraps on KEK rotation. `KEK_ID` is written on every row so a rotation is distinguishable
   from data loss, and the rewrap itself does not exist yet.
+- Ingestion ranks nothing. The queue arrives flat and in arrival order, and 17 of the 99 candidates
+  in the first real run were wrong when checked against the repository. Reading the queue is the
+  whole defence.
+- `submit` collapses exact duplicate proposals on a content hash and misses near-duplicates, so
+  overlapping chunks queue the same fact more than once.
 
 [0.1.0]: https://github.com/the-cybersapien/lumberroom/releases/tag/v0.1.0
