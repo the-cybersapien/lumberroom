@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
