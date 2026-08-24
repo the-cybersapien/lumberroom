@@ -72,9 +72,13 @@ jobs:
 
       - name: Record the digest
         run: |
+          digest="${{ steps.build.outputs.digest }}"
           slug="$(echo '${{ matrix.image }}-${{ matrix.platform }}' | tr '/:' '--')"
           mkdir -p digests
-          touch "digests/${{ steps.build.outputs.digest }}"
+          # The marker file is named for the digest with `sha256:` stripped. An artifact path may
+          # not contain a colon, and upload-artifact fails on it after the image has already been
+          # pushed, which reads as a failed build and is not one. The prefix goes back on in merge.
+          touch "digests/${digest#sha256:}"
           echo "SLUG=$slug" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
@@ -125,7 +129,7 @@ jobs:
           for dir in digests/digest-"$slug"-*; do
             [ -d "$dir" ] || continue
             for d in "$dir"/*; do
-              refs="$refs ${{ matrix.image }}@$(basename "$d")"
+              refs="$refs ${{ matrix.image }}@sha256:$(basename "$d")"
             done
           done
           if [ -z "$refs" ]; then
