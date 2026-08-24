@@ -26,6 +26,13 @@ on:
   push:
     tags:
       - "v*"
+  # A rehearsal. The darwin leg has never run, and finding that out on the tag means a release that
+  # exists and is missing half its assets. Dispatch builds and uploads against a tag you name.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "existing tag to build and attach to"
+        required: true
 
 permissions:
   contents: write
@@ -50,21 +57,42 @@ jobs:
       - name: build x86_64-apple-darwin
         run: cargo build --release --locked -p lumberroom --target x86_64-apple-darwin
 
-      - name: stage the darwin binaries
+      - name: stage the darwin binaries and their archives
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${TAG#v}"
           mkdir -p dist
-          cp target/aarch64-apple-darwin/release/lumberroom \
-            "dist/lumberroom-${version}-aarch64-apple-darwin"
-          cp target/x86_64-apple-darwin/release/lumberroom \
-            "dist/lumberroom-${version}-x86_64-apple-darwin"
+
+          # Both shapes, for the same reason scripts/cli-release.sh produces both: a bare binary is
+          # what someone reaches for when they want one file, and a Homebrew formula needs a
+          # .tar.gz. A release carrying only the bare binaries leaves every `brew install` on macOS
+          # fetching a URL that does not exist.
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cp "target/${target}/release/lumberroom" "dist/lumberroom-${version}-${target}"
+
+            stage="dist/.stage-${target}"
+            rm -rf "$stage"; mkdir -p "$stage"
+            cp "target/${target}/release/lumberroom" "$stage/lumberroom"
+            cp LICENSE "$stage/LICENSE"
+            cp README.md "$stage/README.md"
+            chmod 755 "$stage/lumberroom"
+            chmod 644 "$stage/LICENSE" "$stage/README.md"
+            # The same fixed mtime scripts/cli-release.sh uses, so an archive built here and one
+            # built there are comparable rather than differing only by when they ran.
+            TZ=UTC touch -t 202401010000.00 "$stage/lumberroom" "$stage/LICENSE" "$stage/README.md"
+            tar --format=ustar --uid 0 --gid 0 --numeric-owner -cf - \
+              -C "$stage" lumberroom LICENSE README.md \
+              | gzip -n -9 > "dist/lumberroom-${version}-${target}.tar.gz"
+            rm -rf "$stage"
+          done
 
       - name: attach to the release, checksum everything present
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           repo="$GITHUB_REPOSITORY"
-          tag="$GITHUB_REF_NAME"
+          tag="${{ inputs.tag || github.ref_name }}"
 
           if ! gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
             gh release create "$tag" --repo "$repo" --title "lumberroom $tag" --generate-notes
@@ -76,11 +104,16 @@ jobs:
           # overwrite the binary just built above. No `--clobber`: nothing in dist/ can collide
           # with a linux-only pattern, and `gh release download` may not even support the flag.
           gh release download "$tag" --repo "$repo" --dir dist \
-            --pattern 'lumberroom-*-unknown-linux-musl' || true
+            --pattern 'lumberroom-*-unknown-linux-musl' \
+            --pattern 'lumberroom-*-unknown-linux-musl.tar.gz' || true
 
           cd dist
           rm -f SHA256SUMS
-          sha256sum lumberroom-* > SHA256SUMS
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum lumberroom-* > SHA256SUMS
+          else
+            shasum -a 256 lumberroom-* > SHA256SUMS
+          fi
           cat SHA256SUMS
 
           gh release upload "$tag" --repo "$repo" --clobber lumberroom-* SHA256SUMS
