@@ -250,10 +250,11 @@ itself, and sends the owner to the consent screen in a browser. Claude.ai web an
 indistinguishable from this server, so decide before you connect either one whether they need
 different grants; retrofitting means re-adding the connector on every device.
 
-**Revoking a client.** `lumberroom clients`, run from the Mac against `/oauth/clients`, lists every OAuth
-row with how it registered, whether the owner consented, and whether it is revoked. There is no
-`lumberroom clients revoke` subcommand in the Node CLI, and the Rust binary carries no `clients` at all,
-so revocation today is one statement on the box:
+**Revoking a client.** Open `/console/clients` and click Revoke on that client's card: one click, no
+confirmation, in effect on the client's next call. `lumberroom clients`, run from the Mac against
+`/oauth/clients`, lists every OAuth row with how it registered, whether the owner consented, and
+whether it is revoked, and is the way to find a `client_id` without a browser. Without browser access
+to `/console`, the same effect by hand:
 
 ```bash
 docker compose exec -T db psql -U lumberroom -d lumberroom -c \

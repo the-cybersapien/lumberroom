@@ -205,6 +205,13 @@ Pick one of four shapes and the form fills the grant in:
 | Ingest bot | nothing | nothing | `mayIngest` |
 | Full | `*@sealed` | `*@sealed` | everything except `mayDelete` |
 
+Each shape decides what a client may do and how deep it may see. A scope picker beside it decides
+where: ticking a namespace rewrites the shape's `*` into that namespace at the ceiling the shape
+already chose. A client that should reach one project and nothing else takes two clicks and no
+syntax. The picker lists the namespaces the store currently holds, plus any namespace the
+client already reaches, and a text box beside it takes a namespace with nothing in it yet or a
+glob such as `project:*`.
+
 The Ingest bot shape as it stands can open runs and post nothing: a fact is accepted only for a
 namespace the poster may read, so give it the namespaces it extracts for, at `open`, through the
 advanced view. Write is not needed for the queue; it is what turns an `owner_typed` quote into an
@@ -229,9 +236,13 @@ findings, and the only kind that deletes is `stale`, which the in-server pass wr
 advanced view and ticking it, which is the point: a client that can silently remove a memory is a
 worse failure than one that hoards them.
 
-The advanced view **replaces** the shape rather than merging with it. Tick its own box and every
-field below applies, including the ones you left unticked. Without that rule a checkbox nobody
-expanded would silently clear a capability the shape granted.
+The advanced view **replaces** the shape rather than merging with it, and ticking its own box turns
+the scope picker off: a namespace ticked there is ignored the moment advanced mode is on. The five
+capability checkboxes decide outright, ticked or not, so a shape's `mayIngest` or `sealedCapable`
+does not survive into the advanced view unless its checkbox says so. Reads and Writes are the one
+exception: leave either blank and it falls back to the shape's grant for that side; type something
+and that replaces it instead. Without the checkboxes deciding outright, a box nobody expanded could
+silently clear a capability the shape granted.
 
 Two things worth knowing before you use it:
 
@@ -252,8 +263,28 @@ For a static bearer client, edit its entry in `AUTH_TOKENS` in `.env` and restar
 `AUTH_TOKENS` is read once at boot and there is no live-reload path for it.
 
 An OAuth client is different: its grant is a row in `oauth_client`, not a line in `.env`, and it
-changes without a restart. `docs/decisions/0003-grants-in-the-database.md` records why: a
-dynamically registered client does not exist until it registers, while the server is already
-running, so it cannot live in an environment variable read once at boot. Authority follows the
-credential, and the two never copy into each other: a static token's grant lives only in
-`AUTH_TOKENS`, an OAuth client's grant lives only in its database row.
+changes without a restart. The console is how: open `/console/clients`, find the client's card, and
+use its "Change access" editor, the same shape/scope/advanced form the create form uses. Saving it
+calls `set_client_grant`, and `OpaqueTokenAuthenticator` reads the grant off the client row on every
+request rather than off the token, so the new grant governs that client's very next call; nothing
+reconnects and no token is reissued. The console requires `AUTH_MODE=oauth` and `OWNER_PASSWORD_HASH`
+(`deploy/oauth.md`), because it checks the owner's password before it shows a thing.
+
+Without console access, `lumberroom clients` lists every OAuth row and its `client_id` (see
+`deploy/oauth.md` §4), and the grant itself is two columns in `oauth_client`, `grant_read` and
+`grant_write`, each the same `[{"namespace": "...", "max": "open|private|sealed"}]` shape `AUTH_TOKENS`
+uses:
+
+```bash
+docker compose exec -T db psql -U lumberroom -d lumberroom -c \
+  "UPDATE oauth_client SET grant_read = '[{\"namespace\":\"project:sivella\",\"max\":\"open\"}]'::jsonb, \
+   grant_write = '[]'::jsonb WHERE client_id = '<client_id>';"
+```
+
+That is a last resort: it bypasses the form's validation, so a malformed namespace or level lands
+in the row as written and only surfaces the next time that client calls.
+`docs/decisions/0003-grants-in-the-database.md` records why the row lives in the database rather
+than an environment variable in the first place: a dynamically registered client does not exist
+until it registers, while the server is already running, so its grant cannot live in something read
+once at boot. Authority follows the credential, and the two never copy into each other: a static
+token's grant lives only in `AUTH_TOKENS`, an OAuth client's grant lives only in its database row.

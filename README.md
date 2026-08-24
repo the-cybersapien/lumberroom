@@ -2,8 +2,8 @@
 
 [lumberroom.cloud](https://lumberroom.cloud)
 
-One memory that every AI tool you use can read from and write to, with you deciding what each one
-is allowed to see.
+One memory that every AI tool you use can read from and write to, with you deciding what each one is
+allowed to see.
 
 You run seven AI surfaces. Each keeps its own memory. None of them share. You re-explain your setup
 to ChatGPT, then again to Claude, then again to your coding agent, and when you correct one of them
@@ -21,87 +21,6 @@ Three layers, doing three different jobs:
 
 The value is in the second and third. Full thesis: [`docs/prd/system-prd.md`](docs/prd/system-prd.md).
 
-## What is here
-
-One Rust binary, a Postgres database with pgvector, and two clients that talk to them. Each part
-below names the gate that exercises it. Most gate scripts stand up a throwaway server against a
-throwaway database rather than touching a live store, which
-[`scripts/lib/scratch-server.sh`](scripts/lib/scratch-server.sh) does for them. The test suite last
-came back at 863 in the server crate and 333 in the client, 0 failures, observed 23 August 2026.
-
-**The MCP server.** Ten tools behind four capabilities, mounted at `/mcp` over streamable HTTP.
-`src/mcp/capability.rs` holds the one table deciding which grant opens which tool, `tools/list`
-filters on it, and the service checks the grant again on the call.
-[`scripts/done-when-test.sh`](scripts/done-when-test.sh) drives the loop through the real Claude Code
-client: one session states a fact, a fresh session recovers it without being told.
-
-**The registry.** Exact operational values under a canonical dotted key: hosts, service endpoints,
-credential locations, model routes, datasets. `registry_get` answers a key, `registry_set` records
-one and keeps a rejected key as a redirect so the next caller reaching for the wrong name lands on
-the right row, and `registry_history` says what the key used to hold. The integration suite covers
-the versioned upsert and the history walk.
-
-**Two-axis policy.** A grant pairs a namespace glob with a sensitivity ceiling, on each of the read
-and write axes. The sensitivity filter runs inside the SQL query, so a row a client may not read
-never enters that client's process. [`scripts/policy-test.sh`](scripts/policy-test.sh) runs eight
-steps and 20 assertions and ends where the system PRD asks it to: one credential provably cannot see
-a fact another can.
-
-**The built-in OAuth 2.1 authorization server.** Discovery at both metadata paths, dynamic client
-registration, an owner login and a consent screen, S256 with `plain` never advertised, and refresh
-rotation that revokes a whole token family on reuse.
-[`scripts/oauth-flow-test.sh`](scripts/oauth-flow-test.sh) runs 13 steps and 43 assertions with no
-browser in the loop. Static bearer tokens keep working beside it, because `AUTH_MODE` selects what
-is accepted on top of `AUTH_TOKENS` rather than instead of it ([decision
-0002](docs/decisions/0002-built-in-oauth-server.md)).
-
-**Envelope encryption.** A `private` row is stored under a per-row key wrapped by a key-encryption
-key that a KEK provider supplies, and it drops out of the lexical index. A `sealed` row arrives
-encrypted by the client and the server holds no key for it at all. `KEK_PROVIDER=none` refuses a
-private write rather than quietly writing it in the clear ([decision
-0004](docs/decisions/0004-kek-provider.md)). Policy-test step 5 asserts ciphertext on the wire for a
-client without `sealedCapable`, and [VERIFY.md](VERIFY.md) carries the key round trip across a
-restart and the boot refusal on a mismatched key.
-
-**Corrections.** A write returns `possible_conflicts`, the neighbours it declined to merge, and the
-model that made the correction calls `memory_write` again with `supersedes`. The retired row survives
-with `superseded_by` set. [`scripts/correction-test.sh`](scripts/correction-test.sh) runs six steps
-and 13 assertions, including the numeric guard: two texts differing by one digit run stay two rows.
-
-**The console** at `/console`. Registered OAuth clients and their consent state, aliases, and the
-cleanup queue, which is where a person accepts or rejects what the passes propose ([decision
-0006](docs/decisions/0006-console-decides-the-queue.md)). `tests/console.rs` and
-`tests/console_cleanup.rs` cover the routes.
-
-**Transcript ingestion with a review queue.** The Rust client in `crates/lumberroom` walks Claude Code
-and Codex transcripts, cuts them into spans, asks a model for candidate facts, and queues proposals
-instead of writing them. Watermarks make a second pass over unchanged transcripts cheap.
-[`scripts/ingest-test.sh`](scripts/ingest-test.sh) runs seven steps over fixture transcripts it
-writes itself, including a sensitive path refused before the file is opened.
-
-**The cleanup pass.** A periodic pass proposes duplicates, contradictions and stale rows into the
-same queue, and it never retires a row on its own ([decision
-0011](docs/decisions/0011-cleanup-proposes.md)). A deterministic half runs on a timer inside the
-server; a model half runs as a compose service.
-[`scripts/cleanup-test.sh`](scripts/cleanup-test.sh) drives six steps through the CLI, from propose
-to apply, and asserts that a client without `mayIngest` is refused.
-
-**Two clients.** `bin/lumberroom.mjs` is dependency-free Node that runs anywhere node does;
-`client/wire-mac.sh` installs it as `lumberroom` and wires Claude Code to the server. The Rust client
-carries ingestion and the cleanup daemon and runs inside a container. Obsidian export goes through
-the Node client: `lumberroom export --obsidian <vault>` writes one markdown note per memory, carrying
-its id, namespace, sensitivity, source client, date and tags.
-
-**Retrieval quality.** [`docs/benchmarks.md`](docs/benchmarks.md) is the one page carrying every
-retrieval figure with the run that produced it, and
-[`scripts/eval-longmemeval.sh`](scripts/eval-longmemeval.sh) is the standing gate: LongMemEval-S
-recall through the real tools against a scratch server ([decision
-0007](docs/decisions/0007-longmemeval-as-the-retrieval-gate.md)).
-
-Where the pieces sit in the tree: [docs/architecture.md](docs/architecture.md). Why each one is
-shaped the way it is: [docs/decisions/README.md](docs/decisions/README.md). What has been run
-against a server, and what it printed: [VERIFY.md](VERIFY.md).
-
 ```
 Claude Code, Hermes, OpenWebUI, lumberroom CLI ──── static bearer token ────┐
                                                                       │
@@ -113,310 +32,176 @@ Claude.ai, Cowork, mobile, ChatGPT ── OAuth 2.1 + PKCE ───────
                                               Postgres 16 + pgvector (127.0.0.1)
 ```
 
-Auth is a chain rather than a mode. Static tokens from `AUTH_TOKENS` are honoured whatever
-`AUTH_MODE` says, because the CLI and the hooks must keep working on the day OAuth is switched on.
-`AUTH_MODE=oauth` adds the built-in authorization server on top ([decision
-0002](docs/decisions/0002-built-in-oauth-server.md)). `AUTH_MODE=oidc` adds an external issuer such
-as Logto instead, and lumberroom validates its JWTs without ever issuing one.
+One Rust binary, a Postgres database with pgvector, and two clients that talk to them. Ten MCP tools
+behind four capabilities, mounted at `/mcp`. A built-in OAuth 2.1 authorization server for the
+surfaces that need a browser, with static bearer tokens honoured beside it whatever `AUTH_MODE` says.
+Envelope encryption for `private`, client-side encryption for `sealed`. A console at `/console` for
+the decisions a person has to make.
 
-Rust, with `sqlx` running every statement through `query`/`query_as` and `.bind()` and `fastembed`
-running bge-base on the box. The compile-time macros stay unused on purpose, so a query built with
-`format!` fails to type-check rather than reaching the database. Why, and what it is explicitly not
-for: [decision 0001](docs/decisions/0001-rust-rewrite.md).
-
----
-
-## Deploy it
-
-Two paths. Pick by whether a browser has to reach the server.
-
-**Local, one command, no ceremony.** Token mode on loopback. This is what a Mac with Claude Code
-needs and nothing else:
+## Install it
 
 ```bash
 git clone https://github.com/the-cybersapien/lumberroom.git && cd lumberroom
 sudo ./deploy/install.sh
 ```
 
-No `--domain` means no TLS and no public listener: the server binds `127.0.0.1:8787` and you reach
-it over an SSH tunnel or from the same box. The installer generates the secrets, builds the image
-with the embedding weights baked in, starts Postgres and the server, polls `/readyz`, and prints the
-client token with the exact command to run on your Mac.
-
-The grant it writes for that client is the owner's own: every namespace up to `sealed`,
-sealed-capable, registry write on, and `mayDelete` off, so `memory_forget` never reaches a model's
-tool list. That flag gates `lumberroom forget` too, since the CLI and a tool call differ only by a header
-the caller chooses, so a fresh install deletes nothing until the owner turns it on or issues a
-second token for the CLI. `.env.example` spells out both edits. Among the secrets is
-`secrets/lumberroom-kek`, the key every `private` row is wrapped under; back it up somewhere this box does
-not hold, because losing it makes those rows unreadable in the database and in every backup.
-
-**Production, for the surfaces that need OAuth.** Any Linux VM with Docker, arm64 or amd64:
+That is token mode on loopback: the server binds `127.0.0.1:8787`, opens no public port, and prints
+the client token with the command to run on your Mac. Add `--domain` and `--auth-mode oauth` when a
+browser has to reach it.
 
 ```bash
-sudo ./deploy/install.sh --domain lumberroom.example.com --email you@example.com --auth-mode oauth
+./client/wire-mac.sh --url http://127.0.0.1:8787 --token <token>
 ```
 
-`--auth-mode oauth` requires `--domain`, because the server refuses to boot without an argon2id
-owner password hash in `OWNER_PASSWORD_HASH`, a cookie secret of at least 32 characters in
-`OAUTH_COOKIE_SECRET`, and a `PUBLIC_URL` that is `https://` or a loopback address. The installer
-prompts for the password, hashes it inside a throwaway container, and writes both secrets into
-`.env`. Per-surface connection steps, the consent screen, the grant profiles and revocation:
-[deploy/oauth.md](deploy/oauth.md).
-
-The build needs outbound HTTPS to huggingface.co once, to bake the embedding weights into the image.
-After that the server needs no outbound access.
-
-Wiring a Mac is the same in both paths:
+Then prove the loop, which states a fact in one session and recovers it in a fresh one:
 
 ```bash
-./client/wire-mac.sh --url https://lumberroom.example.com --token <token>
+LUMBERROOM_URL=http://127.0.0.1:8787 LUMBERROOM_TOKEN=<token> ./scripts/done-when-test.sh
 ```
 
-In the loopback path the URL is whatever your SSH tunnel exposes, `http://127.0.0.1:8787` by
-default.
+Back up `secrets/lumberroom-kek` somewhere this box does not hold. Losing it makes every `private` row
+unreadable, in the database and in every backup.
 
-That registers the MCP server with Claude Code, installs the SessionStart hook that pulls the digest
-at the start of every session, and appends the write rule to `~/.claude/CLAUDE.md`. It backs up
-every file it touches and takes `--dry-run`. In OAuth mode it takes `--oauth-mode` and omits the
-header, leaving Claude Code to run its own authorization flow on first use.
+## Where to go next
 
-Then prove the loop:
-
-```bash
-LUMBERROOM_URL=https://lumberroom.example.com LUMBERROOM_TOKEN=<token> ./scripts/done-when-test.sh
-```
-
-Full runbook, including the Oracle Always Free specifics and the key-encryption key:
-[DEPLOY.md](DEPLOY.md).
-
----
+| | |
+|---|---|
+| [docs/faq.md](docs/faq.md) | The questions people actually ask: deploying, granting a client, keys, refusals |
+| [docs/managing.md](docs/managing.md) | Running a live store: approving a client, changing what it may reach, the two queues |
+| [DEPLOY.md](DEPLOY.md) | The runbook: both deploy paths, the KEK, backups, troubleshooting |
+| [deploy/oauth.md](deploy/oauth.md) | The OAuth production path, per surface, with the consent screen |
+| [docs/permissions.md](docs/permissions.md) | Every grant field, both axes, and which tools each capability opens |
+| [docs/connect-claude-code.md](docs/connect-claude-code.md) | Wiring Claude Code on a Mac, end to end |
+| [docs/architecture.md](docs/architecture.md) | The ports-and-adapters shape and where each part lives |
+| [docs/decisions/](docs/decisions/) | Why each part is shaped the way it is, one record per choice |
+| [docs/traps.md](docs/traps.md) | Findings that cost real time, and what to do instead |
+| [VERIFY.md](VERIFY.md) | The gates: what each checks, how to run it, what a pass looks like |
+| [docs/benchmarks.md](docs/benchmarks.md) | Every retrieval figure, with the run that produced it |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Building, testing, and what a pull request needs |
+| [docs/README.md](docs/README.md) | The full index: PRDs, phase specs, research, design |
 
 ## The ten tools
 
-Signatures are additive. They have gained arguments and never lost one, and nothing was renamed.
-
 Every tool sits behind one grant, and `src/mcp/capability.rs` holds the single table that decides
 which. `tools/list` filters on it, so a model never sees a tool its credential cannot call, and the
-service checks the grant again on the call.
+service checks the grant again on the call. Signatures are additive: they have gained arguments and
+never lost one.
 
-**Open. Every authenticated client, with namespace and sensitivity still applied inside the call.**
-
-| Tool | What it does |
+| Grant | Tools |
 |---|---|
-| `context_bootstrap(project?)` | One call, one round trip. User profile, active project context, recent writes, registry summary, sealed inventory, rendered as markdown. Served from a 30s cache. |
-| `memory_search(query, namespaces?, limit?, project?, include_superseded?)` | Cosine search over pgvector blended with a lexical match. Defaults to `user:me` + `global` + the active project, then other projects at a score penalty. Retired facts are excluded unless `include_superseded` asks for them. |
-| `memory_write(content, namespace, tags?, supersedes?, sensitivity?)` | Embeds on write. No LLM in the write path. Restatements collapse; corrections do not. `sensitivity` raises a write above the namespace default and can never lower it. Returns `possible_conflicts`. |
-| `registry_get(kind, key, namespace?, project?)` | Exact lookup of a host, service, credential location, model route, or dataset. Project overrides beat global defaults, and an alias resolves a wrong guess to the canonical key. |
-| `alias_list(namespace?)` | The pairs of names recorded as meaning the same subject. Namespaces the credential cannot read are absent, because a list of names is a disclosure no content filter sees. |
+| Open to every authenticated client | `context_bootstrap`, `memory_search`, `memory_write`, `registry_get`, `alias_list` |
+| `mayDelete` | `memory_forget` |
+| `mayReadHistory` | `memory_history`, `registry_history` |
+| `registryWrite` | `registry_set`, `alias_set` |
 
-**`mayDelete`.**
+Namespace and sensitivity still apply inside every call. Full signatures and what each one does:
+[docs/permissions.md](docs/permissions.md).
 
-| Tool | What it does |
-|---|---|
-| `memory_forget(id, reason?, dry_run?)` | Deletes one memory permanently, and takes its wrapped key with it. |
-
-**`mayReadHistory`. A retired fact can be more revealing than the one that replaced it, which is why this is its own grant rather than a rider on read access.**
-
-| Tool | What it does |
-|---|---|
-| `memory_history(id, namespace?)` | Every version of one fact, oldest first, retired versions included. Versions the credential may not read are counted in `withheld` rather than shown. |
-| `registry_history(kind, key, namespace?, limit?)` | What a registry key used to hold, newest first, without the value it holds now. A key reached through a redirect answers here and names what it resolved from. |
-
-**`registryWrite`. The registry holds credential locations, and a name that steers every later search is the same class of fact, so both writes are operator actions.**
-
-| Tool | What it does |
-|---|---|
-| `registry_set(namespace, kind, key, value)` | Records an exact operational value under a canonical dotted key. A rejected key is remembered as a redirect so the next caller reaching for the same wrong name lands on the right row. |
-| `alias_set(namespace, alias, canonical, since?, until?, origin?)` | Records that two names mean one subject, so a search for either finds the facts written under the other. Renames are the case it exists for. |
-
-`possible_conflicts` is the mechanism that makes a correction stick. When a write lands close to an
-existing fact but not close enough to collapse into it, the server returns the neighbours it
-refused to merge, and the tool description tells the model to call `memory_write` again with
-`supersedes` pointing at the one it just replaced. The store cannot tell a correction from a
+`possible_conflicts` is what makes a correction stick. When a write lands close to an existing fact
+but not close enough to collapse into it, the server returns the neighbours it refused to merge, and
+the model calls `memory_write` again with `supersedes`. The store cannot tell a correction from a
 restatement; the model in the conversation is the only party that can.
 
-### Namespaces and sensitivity
+## Namespaces and sensitivity
 
 - `user:me` facts about you and how you work
 - `project:<slug>` facts scoped to one codebase
 - `global` facts true everywhere: infrastructure, conventions, credential locations
 - `personal:*` and `credentials:*` classify above `open` by default
 
-A grant is now a namespace glob paired with a sensitivity ceiling, on each of the read and write
-axes. `{"namespace": "project:*", "max": "private"}` grants every project namespace up to
-`private`. A bare string is still a valid grant and deserialises to a ceiling of `open`, which is
-what kept every older grant valid when the axis landed: a grant written before sensitivity
-existed gains no reach over content that did not exist when it was written. Two
-patterns matching one namespace resolve to the more generous ceiling, because being granted both is
-being granted both.
+A grant pairs a namespace glob with a sensitivity ceiling, on each of the read and write axes.
+`{"namespace": "project:*", "max": "private"}` grants every project namespace up to `private`. Two
+patterns matching one namespace resolve to the more generous ceiling.
 
 The three levels are three different mechanisms:
 
-- **`open`** is stored in the clear, indexed lexically and semantically, and searchable by anyone
-  whose grant reaches the namespace.
-- **`private`** is encrypted at rest with a per-row key wrapped under a key-encryption key. It
-  drops out of the lexical index, so exact-phrase search does not reach it ([decision
-  0005](docs/decisions/0005-private-drops-lexical-search.md)).
-- **`sealed`** is encrypted by the client before it arrives. The server stores bytes it holds no key
-  for and cannot read under any circumstance, and it is not searchable by any means.
+- **`open`** is stored in the clear, indexed lexically and semantically.
+- **`private`** is encrypted at rest under a per-row key and drops out of the lexical index
+  ([decision 0005](docs/decisions/0005-private-drops-lexical-search.md)).
+- **`sealed`** arrives encrypted by the client. The server holds no key for it and cannot read it
+  under any circumstance.
 
-**What `private` does not protect, stated here rather than buried in a research file.** The
-embedding stays plaintext, because there is no ANN index over ciphertext and an unsearchable level
-would push everything worth protecting back into `open`. Published inversion work recovers most of
-a short text from its embedding: Morris et al. report 92% exact recovery of 32-token inputs with
-black-box query access, a 2025 reproduction confirms it, and later work drops the need for the
-victim's model or a paired corpus. Those are figures from the literature, not measurements on this
-system. The claim lumberroom makes is narrow and it is the one to hold it to: `private` protects the
-verbatim text of a row from whoever holds the database, and leaks its gist. It protects nothing at
-all against the live server, which decrypts to answer a search. Evidence and citations:
+**What `private` does not protect**, stated here rather than buried in a research file. The embedding
+stays plaintext, because there is no ANN index over ciphertext and an unsearchable level would push
+everything worth protecting back into `open`. Published inversion work recovers most of a short text
+from its embedding: Morris et al. report 92% exact recovery of 32-token inputs with black-box query
+access, a 2025 reproduction confirms it, and later work drops the need for the victim's model. Those
+are figures from the literature, not measurements on this system. The claim lumberroom makes is narrow
+and it is the one to hold it to: `private` protects the verbatim text of a row from whoever holds the
+database, and leaks its gist. It protects nothing against the live server, which decrypts to answer a
+search. Evidence:
 [`docs/research/encryption-and-sensitivity.md`](docs/research/encryption-and-sensitivity.md) §1.
-
-Seeded namespace defaults live in `sensitivity_default` (migration
-`20260819000004_sensitivity.sql`): everything is `open` except `personal:finance` and
-`personal:health`, which are `private`, and `credentials:*`, which is `sealed`. Editing that table
-is a twice-a-year job. Writing there needs a key: `.env.example` and `install.sh` ship
-`KEK_PROVIDER=file` and provision `secrets/lumberroom-kek`, since a namespace that classifies `private`
-with no key configured is a namespace nothing can be written to. `KEK_PROVIDER=none` stays available
-and stays a refusal rather than a downgrade, which is the part that does not move ([decision
-0004](docs/decisions/0004-kek-provider.md)).
-
-Where a grant lives depends on the credential. A static bearer client's grant stays in
-`AUTH_TOKENS`; an OAuth client's grant is a row in `oauth_client` that the consent screen writes and
-that changes without a restart. Neither authority copies into the other, which is the whole point:
-[decision 0003](docs/decisions/0003-grants-in-the-database.md).
-
----
 
 ## Operating it
 
-`bin/lumberroom.mjs` is dependency-free Node and its usage block is the authoritative list. What it
-carries today:
+`bin/lumberroom.mjs` is dependency-free Node and its usage block is the authoritative list.
 
 ```bash
 lumberroom doctor                       # connectivity, auth, readiness, tool list
-lumberroom login                        # OAuth 2.1 + PKCE through a loopback listener
-lumberroom clients                      # registered OAuth clients, how each one registered, consent state
-lumberroom bootstrap                    # the digest as markdown
+lumberroom clients                      # registered OAuth clients, how each registered, consent state
 lumberroom search "how do we deploy"
 lumberroom write "..." --namespace user:me --tags preference
-lumberroom forget <id> [--dry-run]      # or --query "..." for the near-duplicates of a phrase
 lumberroom review [--stale] [--conflicts] [--registry]
-lumberroom supersede <old-id> <new-id>
 lumberroom registry get|set|alias ...
 lumberroom stats [--hours 168] [--by-client]
 lumberroom export --obsidian ~/vault
-lumberroom eval [--fixture client/eval-fixture.example.jsonl]
-lumberroom seal <key> --namespace credentials:aws   # client-side AES-256-GCM, then lumberroom unseal
-lumberroom recall                       # the HNSW recall monitor
+lumberroom seal <key> --namespace credentials:aws
 lumberroom tools
 ```
 
-Three subcommands live in the Rust binary instead, because argon2 and CSPRNG bytes are not things a
-shell script should improvise:
+The console at `/console` carries the decisions a person has to make: what each client may reach, the
+ingest queue, the cleanup queue, aliases, and writing or correcting a fact by hand. It runs only in
+oauth mode, because it checks the owner password. [docs/managing.md](docs/managing.md) is the guide.
 
-```bash
-docker compose run --rm -T server lumberroom-server hash-password   # stdin in, one argon2id PHC string out
-docker compose run --rm -T server lumberroom-server generate-kek    # a fresh key-encryption key, hex, on stdout
-docker compose exec -T server lumberroom-server verify-kek          # does the configured key match this store
-```
+`lumberroom stats` answers the question that matters: how often does a model call these tools on its
+own? Every call writes a row, refused ones included, and `unprompted` separates the model deciding
+from you or the hook forcing it.
 
-`lumberroom hash-password` in the Node CLI prints that docker invocation rather than hashing anything
-itself. Revoking an OAuth client has no subcommand on either side yet: `lumberroom clients` lists them,
-and revocation is one `UPDATE` in psql. [DEPLOY.md](DEPLOY.md) carries the statement.
-
-`lumberroom stats` answers the question that matters: how often does a model call these tools on its own?
-Every tool call writes a `tool_calls` row, including a refused one, and `unprompted` separates the
-model deciding from the hook or you forcing it. Calls arriving without an `X-Memory-Invocation`
-header count as model-initiated; `lumberroom` and the SessionStart hook always send one. `--by-client`
-splits the same window per credential and adds the write-to-read ratio. Example output:
-
-```
-window: last 1h
-totals: 34 calls, 0 failed, unprompted 9 (0.265)
-  memory_search        14 calls     4 unprompted  p50 44ms  p95 238ms  [claude-code-mac]
-  context_bootstrap    12 calls     1 unprompted  p50  4ms  p95  30ms  [claude-code-mac]
-  memory_write          7 calls     4 unprompted  p50 184ms p95 197ms  [claude-code-mac]
-```
-
-Those latencies were observed on an early all-open store holding tens of rows. A store holding private rows pays a
-ciphertext round trip on any read that returns one and a sealed-count query for a client whose
-ceiling reaches `sealed`, and neither has been measured.
-
-Health endpoints: `/healthz` needs no credentials, `/readyz` reports the embedder and checks that
-the schema dimension matches the configured one, `/statsz` needs a token. `/admin/whoami` answers
-what the credential you present resolves to, from the code path that enforces it, which is the fast
-way to settle an argument about a grant.
-
----
+Health endpoints: `/healthz` needs no credentials, `/readyz` reports the embedder and checks the
+schema dimension against the configured one, `/statsz` needs a token, and `/admin/whoami` answers
+what the credential you present resolves to from the code path that enforces it.
 
 ## Development
 
 ```bash
 cp .env.example .env                     # then set POSTGRES_PASSWORD
 docker compose up -d db                  # Postgres 16 + pgvector on 127.0.0.1:5432
-
-# The build needs g++ (ONNX Runtime links libstdc++) and OpenSSL headers. This image has both.
 docker build -t lumberroom-builder -f Dockerfile.builder .
-
-# -j 1 is not optional: linking the lib-test and integration binaries at the same time gets the
-# linker OOM-killed in the container, and it reads as a compile error rather than a memory limit.
 ./scripts/cargo.sh test -j 1
-./scripts/cargo.sh test -j 1 -p lumberroom
 ```
 
-The test suite needs no `AUTH_TOKENS` in `.env`: each test sets the credentials it needs in
-process. Fill that variable in when you want to run the server rather than the suite. The
-first image build downloads the 209MB of bge-base-en-v1.5 weights from huggingface.co, into a
-BuildKit cache mount that later builds copy from, and the release image carries them at `/models`,
-which is where `MODEL_CACHE_DIR` points.
+`-j 1` is not optional: linking the lib-test and integration binaries at the same time gets the
+linker OOM-killed in the container, and it reads as a compile error rather than a memory limit. The
+suite runs against a real Postgres in its own database with the hash embedder, and it skips rather
+than fails when none is reachable, so read the count rather than the exit code.
+[CONTRIBUTING.md](CONTRIBUTING.md) carries the rest, and [docs/traps.md](docs/traps.md) carries what
+has already cost time.
 
-Starting the server itself needs the key-encryption key in place first, since `.env.example` ships
-`KEK_PROVIDER=file`: the three commands are in that file under `KEK_PROVIDER`, or run
-`./deploy/install.sh` and let it do them. The test suite needs none of it: it sets its own fixed
-key in the environment and truncates `kek_state` with the rows it describes.
-
-`scripts/cargo.sh` runs cargo inside that builder image, joined to the compose network so the
-integration suite can reach the database. It uses its own `lumberroom_rust_test` database and the hash
-embedder, so it downloads nothing. It skips rather than fails when no database is
-reachable, and the tests serialise themselves on a Postgres advisory lock because each one
-truncates that database. The lock crosses processes, which an in-process mutex does not, and six
-test binaries are six processes. The last observed count was 863 in the server crate and 333 in the
-client, 0 failures, on 23 August 2026. It moves with every change, so run the suite and read the
-last line rather than trusting that figure.
-
----
+One rule carries the architecture: **domain and services never import from adapters.** A service asks
+a `MemoryRepository` for rows and does not know Postgres exists, which is what makes a second storage
+implementation possible. See [docs/architecture.md](docs/architecture.md).
 
 ## What is not built yet
 
 The OAuth wire protocol has a gate and the browser and mobile clients that depend on it have none,
 which is the largest gap. Beyond that:
 
-- **0.97 is still a guess.** Only the lower similarity band has a measurement behind it, the one
-  that moved it from 0.85 to 0.65 ([decision 0011](docs/decisions/0011-cleanup-proposes.md)).
-  `DEDUPE_THRESHOLD` was picked rather than calibrated, and the procedure in
-  [`docs/specs/phase-4-quality.md`](docs/specs/phase-4-quality.md) §2 is what would settle it. A
-  numeric guard is what makes being wrong about 0.97 survivable.
-- **Sealed items have no bulk listing.** `lumberroom seal` and `lumberroom unseal` work one key at a time.
-  Nothing enumerates what is stored, so there is no way to answer "what have I sealed" short of SQL.
-- **The cleanup queue has no `unreject`.** A cluster rejected because the code that proposed it was
-  wrong blocks its own replacement, and the row has to be deleted by hand.
+- **0.97 is still a guess.** Only the lower similarity band has a measurement behind it.
+  `DEDUPE_THRESHOLD` was picked rather than calibrated, and
+  [`docs/specs/phase-4-quality.md`](docs/specs/phase-4-quality.md) §2 is the procedure that would
+  settle it. A numeric guard is what makes being wrong about it survivable.
+- **Sealed items have no bulk listing.** `lumberroom seal` and `unseal` work one key at a time, and
+  nothing enumerates what is stored.
 - **RFC 8707 audience binding is not enforced on the opaque token path.** The token endpoint records
-  the resource a client asked for, and validation reads it without comparing it. A token minted for
-  this server is accepted by this server, which is the only deployment there is, but the check the
-  RFC asks for is absent.
-- **Client registration has no rate limit.** Dynamic registration is open by design and a
-  registered client holds nothing until the owner consents, so the cost of abuse is rows in
-  `oauth_client` that nothing purges.
-- **A grant change leaves no audit row.** Consent overwrites the profile in place, so there is no
-  record that a client used to be `narrow` and is now `full`.
-- **KEK rotation and escrow.** `KEK_ID` is written on every row so a rotation is distinguishable
-  from data loss, and nothing rewraps. Escrow is an open question, and losing the key makes every
-  private row unreadable, backups included.
+  the resource a client asked for and validation reads it without comparing it.
+- **Client registration has no rate limit.** Registration is open by design and a registered client
+  holds nothing until the owner consents, so the cost is rows that nothing purges.
+- **A grant change leaves no audit row.** The console and the consent screen both overwrite the grant
+  in place, so there is no record that a client used to hold less.
+- **KEK rotation and escrow.** `KEK_ID` is written on every row so a rotation is distinguishable from
+  data loss, and nothing rewraps.
 
 Which gates cover what, and which are still open: [VERIFY.md](VERIFY.md).
-
----
 
 ## Layout
 
@@ -430,7 +215,7 @@ src/authserver/     the built-in OAuth 2.1 server: routes, consent pages, sessio
 src/adapters/       postgres (the only module with SQL), embedding, auth
 src/mcp/            tool registration and descriptions; the tool list is per credential
 src/http/           axum routes, the admin surface, the well-known documents; MCP mounts at /mcp
-src/console/        the console at /console: OAuth clients, aliases, the cleanup queue
+src/console/        the console at /console: reading, write, registry, aliases, queues, clients
 migrations/         SQL, applied at boot by sqlx
 tests/              integration suite, against a real database
 crates/lumberroom/    the Rust client: transcript ingestion and the cleanup daemon
@@ -439,53 +224,6 @@ client/             wire-mac.sh, the SessionStart hook, the OpenWebUI filter, th
 deploy/             install.sh, Caddyfile, backup.sh, oauth.md, Oracle and Logto notes
 scripts/            cargo.sh, lumberroom.sh, the acceptance gates and the eval harness
 ```
-
-Two clients, and they reach you differently. `bin/lumberroom.mjs` runs anywhere node does and needs
-nothing installed: `client/wire-mac.sh` installs it to `~/.local/bin/lumberroom`, and that is the `lumberroom`
-on your PATH. The Rust client in
-`crates/lumberroom` is built for Linux inside the builder image and never lands on the host PATH at
-all: `./scripts/lumberroom.sh` mounts the release binary into a container, mounts your transcript
-directories at their real host paths, and reads the ingest credential out of `AUTH_TOKENS` so it
-stays out of your shell history. A cross-platform release of that binary is still owed.
-
-One rule carries the architecture: **domain and services never import from adapters.** A service
-asks a `MemoryRepository` for rows and does not know Postgres exists, which is what makes a second
-storage implementation possible. See [docs/architecture.md](docs/architecture.md).
-
-## Documentation
-
-| | |
-|---|---|
-| [docs/architecture.md](docs/architecture.md) | Start here: the ports-and-adapters shape and where each part lives |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Building, testing, the acceptance gates, and what a pull request needs |
-| [docs/traps.md](docs/traps.md) | Findings that cost real time, and what to do instead |
-| [SECURITY.md](SECURITY.md) | Supported versions and how to report a vulnerability |
-| [DEPLOY.md](DEPLOY.md) | Runbook: the two deploy paths, the KEK, backups, troubleshooting |
-| [deploy/oauth.md](deploy/oauth.md) | The OAuth production path, per surface, with the consent screen |
-| [DECISIONS.md](DECISIONS.md) | Phase 1 decisions, the measurements behind them, departures from the PRD |
-| [VERIFY.md](VERIFY.md) | The gates: what each checks, how to run it, and what a pass looks like |
-| [docs/prd/](docs/prd/) | The system PRD and the Phase 1 PRD |
-| [docs/specs/](docs/specs/) | Phase specifications: surfaces, policy, quality, ingestion, valid time |
-| [docs/decisions/](docs/decisions/) | Numbered records of choices that shape the build |
-| [docs/research/](docs/research/) | Findings the specs are built on |
-| [docs/design/](docs/design/) | The console: information architecture, spec, and the design system it ships with |
-| [docs/benchmarks.md](docs/benchmarks.md) | Every retrieval figure, with the run that produced it |
-| [docs/permissions.md](docs/permissions.md) | Every grant field, and which tools each capability opens |
-
-## Granting a client
-
-`AUTH_TOKENS` decides what each client may read, write and do.
-[`docs/permissions.md`](docs/permissions.md) covers every field, the two axes a namespace grant
-carries, which tools each capability opens, and the one asymmetry that catches people: an
-unrestricted `read` implies `sealedCapable` and never implies `mayDelete`, `mayIngest` or
-`mayReadHistory`.
-
-## Keeping the store clean
-
-A periodic pass proposes duplicates, contradictions and stale rows into a queue you decide. It never
-retires a row on its own. [`docs/cleanup-schedule.md`](docs/cleanup-schedule.md) covers the two
-cadences and how to install them; [decision 0011](docs/decisions/0011-cleanup-proposes.md) covers
-why it proposes rather than acts.
 
 ## Licence
 

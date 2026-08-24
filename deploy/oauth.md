@@ -94,22 +94,28 @@ by no route at all; `.env.example` carries the two ways to change that.
 A grant made here takes effect immediately and survives a restart without editing `.env`. This
 is the fix for the Phase 1 problem where every grant change needed a redeploy.
 
-## 4. Revoking a client
+## 4. Revoking or changing a client's access
+
+Open `/console/clients` in a browser, signed in as the owner. Every live client's card carries a
+Revoke button, one click and no confirmation, and a "Change access" editor beside it that writes a
+narrower or wider grant without revoking the client at all. A tightened grant is often what you
+actually want: it keeps the client's existing token working while cutting what it can reach, rather
+than forcing it through registration and consent again. Both apply on the client's next call:
+nothing reconnects and no token is reissued. `docs/permissions.md` covers the editor itself, the
+scope picker and the advanced view.
 
 ```bash
 docker compose exec -T server lumberroom clients
-docker compose exec -T server lumberroom clients revoke <client_id>
 ```
 
-`lumberroom clients` lists every OAuth row: how it registered (`dcr` or `manual`), whether the owner has
-consented, and its current profile. The consent screen itself points here ("You can change or
-revoke this later with `lumberroom clients`"). Revoking kills the client and every access and refresh
-token it holds in one step: `oauth_token` and `oauth_refresh` both cascade off
-`oauth_client(client_id)`, so there is no second table to remember to clear. An in-flight access
-token is checked against `oauth_token.revoked_at` on every request, so revocation is effective on
-the next request, not on next token expiry.
+`lumberroom clients` lists every OAuth row: how it registered (`dcr` or `manual`), whether the owner
+has consented, and its current profile. It does not revoke or change anything; it is how you find
+the `client_id` for a card you cannot reach in the console, or when scripting from a terminal with
+no browser. The consent screen itself points here ("You can change or revoke this later with
+`lumberroom clients`"), which is accurate for finding the client and stops short of the action
+itself.
 
-If that subcommand is not built yet on the version you are running, the same effect by hand:
+Without browser access to `/console`, revoking by hand is a last resort:
 
 ```bash
 docker compose exec -T db psql -U lumberroom -d lumberroom -c \
@@ -117,6 +123,11 @@ docker compose exec -T db psql -U lumberroom -d lumberroom -c \
 docker compose exec -T db psql -U lumberroom -d lumberroom -c \
   "UPDATE oauth_client SET revoked_at = now() WHERE client_id = '<client_id>' AND revoked_at IS NULL;"
 ```
+
+Revoking kills the client and every access and refresh token it holds in one step:
+`oauth_token` and `oauth_refresh` both cascade off `oauth_client(client_id)`, so there is no second
+table to remember to clear. An in-flight access token is checked against `oauth_token.revoked_at` on
+every request, so revocation is effective on the next request, not on next token expiry.
 
 `/admin/whoami`, called with any credential (a static token or an OAuth access token, same as
 `/mcp`), answers what that credential currently resolves to, client and read/write lists and the

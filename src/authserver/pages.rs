@@ -222,7 +222,7 @@ every surface, until you revoke it.</p>\
 <fieldset><legend>What it may reach</legend>{choices}</fieldset>\
 <p class=\"actions\"><button type=\"submit\" name=\"action\" value=\"allow\">Allow</button>\
 <button type=\"submit\" name=\"action\" value=\"deny\" class=\"secondary\">Deny</button></p></form>\
-<p class=\"foot\">You can change or revoke this later with <code>lumberroom clients</code>.</p>",
+<p class=\"foot\">Change or revoke this at <code>/console/clients</code> whenever you like. <code>lumberroom clients</code> lists what is registered.</p>",
             client = escape(client.client_name),
             origin = origin,
             again = again,

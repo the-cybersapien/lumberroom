@@ -5,6 +5,10 @@ and `CONTRIBUTING.md` at the repository root, then `docs/decisions/README.md`.
 
 ## Start here
 
+- [`faq.md`](faq.md): the questions people actually ask, with short answers and a pointer to the
+  long one.
+- [`managing.md`](managing.md): running a live store. Approving a client, changing what one may
+  reach, deciding the two queues, correcting a fact.
 - [`traps.md`](traps.md): findings that cost real time to get, with the evidence and what to do
   instead.
 - [`architecture.md`](architecture.md): the ports-and-adapters shape the service should keep, and
@@ -57,6 +61,10 @@ decision, the context that forced it, what lost and why, and the reversal condit
   what it replaces.
 - [`decisions/0011-cleanup-proposes.md`](decisions/0011-cleanup-proposes.md): the cleanup pass
   proposes, and the model only ever sees open rows.
+- [`decisions/0012-cli-distribution.md`](decisions/0012-cli-distribution.md): four raw binaries off
+  a git tag, built from two places.
+- [`decisions/0013-delete-splices-the-chain.md`](decisions/0013-delete-splices-the-chain.md): a
+  delete splices the supersession chain, and revives a predecessor only under the caller's grant.
 
 ## Product requirements
 
