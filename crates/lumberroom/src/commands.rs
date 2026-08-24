@@ -1168,7 +1168,7 @@ fn eval_lines(s: &EvalScore) -> Vec<String> {
 }
 
 /// `encodeURIComponent` for a path segment. Ids are UUIDs, so this is a guard rather than a need.
-fn urlencode(s: &str) -> String {
+pub(crate) fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {

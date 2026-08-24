@@ -1,6 +1,13 @@
 # Lumberroom. One command on any Docker host:
 #   ./deploy/install.sh
 #
+# `server` and `cleanup` pull their published ghcr.io image by default and fall back to building
+# from this repo's Dockerfile when the pull fails. install.sh drives that; a plain `docker compose
+# up -d` falls back to `build:` on its own whenever the pinned tag is not present locally, which is
+# what keeps a development checkout building from source with no flag needed. Override the image
+# with LUMBERROOM_SERVER_IMAGE / LUMBERROOM_CLIENT_IMAGE, or force a build with
+# `deploy/install.sh --build-local`.
+#
 # Profiles:
 #   (default)  postgres + mcp server, reachable on 127.0.0.1:8787
 #   tls        adds Caddy on 80/443 with automatic certificates
@@ -76,7 +83,14 @@ services:
         LUMBERROOM_BUILD_SHA: ${LUMBERROOM_BUILD_SHA:-unknown}
         LUMBERROOM_BUILD_TAG: ${LUMBERROOM_BUILD_TAG:-unknown}
         LUMBERROOM_BUILT_AT: ${LUMBERROOM_BUILT_AT:-unknown}
-    image: lumberroom-server:0.1.0
+    # Pinned to a tagged release, never `latest`: .github/workflows/publish-docker.yml pushes this
+    # exact tag to ghcr.io on every `v*` push, so a version that has not been released yet has no
+    # manifest to pull, which is expected and is what sends install.sh to the `build:` block above
+    # instead. Override to move versions or to point at a private registry; `deploy/install.sh
+    # --build-local` skips the pull and always uses `build:`. A missing local image with `build:`
+    # present is what makes a plain `docker compose up -d` in a development checkout build from
+    # source the way it always has, with no flag needed.
+    image: ${LUMBERROOM_SERVER_IMAGE:-ghcr.io/the-cybersapien/lumberroom-server:0.1.0}
     restart: unless-stopped
     depends_on:
       db:
@@ -189,7 +203,9 @@ services:
         LUMBERROOM_BUILD_SHA: ${LUMBERROOM_BUILD_SHA:-unknown}
         LUMBERROOM_BUILD_TAG: ${LUMBERROOM_BUILD_TAG:-unknown}
         LUMBERROOM_BUILT_AT: ${LUMBERROOM_BUILT_AT:-unknown}
-    image: lumberroom:0.1.0
+    # Same pull-then-build-fallback shape as the server image above, its own variable because the
+    # two publish on the same tag but are not the same image.
+    image: ${LUMBERROOM_CLIENT_IMAGE:-ghcr.io/the-cybersapien/lumberroom:0.1.0}
     restart: unless-stopped
     depends_on:
       server:

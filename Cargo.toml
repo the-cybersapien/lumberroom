@@ -15,6 +15,7 @@ description = "Durable memory control plane. MCP server over Postgres and pgvect
 license = "Apache-2.0"
 repository = "https://github.com/the-cybersapien/lumberroom"
 homepage = "https://lumberroom.cloud"
+readme = "README.md"
 keywords = ["mcp", "memory", "postgres", "pgvector", "llm"]
 categories = ["database", "asynchronous"]
 # The server is a deployed binary, not a library anyone pulls from crates.io.

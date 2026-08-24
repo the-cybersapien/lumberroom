@@ -7,6 +7,7 @@ description = "Client for a lumberroom memory server. Runs on the machine holdin
 license = "Apache-2.0"
 repository = "https://github.com/the-cybersapien/lumberroom"
 homepage = "https://lumberroom.cloud"
+readme = "README.md"
 keywords = ["mcp", "memory", "cli", "lumberroom"]
 categories = ["command-line-utilities"]
 
@@ -38,6 +39,18 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # PKCE S256 is a SHA-256 over the verifier, base64url-encoded with no padding.
 sha2 = "0.10"
 base64 = "0.22"
+# `seal` and `unseal`. The key never leaves this machine, so the crypto lives here rather than
+# behind the server: aes-gcm for the payload, hmac over the name so the server cannot enumerate a
+# namespace by guessing it, hex because the lookup name travels in a query parameter.
+#
+# aes-gcm tracks the server's version so this workspace's one lockfile carries a single AES stack.
+# The crate version cannot affect interoperability: AES-256-GCM's output is fixed by the standard,
+# and what the two clients actually have to agree on is the framing, which `sealed.rs` pins with a
+# blob the node client produced. hmac stays on 0.12 because it is the half of a matched pair with
+# this crate's sha2 0.10, which PKCE uses.
+aes-gcm = "0.11"
+hmac = "0.12"
+hex = "0.4"
 # CSPRNG bytes for the PKCE verifier and the OAuth state. getrandom rather than rand for the same
 # reason the server picked it: this is the only randomness here.
 getrandom = "0.3"

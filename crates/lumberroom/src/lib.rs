@@ -17,6 +17,7 @@ pub mod eval;
 pub mod format;
 pub mod ingest;
 pub mod oauth;
+pub mod sealed;
 pub mod wire;
 
 use std::io::Write;
@@ -46,7 +47,8 @@ pub fn prompt(text: &str) {
 
 const COMMANDS: &str =
     "doctor, whoami, login, clients, bootstrap, search, write, forget, review, supersede, \
-registry, stats, export, ingest, cleanup, history, alias, eval-longmemeval";
+registry, stats, export, ingest, cleanup, history, alias, seal, unseal, eval-longmemeval, \
+version, help";
 
 /// Parse, dispatch, and turn a failure into the exit code the scripts read.
 pub async fn run(argv: Vec<String>) -> i32 {
@@ -69,7 +71,13 @@ pub async fn run(argv: Vec<String>) -> i32 {
         Err(e) => return fail(e),
     };
 
-    let command = args.positional_at(0).unwrap_or("doctor").to_string();
+    let command = if args.present("version") {
+        "version".to_string()
+    } else if args.present("help") {
+        "help".to_string()
+    } else {
+        args.positional_at(0).unwrap_or("doctor").to_string()
+    };
     let result = dispatch(&client, &args, &command).await;
     match result {
         Ok(()) => 0,
@@ -84,9 +92,7 @@ async fn dispatch(client: &Client, args: &Args, command: &str) -> Result<()> {
         "login" => oauth::login(client, args).await,
         "clients" => commands::clients(client, args).await,
         "bootstrap" => {
-            let cwd = std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default();
+            let cwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
             let project_env = std::env::var("CLAUDE_PROJECT_DIR").ok().filter(|s| !s.is_empty());
             commands::bootstrap(client, args, &cwd, project_env).await
         }
@@ -111,10 +117,16 @@ async fn dispatch(client: &Client, args: &Args, command: &str) -> Result<()> {
             ingest::dispatch(client, args, &sub).await
         }
         // Named rather than silently unsupported: the node CLI still has them and this says so.
-        "seal" | "unseal" => Err(err(format!(
-            "{command} is not in the Rust client yet, because the sealed-item key never leaves the client \
-and that crypto lands in the next phase. Use: node bin/lumberroom.mjs {command} ..."
-        ))),
+        "seal" => sealed::seal(client, args, &ProcessEnv).await,
+        "unseal" => sealed::unseal(client, args, &ProcessEnv).await,
+        "version" => {
+            out(&format!("lumberroom {}", env!("CARGO_PKG_VERSION")));
+            Ok(())
+        }
+        "help" => {
+            out(&format!("usage: lumberroom <command> [options]\n\ncommands: {COMMANDS}"));
+            Ok(())
+        }
         "recall" | "tools" | "hash-password" => Err(err(format!(
             "{command} is not in the Rust client. Use: node bin/lumberroom.mjs {command} ..."
         ))),

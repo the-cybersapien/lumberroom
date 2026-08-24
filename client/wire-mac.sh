@@ -7,7 +7,8 @@
 #
 # It does four things, each idempotent:
 #   1. writes ~/.config/lumberroom/config.json (mode 600) so lumberroom knows the endpoint
-#   2. installs lumberroom and the SessionStart hook script under ~/.local/bin and ~/.claude/hooks
+#   2. installs lumberroom (one already on PATH, else the released binary) and the SessionStart
+#      hook script under ~/.local/bin and ~/.claude/hooks
 #   3. registers the MCP server with Claude Code and adds the SessionStart hook to settings.json
 #   4. appends the memory rules to ~/.claude/CLAUDE.md between managed markers
 #
@@ -34,6 +35,8 @@ CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 BIN_DIR="${LUMBERROOM_BIN_DIR:-$HOME/.local/bin}"
 CONFIG_DIR="${LUMBERROOM_CONFIG_DIR:-$HOME/.config/lumberroom}"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RELEASE_REPO="${LUMBERROOM_RELEASE_REPO:-https://github.com/the-cybersapien/lumberroom}"
+RELEASE_VERSION="${LUMBERROOM_RELEASE_VERSION:-0.1.0}"
 
 usage() {
   sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
@@ -142,10 +145,69 @@ JSON
 fi
 
 # ── 2. binaries ───────────────────────────────────────────────────────────────
+# Two ways to get a `lumberroom` binary onto this Mac: one already on PATH from Homebrew or a
+# manual install, or the released binary for this Mac's architecture.
+#
+# `bin/lumberroom.mjs` is not one of them. It was the prototype, it answers to the same command
+# name, and installing it as a fallback is how a machine ends up running something that looks like
+# lumberroom and is missing half of it. It stays in the repository because it is a client the
+# server cannot accidentally accommodate, and it has caught protocol bugs the Rust tests could not.
+# Nothing installs it.
+install_lumberroom_binary() {
+  if command -v lumberroom >/dev/null 2>&1; then
+    local existing
+    existing="$(command -v lumberroom)"
+    say "  found lumberroom on PATH: $existing"
+    if [ "$existing" != "$BIN_DIR/lumberroom" ]; then
+      run ln -sf "$existing" "$BIN_DIR/lumberroom"
+    fi
+    say "  chose: PATH ($existing)"
+    return 0
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    say "  curl not found; skipping the released binary"
+    return 1
+  fi
+  local arch target archive url tmp_dir
+  arch="$(uname -m)"
+  case "$arch" in
+    arm64|aarch64) target="aarch64-apple-darwin" ;;
+    x86_64) target="x86_64-apple-darwin" ;;
+    *) say "  no released binary for architecture $arch"; return 1 ;;
+  esac
+  archive="lumberroom-${RELEASE_VERSION}-${target}.tar.gz"
+  url="${RELEASE_REPO}/releases/download/v${RELEASE_VERSION}/${archive}"
+  if [ "$DRY_RUN" = 1 ]; then
+    say "  would download $url and install it to $BIN_DIR/lumberroom"
+    say "  chose: released binary (dry run, not fetched)"
+    return 0
+  fi
+  tmp_dir="$(mktemp -d)"
+  if curl -fsSL "$url" -o "$tmp_dir/$archive" 2>/dev/null \
+    && tar -xzf "$tmp_dir/$archive" -C "$tmp_dir" lumberroom 2>/dev/null; then
+    install -m 755 "$tmp_dir/lumberroom" "$BIN_DIR/lumberroom"
+    rm -rf "$tmp_dir"
+    say "  downloaded $url"
+    say "  chose: released binary"
+    return 0
+  fi
+  rm -rf "$tmp_dir"
+  say "  release $url not reachable"
+  return 1
+}
+
 say ""
 say "2/4 lumberroom -> $BIN_DIR/lumberroom, hook -> $CLAUDE_DIR/hooks/lumberroom-bootstrap.sh"
 run mkdir -p "$BIN_DIR" "$CLAUDE_DIR/hooks"
-run install -m 755 "$REPO_DIR/bin/lumberroom.mjs" "$BIN_DIR/lumberroom"
+if ! install_lumberroom_binary; then
+  say ""
+  say "  no lumberroom binary is available on this machine. Get one, then run this again:"
+  say "    brew install the-cybersapien/lumberroom/lumberroom"
+  say "    cargo install lumberroom"
+  say "    or download it from ${RELEASE_REPO}/releases"
+  exit 1
+fi
 run install -m 755 "$REPO_DIR/client/lumberroom-bootstrap-hook.sh" "$CLAUDE_DIR/hooks/lumberroom-bootstrap.sh"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
