@@ -1,9 +1,28 @@
 # Ingesting transcripts
 
-**Status at time of writing: implemented, not run.** `crates/lumberroom/src/ingest/` and the server's
-`/admin/ingest` routes exist against the design in `docs/specs/phase-6-ingestion.md`. None of it has
-been run end to end against a real transcript directory. The gate that settles that is
-`scripts/ingest-test.sh` against a live server, plus the first real run below, watched.
+**Status: run once, end to end, against a live store on 24 August 2026.** `crates/lumberroom/src/ingest/`
+and the server's `/admin/ingest` routes implement the design in `docs/specs/phase-6-ingestion.md`.
+The first real run went through Mode A: `plan` walked 40 of 704 files and cut 107 spans into 15
+chunks, subagents extracted 99 candidate facts, `submit --no-auto` queued all 99 and wrote nothing,
+and the owner cleared the queue at 60 approved and 39 rejected.
+
+Four things that run settled, and one it did not.
+
+The credential tripwire refused 3 spans before any extractor read them, 2 on high entropy and 1 on a
+GitHub token. The `--max-files` cap fired and printed `COVERAGE IS PARTIAL` rather than leaving a
+counter to be noticed. Three chunks answered `<no-facts/>`, which is the expected answer for a chunk
+of ordinary work. Nothing reached the store without a keystroke.
+
+What it did not settle is extraction quality. Of the 99 candidates, 17 were plainly wrong when
+checked against the repository: a release tag that does not exist, a repository that has not been
+created, a test asserting on fourteen identifiers reported as nineteen prose strings. Every one read
+as confident and specific. **A queue is not a formality.** Reading it is the only thing standing
+between a transcript and a store full of facts that sound right.
+
+Two shapes worth knowing before a wider run. Only 7 of 5,835 entries were `owner_typed`, so nearly
+every candidate arrives as `inferred` with no quote and `auto` stays false throughout. And `submit`
+collapses exact duplicates on the content hash but not near-duplicates, so chunks that overlap by
+subject queue the same fact several times; the dedupe bands catch them at approval instead.
 
 Read `docs/ingestion-providers.md` for how a provider is reached, what `reasoning` and
 `json_mode` do, and which model behaviours were measured rather than assumed.
