@@ -73,7 +73,12 @@ jobs:
       - name: Record the digest
         run: |
           digest="${{ steps.build.outputs.digest }}"
-          slug="$(echo '${{ matrix.image }}-${{ matrix.platform }}' | tr '/:' '--')"
+          # Two dashes between the image and the platform. One dash collides: `lumberroom` is a
+          # prefix of `lumberroom-server`, so the cli's glob matched the server's artifacts too and
+          # the merge asked the cli repository for a digest only the server repository has.
+          image_slug="$(echo '${{ matrix.image }}' | tr '/:' '--')"
+          platform_slug="$(echo '${{ matrix.platform }}' | tr '/' '-')"
+          slug="${image_slug}--${platform_slug}"
           mkdir -p digests
           # The marker file is named for the digest with `sha256:` stripped. An artifact path may
           # not contain a colon, and upload-artifact fails on it after the image has already been
@@ -126,14 +131,23 @@ jobs:
         run: |
           slug="$(echo '${{ matrix.image }}' | tr '/:' '--')"
           refs=""
-          for dir in digests/digest-"$slug"-*; do
+          found=0
+          for dir in digests/digest-"$slug"--*; do
             [ -d "$dir" ] || continue
             for d in "$dir"/*; do
               refs="$refs ${{ matrix.image }}@sha256:$(basename "$d")"
+              found=$((found + 1))
             done
           done
-          if [ -z "$refs" ]; then
-            echo "no digests found for ${{ matrix.image }}" >&2
+
+          # One digest per platform, and the matrix builds two. Anything else means the glob picked
+          # up an artifact belonging to another image, which is how rc.3 failed: the reference
+          # resolves in the repository it came from and nowhere else, and the error names a digest
+          # rather than the pattern that collected it.
+          expected=2
+          if [ "$found" -ne "$expected" ]; then
+            echo "collected $found digests for ${{ matrix.image }}, expected $expected" >&2
+            echo "refs:$refs" >&2
             exit 1
           fi
           # shellcheck disable=SC2086
