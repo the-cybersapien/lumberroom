@@ -38,7 +38,7 @@ surfaces that need a browser, with static bearer tokens honoured beside it whate
 Envelope encryption for `private`, client-side encryption for `sealed`. A console at `/console` for
 the decisions a person has to make.
 
-## Install it
+## Install the server
 
 ```bash
 git clone https://github.com/the-cybersapien/lumberroom.git && cd lumberroom
@@ -47,16 +47,61 @@ sudo ./deploy/install.sh
 
 That is token mode on loopback: the server binds `127.0.0.1:8787`, opens no public port, and prints
 the client token with the command to run on your Mac. Add `--domain` and `--auth-mode oauth` when a
-browser has to reach it.
+browser has to reach it. The installer pulls
+`ghcr.io/the-cybersapien/lumberroom-server:0.1.0` and falls back to building from this tree when the
+pull fails; `--build-local` skips the pull. It pins a version rather than tracking `latest`, because
+a memory store that upgrades itself while you sleep is not a feature.
 
-```bash
-./client/wire-mac.sh --url http://127.0.0.1:8787 --token <token>
-```
+## Install the client
 
-The client on its own, for a machine that talks to a server someone else runs:
+The client runs on the machine holding your transcripts and your credentials, and talks to a server
+you host. Four ways in, in the order most people want them.
 
 ```bash
 brew install the-cybersapien/lumberroom/lumberroom
+```
+
+```bash
+cargo install lumberroom
+```
+
+A binary, with no package manager. Four targets, macOS and Linux on arm64 and x86_64:
+
+```bash
+tag=v0.1.0; target=aarch64-apple-darwin      # or x86_64-apple-darwin,
+                                             # aarch64-unknown-linux-musl, x86_64-unknown-linux-musl
+base=https://github.com/the-cybersapien/lumberroom/releases/download/$tag
+curl -fsSLO "$base/lumberroom-${tag#v}-$target.tar.gz"
+curl -fsSL "$base/SHA256SUMS" | grep "$target.tar.gz" | shasum -a 256 -c -
+tar -xzf "lumberroom-${tag#v}-$target.tar.gz" && install -m 755 lumberroom ~/.local/bin/
+```
+
+Check the archive before you run what came out of it. Every release carries one `SHA256SUMS` over
+every asset, written by the job that collected them all.
+
+On a machine where `apt` or `dnf` is how software arrives, the release also carries a `.deb` and an
+`.rpm` per architecture. Both hold the musl binary, statically linked, so neither declares a runtime
+dependency:
+
+```bash
+sudo dpkg -i lumberroom_0.1.0-1_amd64.deb     # or lumberroom_0.1.0-1_arm64.deb
+sudo rpm -i lumberroom-0.1.0-1.x86_64.rpm     # or lumberroom-0.1.0-1.aarch64.rpm
+```
+
+Then point it at your server:
+
+```bash
+lumberroom doctor
+```
+
+`doctor` reports the endpoint, whether your credential is accepted, and which tools it opens. It is
+the first command to run and the one to run when something is wrong.
+
+To wire a Mac into Claude Code, which installs the MCP server, the session hook and the CLAUDE.md
+rule in one pass:
+
+```bash
+./client/wire-mac.sh --url http://127.0.0.1:8787 --token <token>
 ```
 
 Then prove the loop, which states a fact in one session and recovers it in a fresh one:
