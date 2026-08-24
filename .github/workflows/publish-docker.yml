@@ -58,6 +58,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The build stamp /readyz reports and the OCI labels carry. Without it every published image
+      # answers `build_sha: unknown`, which is what v0.1.0-rc.4 did: the one field that says which
+      # build is running went blank the moment the image came from a registry rather than a local
+      # `docker compose build`, where docker-compose.yml passes these already.
+      - name: Stamp
+        id: stamp
+        run: |
+          {
+            echo "sha=$(echo '${{ github.sha }}' | cut -c1-7)"
+            echo "tag=${GITHUB_REF_NAME}"
+            echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
       # No tag here. A digest push per platform, collected by the merge job below, because two
       # runners pushing the same tag would each overwrite the other's manifest.
       - name: Build and push by digest
@@ -68,6 +81,10 @@ jobs:
           target: ${{ matrix.target }}
           platforms: ${{ matrix.platform }}
           push: true
+          build-args: |
+            LUMBERROOM_BUILD_SHA=${{ steps.stamp.outputs.sha }}
+            LUMBERROOM_BUILD_TAG=${{ steps.stamp.outputs.tag }}
+            LUMBERROOM_BUILT_AT=${{ steps.stamp.outputs.at }}
           outputs: type=image,name=${{ matrix.image }},push-by-digest=true,name-canonical=true
 
       - name: Record the digest
