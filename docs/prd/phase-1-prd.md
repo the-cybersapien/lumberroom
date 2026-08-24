@@ -1,4 +1,4 @@
-# PRD — Agent Memory Control Plane, Phase 1
+# PRD: Agent Memory Control Plane, Phase 1
 
 **Owner:** maintainer · **Date:** 2026-08-18 · **Status:** ready to build · **Scope:** Phase 1 only (walking skeleton, single-tenant, tier 0)
 
@@ -97,7 +97,7 @@ CREATE TABLE tool_calls (                          -- instrumentation
 Keep signatures stable; Phases 2–4 extend, don't rename.
 
 **`context_bootstrap(project?) → digest`**
-The "check memory first" primitive. Returns a compact digest: user profile facts, active project context, recent memory writes, registry summary. One call, cacheable. Must return under ~200ms — a slow bootstrap trains models to skip it. Tool description must state it runs before any substantive work.
+The "check memory first" primitive. Returns a compact digest: user profile facts, active project context, recent memory writes, registry summary. One call, cacheable. Must return under ~200ms: a slow bootstrap trains models to skip it. Tool description must state it runs before any substantive work.
 
 **`memory_search(query, namespaces?, limit?) → rows[]`**
 Embed the query, cosine search filtered by namespace. Default namespaces `['user:me', 'global']` plus the active project. Return content, tags, source_client, created_at.
@@ -110,7 +110,7 @@ Exact lookup. No fuzziness.
 
 ---
 
-## 6. Client wiring — Claude Code on the Mac
+## 6. Client wiring: Claude Code on the Mac
 
 1. Register the MCP server as a remote connector with OAuth against Logto.
 2. `SessionStart` hook calls `context_bootstrap` automatically. This is the one guaranteed-automatic read path.
@@ -121,7 +121,7 @@ Exact lookup. No fuzziness.
 
 ## 7. Instrumentation
 
-Every tool invocation writes one `tool_calls` row. The `unprompted` flag is the signal that matters — it separates "the model chose to call this" from "the hook or the user forced it." Without the disposable Phase 0 rig, this is how you read whether the loop works. Also log success/failure so a transport error can't masquerade as the model declining to write.
+Every tool invocation writes one `tool_calls` row. The `unprompted` flag is the signal that matters: it separates "the model chose to call this" from "the hook or the user forced it." Without the disposable Phase 0 rig, this is how you read whether the loop works. Also log success/failure so a transport error can't masquerade as the model declining to write.
 
 Weekly, eyeball: unprompted read rate, unprompted write rate, and whether any repeat got prevented. Numbers per client once more than one is wired.
 
@@ -133,7 +133,7 @@ Weekly, eyeball: unprompted read rate, unprompted write rate, and whether any re
 - Security list: 443 in, nothing else. SSH key-only.
 - Caddy auto-TLS, HSTS on.
 - Logto validates every MCP request; no unauthenticated path to the tools.
-- The real leak surface is grant logic — Phase 1 has one client so it's trivial, but write the token→client mapping so Phase 2 can add per-client namespace denials without a rewrite.
+- The real leak surface is grant logic. Phase 1 has one client so it's trivial, but write the token→client mapping so Phase 2 can add per-client namespace denials without a rewrite.
 - Backups daily incremental, local. Note for Phase 3: once encryption lands, backups must not carry the KEK alongside ciphertext.
 
 ---
@@ -145,7 +145,7 @@ Weekly, eyeball: unprompted read rate, unprompted write rate, and whether any re
 3. Caddy in front, TLS verified end to end.
 4. MCP server skeleton: token validation, Streamable HTTP, health check.
 5. Schema migration (section 4).
-6. Implement the four tools (section 5). Embeddings via bge-base on the box, or OpenAI `text-embedding-3-small` if you skip hosting the model — pick before writing the embedding column.
+6. Implement the four tools (section 5). Embeddings via bge-base on the box, or OpenAI `text-embedding-3-small` if you skip hosting the model. Pick before writing the embedding column.
 7. Wire Claude Code on the Mac (section 6).
 8. Instrumentation table + logging (section 7).
 9. Run the done-when test (section 1).

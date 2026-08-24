@@ -207,7 +207,8 @@ all checks passed
 A pass ends with `all checks passed` and exits 0. Read four lines of it before moving on: `readyz`
 must say `embedder_degraded: false` or every write lands as a hash vector that retrieves badly;
 `credential` must name the credential you meant; `whoami` is the grant the server will enforce; and
-`tools` is what your credential can see, which section 5 explains.
+`tools` is what your credential can see, which section 5 explains. This transcript predates
+`alias_list`: a bare grant today lists five tools, not four, and section 5 has the current count.
 
 ### lumberroom bootstrap
 
@@ -309,17 +310,13 @@ mean three different things, and `.env.example` carries the rule above `AUTH_TOK
 
 ### memory_forget is absent unless the grant carries mayDelete
 
-The MCP surface has five tools. `doctor` lists four:
-
-```
-tools:    context_bootstrap, memory_search, memory_write, registry_get
-```
-
-`memory_forget` is missing because the grant above sets no `mayDelete`, and `tools/list` filters it
-out per credential (`src/mcp/mod.rs`). Keeping it out of the list keeps the idea away from the model
-in the first place; the service refuses the call again if one arrives anyway. `.env.example` argues
-this is a decision rather than an omission: a model that can delete memories fails worse than one
-that hoards them.
+The MCP surface has ten tools (`src/mcp/capability.rs` is the exhaustive list). A bare grant like
+the one above sees five: `context_bootstrap`, `memory_search`, `memory_write`, `registry_get`,
+`alias_list`. `memory_forget` is missing because the grant sets no `mayDelete`, and `tools/list`
+filters it out per credential (`src/mcp/mod.rs`). Keeping it out of the list keeps the idea away
+from the model in the first place; the service refuses the call again if one arrives anyway.
+`.env.example` argues this is a decision rather than an omission: a model that can delete memories
+fails worse than one that hoards them.
 
 `lumberroom forget --query "..." --dry-run` will mislead you here. The dry run is client-side: the CLI
 searches, prints candidates and stops, so it succeeds under a credential that cannot delete

@@ -5,6 +5,13 @@ also composes a memory and supersedes one, so the three queue routes below are n
 write path. The argument holds unchanged, because both new routes call `services::write::run`, the
 same function the MCP tool calls, and carry the same session-bound CSRF token.
 
+Widened again since: `/console/cleanup` carries the same four routes, apply, reject, resolve and
+unreject, behind the same session and per-row CSRF token, deciding the cleanup queue the way this
+record decided the ingest one (decision 0011). `POST /console/clients/{id}/access` decides a
+client's grant the same way, under the same session guard. Neither route is covered by this record's
+own argument beyond that: both post through the service layer and carry no logic of their own, which
+is the property this record exists to establish.
+
 ## The decision
 
 `/console/queue` gained three POST routes: approve, reject and return to queue. Each runs the same

@@ -3,6 +3,12 @@
 Written 20 August 2026. Implementation plan for decision
 [`0008-valid-time`](../decisions/0008-valid-time.md), phase 1.
 
+**Since implemented, phase 2 included.** [Decision 0008](../decisions/0008-valid-time.md) now reads
+"Accepted, implemented, including the phase 2 this record deferred." Migration
+`20260821000015_backfill_occurred_at.sql` and later ones carry the schema this plan specifies, and
+`occurred_at` reaches every layer named below. What follows is the plan as it was written, before any
+of it had run; read it as the design record, not as the current state of the code.
+
 ## Status of the decision this implements
 
 `0008-valid-time.md` is headed "Accepted, phase 1 implemented". In this working tree the string

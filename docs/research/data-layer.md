@@ -1,13 +1,19 @@
-# Research — ORM, query builder, or neither
+# Research: ORM, query builder, or neither
 
-Commissioned to replace inline SQL in request handlers. Evaluated against the five query shapes this
-service actually runs, not against popularity.
+Commissioned to replace inline SQL in request handlers, when the server was still Node and
+TypeScript. [Decision 0001](../decisions/0001-rust-rewrite.md) moved the service to Rust and `sqlx`
+without revisiting this question; the query-shape analysis below stayed the deciding evidence even
+though its Node-specific recommendation, Kysely, no longer applies. `sqlx` without compile-time
+macros is the answer in the current tree, per the project's own architecture notes.
 
-**Recommendation: Kysely, a typed query builder, not an ORM. And leave the migration runner alone.**
+Evaluated against the five query shapes this service actually runs, not against popularity.
+
+**Recommendation, as written for the Node service: Kysely, a typed query builder, not an ORM. And
+leave the migration runner alone.**
 
 The brief asked for an ORM. The honest finding is that an entity ORM is the wrong tool for this
-particular service, and the reasoning is below rather than buried. The goal behind the instruction —
-get SQL out of handlers and into named, testable, typed functions — is served either way, and the
+particular service, and the reasoning is below rather than buried. The goal behind the instruction,
+get SQL out of handlers and into named, testable, typed functions, is served either way, and the
 first stage of the migration is identical under every outcome.
 
 ---
@@ -44,8 +50,8 @@ versioned upsert, a percentile aggregate, and soon a recursive traversal. **None
 object-graph operations,** and across all three entity ORMs every one of the five drops to a raw or
 minimally-typed escape hatch.
 
-So an ORM's fixed costs — Prisma's 78MB client and mandatory codegen step, TypeORM's reflection at
-initialisation, a migration system that wants to own the migration history — buy typed CRUD on the
+So an ORM's fixed costs (Prisma's 78MB client and mandatory codegen step, TypeORM's reflection at
+initialisation, a migration system that wants to own the migration history) buy typed CRUD on the
 roughly 30% of the surface that was never the maintainability problem.
 
 The stated goals are maintainability and a future storage swap. A query builder serves the first as
@@ -68,7 +74,7 @@ that would itself need replacing.
 Its pgvector support is thinner than Drizzle's on paper: the official `pgvector/kysely` package is
 six `sql`-wrapped distance helpers with no typed column. In practice this service touches vectors in
 exactly two places, the column definition and the `<=>` ordering, and the existing `toVector()` and
-`::vector` cast pattern ports unchanged. Grade it "official but thin," not missing — and note that
+`::vector` cast pattern ports unchanged. Grade it "official but thin," not missing. Note also that
 Drizzle's richer story is currently undermined by a bug generating HNSW index DDL without the
 operator class, which is exactly the index we use.
 
@@ -78,7 +84,7 @@ operator class, which is exactly the index we use.
 
 Kysely is pre-1.0 and raised its minimum Node version to 22 in May 2026, leaving no downgrade
 headroom. More substantially: **the two hardest queries stay mostly raw `sql` fragments under Kysely
-too.** The delta over a disciplined plain-`pg` repository layer is real but modest — roughly 40%
+too.** The delta over a disciplined plain-`pg` repository layer is real but modest, roughly 40%
 typed builder and 60% typed raw fragments, against 100% raw with hand-written interfaces.
 
 If appetite for another dependency is low, plain `pg` behind a repository layer is a legitimate
@@ -128,7 +134,7 @@ content, as a tag, as a search query, and as a registry key. Every table survive
 was stored verbatim as data, which is the correct outcome.
 
 **The real force in the argument is discipline, not mechanism**: nothing stops a future edit from
-concatenating a string. That is worth fixing, and an ORM is not the only way to fix it — nor a
+concatenating a string. That is worth fixing, and an ORM is not the only way to fix it, nor a
 complete one, since every ORM has a raw escape hatch with exactly this risk.
 
 `test/sql-safety.test.ts` makes it a build failure instead. It scans the whole source tree for
@@ -158,7 +164,7 @@ type at all. A different engine means rewriting the search, the digest and the i
 matter what sits on top.
 
 And the coverage cuts the wrong way. Of the eleven statements in the adapter, an entity ORM would
-express **five natively** — the plain inserts and single-row selects — and push the other six to raw
+express **five natively** (the plain inserts and single-row selects) and push the other six to raw
 SQL. **The six it cannot express are the six that carry the complexity**, so an ORM's typing and
 query-construction benefits apply precisely where they were never needed, and vanish precisely where
 they would have helped.
@@ -175,7 +181,7 @@ Postgres-shaped: `<=>`, HNSW, `tsvector`, `websearch_to_tsquery`, `json_build_ob
 `percentile_disc`, array types with GIN indexes. No tool here abstracts that; the entity ORMs fall
 back to the same raw Postgres SQL for the same queries.
 
-Portability comes from the repository seam in stage 1 — the fact that `search()` is a named function
+Portability comes from the repository seam in stage 1: the fact that `search()` is a named function
 with a typed signature that callers depend on, not the SQL string inside it. That seam is the same
 shape whether the inside is raw `pg` or a Kysely chain. **If a future storage swap is a real goal
 rather than a hedge, stage 1 is the lever, and the builder choice is not.**

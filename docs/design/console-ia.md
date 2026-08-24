@@ -1,4 +1,4 @@
-# Memory bank console — information architecture and flows
+# Memory bank console: information architecture and flows
 
 Design sprint, part one. Part two covers visual direction.
 
@@ -16,29 +16,29 @@ visualisation and the dashboard, all of which would otherwise arrive by reflex.
 
 ### Verdicts on the five candidate jobs
 
-**Acting on facts — keep, this is the core.** `lumberroom forget <id>` means holding a uuid in your head,
+**Acting on facts: keep, this is the core.** `lumberroom forget <id>` means holding a uuid in your head,
 so the CLI path is really "search, copy an id, delete, hope." Correcting is stronger still: a
 correction is a supersede, and a supersede needs the old text visible while you type the new one.
 That is a two-pane interaction and it is genuinely awkward in a terminal.
 
-**Managing policy — keep, and build it first, but not the part you would expect.** The value is not
+**Managing policy: keep, and build it first, but not the part you would expect.** The value is not
 the grant editor; editing two glob lists is not hard and `AUTH_TOKENS` is already an editor. The
 value is the **blast radius**. Today, "add `personal:*` to chatgpt's read list" is a change whose
 effect you cannot see. With the console it reads *"+412 facts become visible to chatgpt, 3 of them
 in personal:finance."* Nothing else can tell you that, because it requires running the proposed
 grant against the live store before committing it. This is the highest-value thing in the document.
 
-**Conflicts and staleness — keep, as a queue rather than a report.** `lumberroom review` is fine for one
+**Conflicts and staleness: keep, as a queue rather than a report.** `lumberroom review` is fine for one
 item and falls apart at thirty, because resolving a conflict is a side-by-side comparison followed
 by a fast keyboard verdict, repeated. That is email triage, and the terminal is worst at it.
 
-**Search — keep, and upgrade the justification.** As stated it is `lumberroom search` in a browser, which
+**Search: keep, and upgrade the justification.** As stated it is `lumberroom search` in a browser, which
 adds nothing. What it adds is the **client selector**: run this query *as chatgpt* and see what
 chatgpt actually gets back, filtered by its real grant, with a count of what was withheld. That is
-the interactive companion to `policy-test.sh` — the difference between a policy you asserted and one
+the interactive companion to `policy-test.sh`, the difference between a policy you asserted and one
 you have watched work.
 
-**Instrumentation — demote from a section to two lines, on the Clients screen.** `lumberroom stats` is a
+**Instrumentation: demote from a section to two lines, on the Clients screen.** `lumberroom stats` is a
 good table and a browser copy is a worse one. What the browser adds is adjacency: the counts sitting
 directly beneath the grant they belong to. "chatgpt may read `user:me` and `global`; chatgpt has read
 340 times and written zero times in fourteen days" is one thought, and it is the thought that decides
@@ -82,14 +82,14 @@ kind of thing a builder over-invests in. It gets a widget, not a screen.
 
 Three screens and one panel. That is the whole product.
 
-**Inbox** (landing) — the decision queue plus a one-line health strip.
-**Search** — semantic search with a client selector; also the recall-miss capture point.
-**Clients** — one row per client: what it may see, and what it actually does.
-**Fact panel** — opens from anywhere, carries provenance, history and the four actions.
+**Inbox** (landing): the decision queue plus a one-line health strip.
+**Search**: semantic search with a client selector; also the recall-miss capture point.
+**Clients**: one row per client: what it may see, and what it actually does.
+**Fact panel**: opens from anywhere, carries provenance, history and the four actions.
 Deep-linkable by id so `lumberroom` can print a URL.
 
 No sidebar. Three items in a top bar, `⌘K` for a command palette, which is the primary navigation
-for someone who types. No breadcrumbs, no nesting, **no settings page** — configuration is
+for someone who types. No breadcrumbs, no nesting, **no settings page**: configuration is
 environment variables on a box the owner owns, and a settings screen would be a lie about where the
 truth lives.
 
@@ -157,7 +157,7 @@ is risk with no return; a narrow grant on the client doing all the work is a bot
   Writes  user:me           up to  open
           Cannot decrypt sealed content.
   ⚑ 340 reads, 0 writes in 14 days. This surface consumes and never contributes.
-  policy-test.sh — passed 17 Aug, which was before the last grant edit.  [ run it now ]
+  policy-test.sh: passed 17 Aug, which was before the last grant edit.  [ run it now ]
 ```
 
 That last line matters: Phase 3 says run the policy test after every grant edit, and an interface
@@ -180,11 +180,11 @@ instead.
 **Deleting.** Four actions from cold: `⌘K`, type a fragment, top result selected, `x`. For `open`
 and `private` the row disappears immediately with a ten-second undo, because the anxiety is that the
 fact still exists and the interface must show it gone at once. **For `sealed` there is no optimism
-and no undo** — an explicit confirm naming the key, because deleting a sealed row destroys the only
+and no undo**: an explicit confirm naming the key, because deleting a sealed row destroys the only
 copy by construction.
 
 The toast's final frame carries the sentence that actually matters: **"deleted. It may already have
-been read — 3 reads, last by chatgpt on 17 Aug."** A deletion does not un-read a fact, and the
+been read: 3 reads, last by chatgpt on 17 Aug."** A deletion does not un-read a fact, and the
 console is the only thing that can tell you whether you were too late.
 
 **Resolving a conflict.** Four verdicts: newer wins, **older wins** (common and easy to forget to
@@ -243,7 +243,7 @@ grant you wrote. Clauses plus live counters plus the diff, instead.
 
 **Never show a cosine score.** It is precise, meaningless to a human, and varies by embedding model,
 so the same 0.71 means different things after a provider change. Instead: three bands, of which the
-third is the point — `NOTHING STRONG — this is the best of a bad set`, said in those words. Plus a
+third is the point, `NOTHING STRONG: this is the best of a bad set`, said in those words. Plus a
 **relevance cliff** drawn at the largest gap between consecutive results, which is honest in a way a
 threshold is not because it describes *this* result set rather than asserting a constant. Plus two
 tokens saying why it matched: `meaning + wording`.
@@ -255,12 +255,12 @@ tokens saying why it matched: `meaning + wording`.
 Each of these would otherwise arrive by reflex:
 
 A browse-all table of every fact with filters and pagination, which is the single most likely thing
-to be built and the most useless. A graph view. A stats page. **A compose box** — break that and the
+to be built and the most useless. A graph view. A stats page. **A compose box**: break that and the
 console becomes a second-rate note app. A registry CRUD form. A tag manager. An export or backup UI.
 A settings screen. A theme toggle. Onboarding, tours, tooltips explaining what a namespace is, empty
-state illustrations. A namespace management screen — namespaces are created by writing to them. A
+state illustrations. A namespace management screen, since namespaces are created by writing to them. A
 word-level diff of two one-sentence facts. Websockets. Anything multi-user. A conversation viewer,
-which would mean storing transcripts. Notifications and weekly digests — the Inbox count is the
+which would mean storing transcripts. Notifications and weekly digests: the Inbox count is the
 notification.
 
 ---
@@ -272,7 +272,7 @@ the product**: the realisation that something sensitive got stored does not wait
 the surfaces most likely to have stored it are on the same phone.
 
 Keep: the health strip, the Inbox read-only, search with the client selector, the fact panel, and
-delete. **Drop grant editing entirely** — a fat-fingered ceiling change is exactly the mistake this
+delete. **Drop grant editing entirely.** A fat-fingered ceiling change is exactly the mistake this
 system exists to prevent, and it is never urgent.
 
 ---
@@ -283,12 +283,12 @@ system exists to prevent, and it is never urgent.
   Clients list, every action landing in `tool_calls` as `lumberroom-web`. It dogfoods the policy layer: the
   console cannot see what its own grant forbids, and if that is inconvenient then the grant is the
   thing to fix.
-- **Grants should move from `AUTH_TOKENS` to a versioned Postgres table in Phase 3.** Two-axis
-  grants with per-clause ceilings have outgrown an environment variable, the blast-radius preview
-  wants to be transactional with the change it previews, and a grant history is worth having for the
-  same reason a memory history is. *This also closes the grant-reload gap that fell between the
-  Phase 2 and Phase 3 specs.* Until it lands, the editor is read-only and emits a config block to
-  paste, which keeps the whole of the value since the preview was always the point.
+- **OAuth grants moved to a versioned Postgres table; bearer grants did not.** [Decision
+  0003](../decisions/0003-grants-in-the-database.md) draws that boundary, and
+  [`console-spec.md`](console-spec.md) §4.2 rules against a fourth OAuth profile to route around it:
+  the console edits OAuth clients through a clause route and shows a bearer client's grant read-only,
+  with the file that owns it named on screen. A grant history is still missing, so a change leaves no
+  record of what a client used to hold.
 - **Two schema additions beyond current plans.** The *reading client* alongside `last_accessed_at`,
   one column, which turns "read 14 times" into "read 14 times, last by chatgpt" and is what makes
   the delete flow able to tell you whether you were too late. And a persistent **not-a-conflict**

@@ -1,7 +1,7 @@
-# Phase 3 — Permissions and encryption
+# Phase 3: Permissions and encryption
 
 > **Ends when:** ChatGPT provably cannot see a fact that Claude Code can, and you have checked.
-> — system PRD §7
+> System PRD §7
 
 Status: implemented 19 August 2026. Design was settled before the build; the research it depended
 on is in [`docs/research/encryption-and-sensitivity.md`](../research/encryption-and-sensitivity.md).

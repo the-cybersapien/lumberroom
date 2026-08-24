@@ -63,6 +63,12 @@ The first is a full owner credential: sealed everywhere, every capability except
 second is narrow: open-ceiling read on two namespaces (a bare string means `max: "open"`), no
 write, and every capability flag left at its default of `false`.
 
+`AUTH_TOKENS` also accepts a compact form, `client:token,client:token`, for a credential you would
+have written unrestricted read and write for anyway: `registryWrite`, `sealedCapable` and every
+other capability stay at their default of `false`. `.env.example` carries the rule that
+distinguishes the two forms: the string starts with `[` or `{` for JSON, anything else parses as
+compact pairs.
+
 ## Every field
 
 - **`client`** (required, string). The stable identifier recorded as `source_client` on every row
@@ -98,10 +104,11 @@ write, and every capability flag left at its default of `false`.
 
 - **`mayIngest`** (default `false`). Opens the ingest routes and the `/admin/cleanup/*` routes:
   `admin_cleanup_run`, `admin_cleanup_list`, `admin_cleanup_post`, `admin_cleanup_show`,
-  `admin_cleanup_apply`, `admin_cleanup_reject`. A client that can post proposals can fill the
-  queue the owner has to read, and a queue he stops reading is an approval gate in name only, so
-  cleanup rides the same flag as ingestion rather than a separate one. No MCP tool sits behind
-  this; the routes are HTTP-only, for `lumberroom ingest` and the process the owner runs by hand.
+  `admin_cleanup_apply`, `admin_cleanup_reject`, `admin_cleanup_resolve`, `admin_cleanup_unreject`.
+  A client that can post proposals can fill the queue the owner has to read, and a queue he stops
+  reading is an approval gate in name only, so cleanup rides the same flag as ingestion rather
+  than a separate one. No MCP tool sits behind this; the routes are HTTP-only, for `lumberroom
+  ingest` and the process the owner runs by hand.
 
   It opens the routes and widens nothing. Every one of them runs inside the client's `read`
   grant, applied in the query: a cleanup run reads the namespaces the grant admits and refuses a

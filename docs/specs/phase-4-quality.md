@@ -1,7 +1,7 @@
-# Phase 4 — Quality
+# Phase 4: Quality
 
 > **Ends when:** a correction you make once does not resurface as a contradiction later.
-> — system PRD §7
+> System PRD §7
 
 Status: implemented 19 August 2026. Verification is pending. `scripts/correction-test.sh` is the
 gate for the exit test below and has not yet run against a live server. No decision record

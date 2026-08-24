@@ -182,6 +182,12 @@ path is testing nothing.
 as `exact` and once as `paraphrase` under two cluster keys. `scripts/cleanup-test.sh` caught it and
 nothing else did.
 
+**`s.index("#[cfg(test)]")` finds the first occurrence, not the module's own test block.** A Python
+slice built that way to split a Rust file at its test module duplicated 374 lines, because an inner
+`#[cfg(test)]` attribute (on a helper, not the trailing `mod tests`) appeared earlier in the file
+than the block the slice was meant to isolate. Anchor on the last occurrence, or on the attribute
+immediately preceding `mod tests`. Landed 24 August 2026.
+
 ## Shell, config and rendering
 
 **Two `.env` quoting traps fail in opposite directions.** Shell scripts that source `.env` with `sh`
@@ -201,6 +207,11 @@ shipped unusable while the handler, the markup and the tests were all correct.
 
 **Duplicated navigation drifts.** The console nav existed in three hardcoded copies, so a new tab
 appeared on one page and not the others. One `pages::nav` now.
+
+**`text-decoration` on an ancestor paints through inline descendants.** A `line-through` on a
+container struck out a nested span meant to explain the strike, so the explanation itself read as
+crossed out. Set `text-decoration: none` on the child; the decoration does not stop at an element
+boundary on its own. Landed 24 August 2026.
 
 ## Crate specifics
 

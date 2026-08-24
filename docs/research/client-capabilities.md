@@ -1,4 +1,4 @@
-# Research — what each surface can actually do
+# Research: what each surface can actually do
 
 Status: this research fed the Phase 2 spec (implemented 19 August 2026, verification pending). Its
 conclusion that an authorization server is required stands; its conclusion that the server should
@@ -23,14 +23,14 @@ a Microsoft Copilot Cowork, built on Anthropic's execution technology and shippe
 
 | Surface | Remote MCP, and gating | Static bearer header | OAuth needed in practice | Client identity | Auto-recall hook | Confidence |
 |---|---|---|---|---|---|---|
-| **Claude Code** (either machine) | Yes, proven in Phase 1 | **Yes, today**, `claude mcp add --header` | No | **Yes** — distinct CIMD client_id, `client_name: "Claude Code"` | SessionStart hook | high |
-| **Claude.ai web** | Yes. Free capped at one connector, Pro and above unrestricted | `static_headers` exists but is **beta and invite-gated** | **Yes**, until beta access is granted | No — shares infrastructure and callback with mobile, Desktop and Cowork | None. Pure model tool choice | high |
+| **Claude Code** (either machine) | Yes, proven in Phase 1 | **Yes, today**, `claude mcp add --header` | No | **Yes**, distinct CIMD client_id, `client_name: "Claude Code"` | SessionStart hook | high |
+| **Claude.ai web** | Yes. Free capped at one connector, Pro and above unrestricted | `static_headers` exists but is **beta and invite-gated** | **Yes**, until beta access is granted | No, shares infrastructure and callback with mobile, Desktop and Cowork | None. Pure model tool choice | high |
 | **Claude.ai mobile** | Yes, account-synced connector list. Adding new ones from mobile is limited | As web | As web | Indistinguishable from web | None | high on sync, medium on the add flow |
 | **Cowork** (Anthropic) | Yes, same infrastructure as Claude.ai | As web | As web | Indistinguishable from Claude.ai | Scheduled sessions exist, but tool choice is still the model's | high on identity |
 | **ChatGPT web** | Yes, via Developer Mode. Plus and above; Free excluded | Reported, **not primary-confirmed** | Treat as required until tested | [unverified] | [unverified] | **low to medium** |
 | **ChatGPT mobile** | [unverified] whether custom connectors exist there at all | [unverified] | [unverified] | [unverified] | [unverified] | low |
-| **OpenWebUI** | Yes, **native** MCP client since v0.6.31, Streamable HTTP. Self-hosted, no gating | **Yes, native, no gating** | No | Weak — sends the generic SDK default `clientInfo` and no distinguishing User-Agent | **The only real one anywhere.** A Filter `inlet` runs on every incoming message, outside model tool choice | high |
-| **Hermes** (Nous Research) | Yes, open-source CLI, `mcp_servers:` config, no gating | **Yes, native, today** | No | Weak, and actively misleading — documented to sometimes set `client_name` to `"Claude Code"` for compatibility | None | high |
+| **OpenWebUI** | Yes, **native** MCP client since v0.6.31, Streamable HTTP. Self-hosted, no gating | **Yes, native, no gating** | No | Weak, sends the generic SDK default `clientInfo` and no distinguishing User-Agent | **The only real one anywhere.** A Filter `inlet` runs on every incoming message, outside model tool choice | high |
+| **Hermes** (Nous Research) | Yes, open-source CLI, `mcp_servers:` config, no gating | **Yes, native, today** | No | Weak, and actively misleading, documented to sometimes set `client_name` to `"Claude Code"` for compatibility | None | high |
 
 ---
 

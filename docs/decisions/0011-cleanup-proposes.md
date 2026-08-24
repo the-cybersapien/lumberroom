@@ -60,9 +60,11 @@ that would bring the planner back.
 
 ## Costs accepted
 
-**The queue is another thing to read.** Rejecting is a terminal state, so a cluster the owner has
-refused is never proposed again, and `obsolete` closes a finding the store has answered on its own.
-Both exist because the failure mode here is a queue that grows faster than anyone reads it.
+**The queue is another thing to read.** Rejecting keeps a cluster from being proposed again unless
+the owner reverses it: `POST /console/cleanup/{id}/unreject` returns a rejected finding to the
+queue, the same route the ingest queue carries for its own rows. `obsolete` closes a finding the
+store has answered on its own. Both exist because the failure mode here is a queue that grows
+faster than anyone reads it.
 
 **The thresholds were guesses, and one of them has now been measured.** 0.97 and 0.85 came from the
 Phase 4 spec, which says they are guesses. The lower one was wrong: the owner's store held exactly

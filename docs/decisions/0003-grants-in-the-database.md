@@ -8,6 +8,10 @@ A grant for an OAuth client is a row in `oauth_client`, editable without a resta
 static bearer client stays in `AUTH_TOKENS` and stays authoritative there. Neither authority writes
 into the other.
 
+`POST /console/clients/{id}/access` is the surface that writes that row today: the owner's console
+session posts a grant through `set_client_grant`, under the same CSRF check the rest of the console
+uses. Nothing else edits `oauth_client`'s grant columns.
+
 ## The context that forced it
 
 Phase 1 put every grant in `AUTH_TOKENS`, and the Phase 2 spec recorded the limit rather than fixing

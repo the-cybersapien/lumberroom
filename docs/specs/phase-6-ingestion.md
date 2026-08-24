@@ -9,8 +9,11 @@ system is **not a memory extraction engine**, so this spec owes the PRD a reconc
 owes anything else. §1 pays it.
 
 Status: specified 19 August 2026, revised 20 August 2026 against two reviews and again the same day
-against live provider measurements (§10.10, §10.11). Nothing is implemented. No table exists, no CLI
-subcommand exists, no skill exists.
+against live provider measurements (§10.10, §10.11). Implemented against this design since: the
+`ingest_proposal` and related tables exist, `crates/lumberroom/src/ingest/` and the `/admin/ingest`
+routes exist, and the `lumberroom-ingest` skill exists. None of it has been run end to end against a
+real transcript directory; [`docs/ingestion.md`](../ingestion.md) carries the current status and the
+gate that would settle it.
 
 The revision resolves four items that make the difference between a design and a working one, and
 each is marked where it lands: the recall-emission layer was unreachable as wired (§4.4), a partial

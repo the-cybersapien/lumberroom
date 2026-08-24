@@ -1,192 +1,163 @@
 # Architecture
 
-What the service should look like to be maintainable and to survive a change of storage engine,
-and where it currently falls short of that.
-
-The target is ports and adapters, applied plainly: interfaces and constructor arguments, no
-container, no framework, no ceremony. This is one person's service and the architecture should be
-legible in an afternoon.
+Ports and adapters, checked against the Rust tree in `src/` rather than described in the abstract.
+This document predates decision
+[`0001-rust-rewrite`](decisions/0001-rust-rewrite.md) in an earlier form that described a TypeScript
+target shape (`app.ts`, `tools/*.ts`, `interfaces/`); that shape was retired with the rewrite and
+this page now tracks the Rust service it produced.
 
 ---
 
-## Why change anything
+## Why the shape matters
 
 Two goals, both stated rather than inferred.
 
-**Storage must be swappable.** Not because Postgres is wrong (measurements and research say it is
-right for this workload) but because being locked to it is a bad position to hold by accident. The
-lock-in today is not the database, it is that SQL is written inside the request handlers.
+**Storage must be swappable.** Not because Postgres is wrong for this workload, but because being
+locked to it by accident is a bad position to hold. The lock-in to avoid is SQL written inside
+request handlers.
 
-**The service must be maintainable.** Eleven SQL statements are spread across six files that also
-do authorization, validation, formatting and transport. Every one of those files has more than one
-reason to change.
-
-Where the code stands:
-
-| File | Lines | SQL statements | Also does |
-|---|---|---|---|
-| `mcp/http.ts` | 217 | 2 | routing, auth, registry writes, stats |
-| `tools/context_bootstrap.ts` | 249 | 2 | grants, caching, markdown rendering |
-| `tools/memory_search.ts` | 168 | 2 | grants, ranking weights, result shaping |
-| `tools/memory_write.ts` | 123 | 3 | grants, validation, dedupe, cache invalidation |
-| `tools/registry_get.ts` | 81 | 1 | grants, namespace precedence |
-| `instrument.ts` | 76 | 1 | invocation parsing, aggregation |
-
-The parts that are already right are worth naming, because they are the pattern to copy: `config.ts`
-validates everything at boot and hands back a typed object, `namespaces.ts` is pure logic with no
-I/O, and `embed/` is an interface with three implementations chosen by configuration. The embedder
-is the proof that this shape works here; storage should look the same.
+**The service must be maintainable.** One rule carries it: domain and services never import from
+adapters. A service asks a `MemoryRepository` for rows and does not know Postgres exists, which is
+what makes a second storage implementation possible.
 
 ---
 
-## Target shape
+## The tree
 
 ```
-src/
-  domain/          types and rules. No I/O, no imports from anywhere below.
-                   Namespace, Sensitivity, Grant, Principal, Memory, RegistryEntry, errors.
-
-  ports/           interfaces the domain needs the outside world to satisfy.
-                   MemoryRepository, RegistryRepository, ToolCallRepository, Embedder, Clock.
-
-  services/        use cases. One per thing the system does, depending only on ports.
-                   BootstrapService, SearchService, WriteService, RegistryService, StatsService.
-
-  adapters/        implementations of ports.
-    postgres/      repositories, schema, migrations.
-    embedding/     local, openai, hash.  (already this shape)
-    auth/          token, oidc.          (already this shape)
-
-  interfaces/      how the outside world reaches the services.
-    mcp/           tool registration. Translates arguments and results, holds no logic.
-    http/          routes. Translates requests and errors, holds no logic.
-
-  platform/        logging, request context, metrics, shutdown.
-  app.ts           the composition root. The only file that knows every concrete type.
+src/domain/     types, errors, namespace rules, the two-axis policy model, canonical registry keys,
+                the credential tripwire. No I/O anywhere in here.
+src/ports/      one file per port: memory, registry, alias, cleanup, embedder, ingest, oauth,
+                sealed, tool_calls. The contract adapters implement and services consume.
+src/services/   the use cases: bootstrap, search, write, registry, forget, review, export, recall,
+                alias, cleanup, history, ingest, eval.
+src/adapters/   postgres (the only module containing SQL), embedding, auth.
+src/authserver/ the built-in OAuth 2.1 authorization server: routes, consent pages, session, limiter.
+src/crypto/     envelope encryption and the KEK provider.
+src/mcp/        tool registration and the tool descriptions.
+src/http/       axum routes; the MCP transport mounts at /mcp.
+src/console/    the operator web console: mod.rs (router), pages.rs (HTML), data.rs, aliases.rs,
+                clients.rs, cleanup.rs.
+src/bin/        prefetch.rs, the model-download step the container build runs separately.
+migrations/     SQL, applied at boot by sqlx.
 ```
 
-The dependency rule is the only one that matters: **domain and services never import from adapters
-or interfaces.** A service asks a `MemoryRepository` for rows; it does not know Postgres exists.
-That single rule is what makes a second storage implementation possible, and it is testable with a
-lint rule rather than discipline.
+Verified against `src/` directly: this is the actual module list, not a target.
+
+## The dependency rule
+
+**Domain and services never import from adapters.** Checked with `grep -rn "^use crate::adapters"
+src/domain` (nothing) and the same over `src/services` (every hit is one of two files). The
+exceptions are deliberate and narrow:
+
+- `adapters::auth`: pure grant arithmetic over a `Principal` (`can_read`, `can_write`,
+  `assert_writable`, `filter_readable`). Every service file that touches policy imports it; there is
+  no port for it because it has no I/O to abstract behind one.
+- `crypto`: key material a service has to reason about to refuse a write it cannot honour.
+  `services/mod.rs` imports `crypto::envelope::SealedContent` and `crypto::kek::KeyProvider`;
+  `services/ingest.rs` imports `crypto::Digester` and re-exports `crypto::digest::normalise`.
+
+No other adapter import appears in `src/domain` or `src/services`. The rule holds as stated, not as
+aspiration.
 
 ### What a port looks like
 
-```ts
-export interface MemoryRepository {
-  search(q: SearchQuery): Promise<SearchHit[]>;
-  insert(m: NewMemory): Promise<Memory>;
-  findExact(tenant: string, namespace: string, content: string): Promise<Memory | null>;
-  findById(tenant: string, id: string): Promise<Memory | null>;
-  digest(q: DigestQuery): Promise<DigestData>;
-  namespaceCounts(tenant: string): Promise<Map<string, number>>;
+```rust
+pub trait MemoryRepository: Send + Sync {
+    async fn search(&self, q: SearchQuery) -> Result<Vec<SearchHit>>;
+    async fn insert(&self, m: NewMemory) -> Result<Memory>;
+    async fn find_by_id(&self, tenant: &str, id: Uuid) -> Result<Option<Memory>>;
+    async fn digest(&self, q: DigestQuery) -> Result<DigestData>;
+    async fn namespace_counts(&self, tenant: &str) -> Result<HashMap<String, i64>>;
 }
 ```
 
-`SearchQuery` carries namespaces, an embedding, a limit and the ranking weights. It does not carry
-SQL, a table name, or anything else that assumes an engine. The hybrid ranking is the one place
-this is genuinely hard: blending vector distance with lexical rank is expressed differently on every
-engine, so it belongs behind the port rather than in a service. The port promises ranked results;
-how they are ranked is the adapter's business.
+`SearchQuery` carries namespaces, an embedding, a limit and the ranking weights. It carries no SQL
+and no table name. Hybrid ranking, the blend of vector distance and lexical rank, sits behind the
+port because it is expressed differently by every storage engine: the port promises ranked results,
+the adapter decides how.
 
 ### What a service looks like
 
-```ts
-export class WriteService {
-  constructor(
-    private readonly memories: MemoryRepository,
-    private readonly embedder: Embedder,
-    private readonly policy: PolicyService,
-  ) {}
+```rust
+pub struct WriteService<M: MemoryRepository, E: Embedder> {
+    memories: M,
+    embedder: E,
+}
 
-  async write(principal: Principal, input: WriteInput): Promise<WriteResult> { ... }
+impl<M: MemoryRepository, E: Embedder> WriteService<M, E> {
+    pub async fn write(&self, principal: &Principal, input: WriteInput) -> Result<WriteResult> {
+        // ...
+    }
 }
 ```
 
-Constructor arguments, no container. Tests hand it fakes; `app.ts` hands it Postgres.
+Constructor arguments, no container. Tests hand a service fakes; `main.rs` hands it the Postgres
+adapter.
 
----
+## The console
+
+`src/console/` is the operator surface, mounted beside the MCP transport rather than folded into it.
+Routes in `src/console/mod.rs::router`: login, reading, namespace, fact detail, search, write
+(compose), registry, queue (approve/reject/unreject), cleanup (index/apply/reject/resolve/unreject),
+clients (create/access/revoke), aliases (record/forget). That is eleven distinct screens plus their
+mutating actions, up from the handful the console started with; `pages.rs` renders each as a
+self-contained HTML string, and a test (`tests/console.rs`,
+`every_page_is_self_contained`) asserts that shape holds. It depends on `services/` the same way the
+MCP tool layer does: through the service constructors, never through `adapters::postgres` directly.
 
 ## Prod readiness
 
-The gaps, in the order they would hurt.
+The gaps, checked against the current tree rather than assumed carried over from the pre-rewrite
+plan.
 
-**Request correlation.** Log lines carry no request id, so two concurrent calls interleave with no
-way to separate them. Generate or accept an id per request, carry it in `AsyncLocalStorage`, and
-include it in every line and every error returned to a client. This is the difference between a log
-you can debug from and a log you can only read.
+**Closed since the pre-rewrite version of this document.** An error taxonomy exists:
+`domain::errors::Kind` (`Validation`, `NotFound`, `Forbidden`, `Conflict`, `Unavailable`, `Internal`)
+maps to an HTTP status in one place, `Kind::http_status`. A statement timeout is set:
+`src/adapters/postgres/mod.rs:54` runs `SET statement_timeout = '30s'` on every pooled connection.
 
-**An error taxonomy.** Errors are ad hoc: some throw `Error`, some throw `AuthError`, and the
-mapping to a status code is written at each call site. Define the small set the domain actually has
-— `NotFound`, `Forbidden`, `Validation`, `Conflict`, `Unavailable` — and map them to HTTP and to MCP
-results in exactly one place each. Then a new endpoint cannot invent a new error shape by accident.
+**Still open, checked by grep against `src/http/mod.rs` and the rest of `src/`.**
 
-**Query timeouts.** No statement timeout is set. One pathological query can hold a pool connection
-until the client gives up. Set `statement_timeout` on the pool, and give the bootstrap path a
-tighter one than the rest, since it has a latency budget it is supposed to honour.
+**Request correlation.** No request id is generated, carried, or logged. Two concurrent calls still
+interleave in the logs with no way to separate them.
 
-**Backpressure.** The pool has a size and no queue limit, so load turns into unbounded waiting
-rather than a fast failure. Cap the wait and return `Unavailable`.
+**Metrics.** `/statsz` (`src/http/mod.rs`) answers product questions about model behaviour: counts,
+recent tool calls. It does not answer operational ones: error rates, latency distributions, pool
+saturation, embedder health. No `/metrics` endpoint exists.
 
 **An audit trail that can answer questions.** `tool_calls` records that a call happened and whether
-it succeeded. It cannot say which row was written, which was deleted, or why a request was refused,
-which means the Phase 3 exit test cannot actually assert what it claims and a delete leaves no
-record of what went. Writes and deletes need their own audit rows carrying the target id, the actor
-and the reason.
+it succeeded. It does not record which row was written or deleted, or why a request was refused.
 
-**Metrics.** `/statsz` answers product questions about model behaviour. It does not answer
-operational ones: error rates, latency distributions, pool saturation, embedder health. A
-`/metrics` endpoint in Prometheus text format costs little and is the difference between noticing
-degradation and being told about it.
+**Backpressure.** No queue limit is set on the pool beyond its size, so load turns into unbounded
+waiting rather than a fast failure.
 
-**Configuration surface.** Already good. It validates at boot and fails loudly, which is why several
-classes of deployment error cannot happen. Keep that standard: every new setting gets validated in
-`config.ts` rather than read from `process.env` at the point of use. Two settings currently break
-that rule by reading env at module scope in the search and write paths.
-
----
+Each of these is implemented-or-not as stated above; none of them is a measured runtime figure, so
+there is no gate that would "verify" a gap being open beyond reading the code, which is what this
+section did.
 
 ## Testing, per layer
 
-The current suite is good and tests the wrong shapes in one respect: it constructs tool contexts by
-hand, so it tests handlers rather than use cases.
+Checked against `find tests -name '*.rs'` (ten integration files) and `grep -c` for `#[test]` and
+`#[tokio::test]` inside `src/domain` and `src/services` (285 hits combined).
 
-- **domain**: pure functions, no fixtures. Namespace grammar, grant matching, ranking arithmetic.
-- **services**: fake repositories. This is where behaviour belongs — dedupe, supersession, grant
-  narrowing, digest assembly. Fast, and independent of whether Postgres exists.
-- **adapters/postgres**: a real database, one transaction per test, rolled back. Tests SQL, not
-  behaviour. This is the layer a second storage implementation would have to satisfy, so the suite
-  doubles as the specification for one.
-- **interfaces**: the wire. Auth rejection, status codes, MCP result shapes, truncation limits.
-
-The existing integration and wire suites already cover the bottom and top. What is missing is the
-middle, and it is missing because there is no middle.
-
----
-
-## Order of work
-
-1. Extract `domain/` and `ports/`. Types only, no behaviour moves yet. Nothing breaks.
-2. Write `adapters/postgres/` implementing the ports, moving SQL out of the tool files verbatim.
-   No behaviour change, so the existing tests are the safety net.
-3. Introduce services, moving logic out of the tool handlers. The handlers become translation.
-4. `app.ts` composition root; `interfaces/mcp` and `interfaces/http` stop constructing their own
-   dependencies.
-5. Platform work: request context, error taxonomy, timeouts, metrics, audit rows.
-6. Add the service-level test layer, and a lint rule enforcing the dependency direction.
-
-Steps 1 to 4 are mechanical and behaviour-preserving; the 113 existing tests are what makes that
-claim checkable. Step 5 is new capability. Step 6 is what stops the shape eroding.
-
----
+- **domain**: pure functions, no fixtures. Namespace grammar, grant matching, ranking arithmetic,
+  the credential tripwire.
+- **services**: fake repositories where a real one is not needed, real Postgres in the integration
+  suite for the rest. Dedupe, supersession, grant narrowing, digest assembly live here.
+- **adapters/postgres**: exercised through the integration tests, one transaction per test where the
+  harness allows it. This is the layer a second storage implementation would have to satisfy.
+- **interfaces** (`src/mcp`, `src/http`, `src/console`): the wire. Auth rejection, status codes, MCP
+  result shapes, console page self-containment, truncation limits.
 
 ## Storage decision
 
-Postgres 16 with pgvector, and the reasoning is in
-[`docs/research/`](research/). The architecture above is what makes that decision reversible rather
-than permanent: a different engine means a second `adapters/` implementation satisfying the same
-port tests, not a rewrite of the tools.
+Postgres 16 with pgvector; the reasoning is in [`docs/research/`](research/) and confirmed in
+[`decisions/0001-rust-rewrite.md`](decisions/0001-rust-rewrite.md), which names `sqlx`'s
+compile-time SQL verification as one of the three reasons for the rewrite itself. The port boundary
+above is what keeps that reversible: a different engine means a second `adapters/` implementation
+satisfying the same port contracts, not a rewrite of the services.
 
-The query builder or ORM used inside the Postgres adapter is an adapter-local choice. It should not
-appear in a port signature, a service, or a domain type. If it does, the abstraction has leaked and
-the portability it was meant to buy is gone.
+The query construction inside the Postgres adapter is an adapter-local choice; `sqlx`'s `query`/
+`query_as` with `.bind()`, no macros, no query builder. It should not appear in a port signature, a
+service, or a domain type. If it does, the abstraction has leaked and the portability it was meant to
+buy is gone.

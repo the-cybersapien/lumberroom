@@ -1,4 +1,4 @@
-# Research — pgvector in production
+# Research: pgvector in production
 
 Commissioned because the earlier benchmark, 100k rows of random vectors on a laptop, measures the
 index rather than production. This one looks for real-world evidence: failure reports, GitHub

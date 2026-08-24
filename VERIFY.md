@@ -148,8 +148,9 @@ set's own aggregates, which rules the metric functions out as the source of a su
 ./scripts/cargo.sh test -j 1 -p lumberroom  # the client crate
 ```
 
-Last observed at 863 in the server crate and 333 in the client, 0 failures, on 23 August 2026. The
-count moves with every change, so run it and read the last line. `-j 1` is not optional: plain
+Last observed at 870 tests passed, 0 failed, in the server crate, from
+`./scripts/cargo.sh test -j 1 -p lumberroom-server`, on 24 August 2026. The client crate's count
+moves with every change; run `./scripts/cargo.sh test -j 1 -p lumberroom` and read the last line. `-j 1` is not optional: plain
 `./scripts/cargo.sh test` links the lib-test and integration binaries at once, and the container's
 memory limit kills the linker with a message that reads as a compile error. A green suite with a
 parked test is not a green suite, so `grep -rn '#\[ignore' src/ tests/` returning nothing is part of

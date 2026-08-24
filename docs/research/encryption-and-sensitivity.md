@@ -1,7 +1,14 @@
-# Research — encryption, and what each sensitivity level actually protects
+# Research: what each sensitivity level actually protects
 
 Commissioned for Phase 3, August 2026. The headline: the system PRD's account of `private` is an
 understatement, and correcting it changes the design rather than just the wording.
+
+**§3's OCI recommendation was overtaken.** It assumed one Oracle Always Free ARM instance with no
+vTPM. [Decision 0004](../decisions/0004-kek-provider.md) departs from it: the product now has to run
+wherever `docker compose` runs, not on one fixed host, so `KEK_PROVIDER` selects `none`, `file` or
+`env` behind a `KeyProvider` trait, with an external KMS as a fourth implementation rather than the
+default. The rest of this document, the threat model, the leak analysis and the per-level design,
+stands.
 
 ---
 

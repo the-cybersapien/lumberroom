@@ -1,7 +1,10 @@
 # What the spike established
 
-Run before writing the service, against the live Postgres, on `linux/arm64` — the deploy
-architecture. Every item below is a fact that would otherwise have been discovered mid-rewrite.
+History, not current guidance. Run before [`decision 0001`](decisions/0001-rust-rewrite.md)
+(19 August 2026) committed the service to Rust, against the live Postgres, on `linux/arm64`, the
+deploy architecture. The rewrite has since landed; every item below is a fact this spike caught
+before it could surface mid-rewrite, kept for the version pins and the traps, not as a status of the
+current build.
 
 ## Verified working
 
@@ -24,7 +27,7 @@ error[E0277]: the trait bound `pgvector::Vector: sqlx::Encode<'_, _>` is not sat
 ```
 
 `pgvector` accepts `>=0.8, <0.10`, so pin the workspace to whatever it resolves and check with
-`cargo tree | grep sqlx` — two versions means the impls will not line up.
+`cargo tree | grep sqlx`: two versions means the impls will not line up.
 
 **2. `pgvector` has no `sqlx` feature in its manifest.** Its features are `postgres` and `halfvec`.
 The sqlx integration rides on the implicit feature Cargo generates for an optional dependency, so
@@ -38,7 +41,7 @@ The sqlx integration rides on the implicit feature Cargo generates for an option
 
 The build stage installs `pkg-config libssl-dev ca-certificates g++`. `ort` also downloads a
 prebuilt ONNX Runtime into `~/.cache/ort.pyke.io` during the build, so the build stage needs
-network access — the same constraint the model prefetch already had.
+network access, the same constraint the model prefetch already had.
 
 **4. `TextEmbedding::embed` takes `&mut self`,** which shapes the adapter. A shared embedder needs
 interior mutability, and embedding is CPU-bound at 11-16ms, so the work also has to leave the async
@@ -52,7 +55,7 @@ onnxruntime cpuid_info warning: Unknown CPU vendor. cpuinfo_vendor value: 0
 ```
 
 ONNX Runtime does not recognise the Ampere CPU for its dispatch tables. Harmless, and it matches
-the research finding that pgvector's and ONNX's CPU-specific optimisations are x86-first — see
+the research finding that pgvector's and ONNX's CPU-specific optimisations are x86-first, see
 `docs/research/pgvector-at-scale.md`.
 
 ## API shape, for reference

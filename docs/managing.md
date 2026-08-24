@@ -128,8 +128,10 @@ printed on it.
 **Reject** blocks that content for good and asks first, since the click has no undo. Rejecting is
 reversible from the Rejected list, where **Return to queue** puts a row back.
 
-The command line clears a queue in bulk: `lumberroom ingest approve --run <id>`. Two hundred rows is
-not a queue anybody clears one button at a time.
+The command line clears a queue in bulk: `lumberroom ingest approve --run <id>`, run from
+`crates/lumberroom`, the Rust client that ingests transcripts, not the Node CLI this page uses
+everywhere else. `docs/ingestion.md` covers it. Two hundred rows is not a queue anybody clears one
+button at a time.
 
 ## The cleanup queue
 
@@ -159,9 +161,9 @@ reaches. The namespace field offers the namespaces the store already holds and s
 has never seen.
 
 "Became true on" is the field the console exists for. A person typing a date knows when a fact
-started holding; a model reads one out of context and invents it. A date inside the last few days is
-refused, because the store already stamps the moment it learned a thing and today's date would write
-that clock twice.
+started holding; a model reads one out of context and invents it. A date inside the near-now fence,
+one day by default (`WRITE_MIN_OCCURRED_AGE_SECS`), is refused, because the store already stamps the
+moment it learned a thing and today's date would write that clock twice.
 
 To correct a fact, open it from the arrivals list and use **Replace this fact** underneath it. That
 retires the old row, links the two, and keeps the old wording readable with the date it stopped

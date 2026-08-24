@@ -1,4 +1,4 @@
-# Research — prior art
+# Research: prior art
 
 The system PRD names this as an unresearched risk and asks for it before Phase 2: "Supermemory,
 Mem0, Zep, Letta, Basic Memory and a dozen others occupy nearby ground. Worth an afternoon before

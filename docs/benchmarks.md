@@ -162,5 +162,6 @@ rows because a benchmark put them there, and the owner's real store holds twenty
 - Search latency under concurrency, at any size.
 - Retrieval quality on the owner's own corpus. Every figure above is synthetic chat.
 - Anything about ingestion quality. The extractor's precision and recall against a human reading the
-  same transcripts is unmeasured, and the 222 queued proposals are the only evidence there is.
+  same transcripts is unmeasured, and the 222 proposals ingestion queued on 20 August 2026 (decision
+  [`0008`](decisions/0008-valid-time.md)) are the only evidence there is.
 - The console, end to end, in a browser.

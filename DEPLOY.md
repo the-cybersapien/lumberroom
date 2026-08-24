@@ -105,7 +105,8 @@ sudo ./deploy/install.sh --domain memory.example.com --email you@example.com --a
 ```
 
 Add `--dry-run` first if you want to see every action without changing anything. Other flags:
-`--kek-provider none|file|env` (section 8), `--no-firewall`, `--no-backups`.
+`--kek-provider none|file|env` (section 8), `--no-firewall`, `--no-backups`, `--yes` (never
+prompt; fails rather than blocks on anything that needs a TTY).
 
 Nine steps:
 

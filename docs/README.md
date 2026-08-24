@@ -110,12 +110,12 @@ Commissioned to answer one question before a phase, rather than assumed.
 
 ## Design
 
-Two passes on the memory bank console, run separately so structure and visual direction were
-argued independently.
+The memory bank console's design record: an information architecture pass, a rejection, the spec
+that answered it, and the visual direction that shipped.
 
-- [`design/README.md`](design/README.md): how the two design passes fit together.
-- [`design/console-ia.md`](design/console-ia.md): information architecture and flows, part one of
-  the sprint.
+- [`design/README.md`](design/README.md): how the three documents fit together and what shipped.
+- [`design/console-ia.md`](design/console-ia.md): information architecture and flows, the first
+  pass, written before Phase 3 landed.
 - [`design/console-spec.md`](design/console-spec.md): the console specification, revised against
   five reviews and feeding five competing visual directions.
 - [`design/console-visual.md`](design/console-visual.md): visual and interaction direction: the

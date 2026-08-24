@@ -1,4 +1,4 @@
-# lumberroom memory bank — visual and interaction direction
+# lumberroom memory bank: visual and interaction direction
 
 Register: **product**. Design serves the task. No marketing surface exists or should.
 Grounded in the repo: README, DECISIONS.md, docs/specs/phase-2-surfaces.md,
@@ -11,31 +11,31 @@ left, a marginal apparatus on the right that carries provenance, variants and ac
 the cursor is on.
 
 This is not a metaphor for decoration. It is a structural match:
-- supersession chains ARE an apparatus criticus — variant readings with dates and witnesses
+- supersession chains ARE an apparatus criticus: variant readings with dates and witnesses
 - provenance (tool, conversation, date, confirmed, superseded) IS a siglum line
 - namespace + tags ARE running heads
-- the owner reads at speed and drills selectively — text block plus margin, not cards in a feed
+- the owner reads at speed and drills selectively: text block plus margin, not cards in a feed
 
 ### Verdicts on the five reference points
-- **Terminal — rejected as a look, adopted as a contract.** Green-on-black, ASCII chrome and a
+- **Terminal: rejected as a look, adopted as a contract.** Green-on-black, ASCII chrome and a
   fixed cell grid are costume; a third of this content is natural-language prose that a fixed grid
   sets badly and wastes horizontal room on. What is adopted: everything is reachable without a
   mouse, and every screen names the CLI command that does the same thing.
-- **Professional audio tool — rejected.** Its vocabulary is continuous control under time pressure:
+- **Professional audio tool: rejected.** Its vocabulary is continuous control under time pressure:
   meters, faders, gain staging. Nothing here is continuous. Every value is discrete, textual and
   edited rarely. Skeuomorphic meters would be decoration.
-- **Scientific instrument — partially adopted.** Two properties: reserved signal colours that mean
+- **Scientific instrument: partially adopted.** Two properties: reserved signal colours that mean
   one thing and appear nowhere else, and a diagnostic overlay that exposes raw numbers on demand
   (`?`) without putting them in the resting state. Rejected: bezels, readout chrome, the
   instrument-panel look.
-- **Well-set reference book — adopted, and it is the spine.** Measure, the type/provenance split,
+- **Well-set reference book: adopted, and it is the spine.** Measure, the type/provenance split,
   the apparatus, the variant stack.
-- **Code editor — adopted for interaction, rejected for chrome.** Adopted: selection as a filled
+- **Code editor: adopted for interaction, rejected for chrome.** Adopted: selection as a filled
   field rather than a glow; modal-ish keyboard verbs; a cursor that is always somewhere. Rejected:
   tabs, minimap, activity bar, a file tree for content that is not files.
 
 ### Why this is not the broadsheet default
-The saturated AI look #3 is hairline rules, zero radius, dense serif columns — applied as style. The
+The saturated AI look #3 is hairline rules, zero radius, dense serif columns, applied as style. The
 difference here is that every device is load-bearing and would break the product if removed:
 - the margin exists because the compact index truncates prose to one line and the full text has to
   live somewhere that never causes layout shift under `j`/`k`
@@ -57,16 +57,16 @@ lens-on puts a full-width band across the top in the negative colour and desatur
 Proportional serif = natural language a human or a model wrote. Monospace = identifiers the system
 owns. You never have to wonder whether a string is a value or a description.
 
-- **Source Serif 4** (variable, SIL OFL). Fact prose only. Real `opsz` axis — set it to the pixel
+- **Source Serif 4** (variable, SIL OFL). Fact prose only. Real `opsz` axis: set it to the pixel
   size so 13px stays sturdy. In dark theme raise `wght` to 440 to counter halation; 400 in light.
 - **Iosevka Fixed** (SIL OFL). Everything else: dotted keys, JSON, timestamps, client names,
-  namespaces, tags, counts, nav, buttons, labels, table headers. Chosen for advance width — 0.5em
+  namespaces, tags, counts, nav, buttons, labels, table headers. Chosen for advance width: 0.5em
   against IBM Plex Mono's 0.6em. `credentials.postgres.location` is 29 characters; at 13px that is
   188px instead of 226px. Across a 5-column index that difference is a whole column.
 
 Two families total, two woff2 files, no third face.
 
-Scale (fixed rem, 16px root, ratio ≈1.15). No clamp() anywhere — this UI is viewed at one DPI.
+Scale (fixed rem, 16px root, ratio ≈1.15). No clamp() anywhere: this UI is viewed at one DPI.
 
 | token | px | use |
 |---|---|---|
@@ -79,7 +79,7 @@ Scale (fixed rem, 16px root, ratio ≈1.15). No clamp() anywhere — this UI is 
 
 Line heights: mono 1.3 (1.25 compact), serif prose 1.5.
 Measure: apparatus prose capped at **58ch** (~430px at 15px Source Serif). Facts are one to three
-lines; a 65–75ch measure would let a three-line fact become two, which loses the shape of the
+lines; a 65-75ch measure would let a three-line fact become two, which loses the shape of the
 record. 58ch keeps facts looking like facts.
 Numerals: `font-variant-numeric: tabular-nums` on every count, latency and date. Iosevka is already
 tabular; the declaration guards the fallback.
@@ -103,10 +103,10 @@ where getting it wrong has a privacy consequence.
 Sensitivity is encoded on **five independent channels**, of which hue is one:
 1. **Glyph** in a fixed 2ch gutter: open = nothing, private = `◆`, sealed = `▩`
 2. **Word** in the meta line, always printed: `open` / `private` / `sealed`
-3. **Luminance** — private and sealed are separated 1.79:1 (dark) / 1.62:1 (light) from each other,
+3. **Luminance**: private and sealed are separated 1.79:1 (dark) / 1.62:1 (light) from each other,
    so they differ in a greyscale screenshot
-4. **Ground** — private and sealed content sits on a tinted panel; open sits on the canvas
-5. **Structure** — sealed has no plaintext at all; the content slot is a redaction block. The
+4. **Ground**: private and sealed content sits on a tinted panel; open sits on the canvas
+5. **Structure**: sealed has no plaintext at all; the content slot is a redaction block. The
    strongest signal is that the thing simply is not there.
 
 Removing hue entirely leaves four working channels. That is the test.
@@ -121,7 +121,7 @@ Removing hue entirely leaves four working channels. That is the test.
   --canvas:        oklch(0.205 0.010 220);  /* #12181a */
   --panel:         oklch(0.245 0.010 220);  /* #1b2224  index + apparatus */
   --panel-2:       oklch(0.285 0.010 220);  /* #252b2e  hover, header rows */
-  --rule:          oklch(0.330 0.010 220);  /* #303739  1.47:1 on canvas — hairlines */
+  --rule:          oklch(0.330 0.010 220);  /* #303739  1.47:1 on canvas, hairlines */
 
   /* ---- ink ------------------------------------------------------------ */
   --ink-hi:        oklch(0.960 0.004 220);  /* #eff2f4  15.93:1 on canvas */
@@ -134,7 +134,7 @@ Removing hue entirely leaves four working channels. That is the test.
   --sel-field:     oklch(0.400 0.060 248);  /* #2c4a67  ink-hi on it = 8.17:1 */
   --focus:         oklch(0.760 0.110 242);  /* #6eb9f1   8.44:1 on canvas */
 
-  /* ---- sensitivity — RESERVED, used nowhere else ----------------------- */
+  /* ---- sensitivity: RESERVED, used nowhere else ----------------------- */
   --sens-private:  oklch(0.845 0.115 078);  /* #f5c372  11.01:1 canvas, 8.86:1 own panel */
   --sens-private-bg: oklch(0.285 0.030 078);/* #322819  ink 10.36:1, ink-mid 6.26:1 */
   --sens-sealed:   oklch(0.690 0.125 305);  /* #ad86d9   6.15:1 canvas, 5.07:1 own panel */
@@ -187,16 +187,16 @@ Every ratio above is computed, not estimated (OKLCH → sRGB → WCAG 2.1 relati
 Hex values are the sRGB fallback for the same colour. All are in gamut.
 
 ### The other semantic pairs
-- **Live vs superseded** — not a hue. Superseded is `--ink-mid` (7.77:1 / 7.16:1 — still fully
+- **Live vs superseded**: not a hue. Superseded is `--ink-mid` (7.77:1 / 7.16:1, still fully
   readable, because the decision log is content), plus indentation into a collapsed stack under its
   successor, plus a printed `retired <date> by <client>` clause. A superseded fact never appears as
   a sibling of a live one.
-- **Grant allowed vs denied** — a filled cell carrying the ceiling word (`open` / `private` /
-  `sealed`) versus an empty cell carrying `—`. Emptiness is the whole signal, and it is enough: the
+- **Grant allowed vs denied**: a filled cell carrying the ceiling word (`open` / `private` /
+  `sealed`) versus an empty cell carrying `-`. Emptiness is the whole signal, and it is enough: the
   Phase 3 grant model is allowlist-only, so there is no explicit deny to distinguish from "not
   granted" and no red belongs on this screen. If an explicit-deny rule is ever added to the grant
   model, `--bad` is the token for it, and that is a grant-model change, not a design one.
-- **Success vs failure** — `--ok` / `--bad`, always with the count beside them. A zero-failure bar
+- **Success vs failure**: `--ok` / `--bad`, always with the count beside them. A zero-failure bar
   is drawn in `--ink-low`, not green: nothing happening is not success.
 
 ## 4. Density and layout
@@ -205,7 +205,7 @@ Hex values are the sRGB fallback for the same colour. All are in gamut.
 default. A list that shows twelve rows is a browsing toy; year three has tens of thousands of facts
 and the primary verb is *scan*.
 
-Grid — three zones, no sidebar:
+Grid, three zones, no sidebar:
 ```
 row 1  header            36px   product + section nav + lens + ⌘K
 row 2  index / apparatus  1fr   grid-template-columns: minmax(420px,1fr) minmax(380px,520px)
@@ -226,17 +226,17 @@ gap.
 
 **The two densities, same content, 1440×900 (808px of list after chrome):**
 
-Compact — 24px rows, metadata inline in aligned columns, prose 13px clamped to one line. **33 rows.**
+Compact: 24px rows, metadata inline in aligned columns, prose 13px clamped to one line. **33 rows.**
 ```
    19 Aug  Prefers pnpm over npm for new repos; will not accept a …   claude-code   user:me
    19 Aug  Deploys go out Tuesday mornings, never Friday             claude-code   project:lumberroom
  ◆ 18 Aug  Retainer invoices go out on the 1st, net 15               chatgpt       personal:finance
    18 Aug  Desktop runs Ubuntu 26.04                                 lumberroom      global
        └   3 earlier values ▸
- ▩ 17 Aug  ▚▚▚▚▚▚▚▚▚▚  sealed · 2 lines                              —             credentials:aws
+ ▩ 17 Aug  ▚▚▚▚▚▚▚▚▚▚  sealed · 2 lines                              -             credentials:aws
 ```
 
-Comfortable — 40px rows, prose 15px Source Serif on its own line, metadata on a second line.
+Comfortable: 40px rows, prose 15px Source Serif on its own line, metadata on a second line.
 **20 rows.** Same data, same order, same gutter.
 ```
    Prefers pnpm over npm for new repos; will not accept a yarn.lock in review
@@ -264,15 +264,15 @@ only between rows (1px `--rule`), no radius, no shadow, no nesting.
 
 **Always visible:** sensitivity glyph, date, content (truncated to the column), source client,
 namespace.
-**On hover:** `--panel-2` background and nothing else. Hover does not change the apparatus — mousing
+**On hover:** `--panel-2` background and nothing else. Hover does not change the apparatus: mousing
 across a list while scrolling would strobe the margin. Hover is a hint, not a selection.
 **On focus (`j`/`k`, or click):** `--sel-field` background, a 2px `--focus` bar in the gutter, and
 the apparatus fills with the full entry. Nothing appears on focus that is not also reachable by
-keyboard — there are no hover-only affordances anywhere in this UI.
+keyboard: there are no hover-only affordances anywhere in this UI.
 **Takes an explicit keystroke:** `o` expand the variant stack · `y` copy id · `e` edit · `s`
 supersede · `d d` delete · `L` change sensitivity · `?` diagnostic overlay.
 
-Markup for the row — the gutter is a real element with a real text label, not a `::before` and not
+Markup for the row: the gutter is a real element with a real text label, not a `::before` and not
 a colour:
 
 ```html
@@ -319,12 +319,12 @@ glyph in a reserved column, a full-width ground tint, a word, and a luminance st
 
 ### Every state
 
-**live, open** — the baseline. No gutter glyph, canvas ground.
+**live, open**: the baseline. No gutter glyph, canvas ground.
 ```
    19 Aug  Deploys go out Tuesday mornings, never Friday            claude-code   project:lumberroom
 ```
 
-**superseded** — never a sibling. Collapsed under its successor, `--ink-mid`, with the retirement
+**superseded**: never a sibling. Collapsed under its successor, `--ink-mid`, with the retirement
 clause. `o` expands.
 ```
    19 Aug  Desktop runs Ubuntu 26.04                                lumberroom      global
@@ -332,17 +332,17 @@ clause. `o` expands.
        └  11 Jun  Ubuntu 24.04 LTS    retired 02 Aug by lumberroom
 ```
 
-**private** — ochre glyph, ochre-tinted ground, word printed in the apparatus meta line. Content is
+**private**: ochre glyph, ochre-tinted ground, word printed in the apparatus meta line. Content is
 fully readable: private means *encrypted at rest and grant-limited*, not hidden from the owner.
 ```
  ◆ 18 Aug  Retainer invoices go out on the 1st, net 15              chatgpt       personal:finance
 ```
 
-**sealed and unreadable** — a normal condition, not an error. There is no plaintext to show: the
+**sealed and unreadable**: a normal condition, not an error. There is no plaintext to show: the
 spec says browser clients receive ciphertext permanently. The row shows the redaction texture, the
 byte length, and the exact CLI command that reads it.
 ```
- ▩ 17 Aug  ▚▚▚▚▚▚▚▚▚▚▚▚  sealed · 412 B · key not in this browser   —             credentials:aws
+ ▩ 17 Aug  ▚▚▚▚▚▚▚▚▚▚▚▚  sealed · 412 B · key not in this browser   -             credentials:aws
 ```
 Apparatus for a sealed entry:
 ```
@@ -358,7 +358,7 @@ Apparatus for a sealed entry:
   [c] copy command                             [d d] delete (crypto-shred)
 ```
 
-**search hit** — lexical overlap emphasised in place (`--ink-hi` + weight, not a highlighter block,
+**search hit**: lexical overlap emphasised in place (`--ink-hi` + weight, not a highlighter block,
 which would collide with the sensitivity grounds). Purely semantic hits print `semantic only`.
 ```
    19 Aug  Deploys go out **Tuesday** mornings, never Friday         claude-code   project:lumberroom
@@ -388,13 +388,13 @@ grid-template-columns: 2ch 34ch minmax(0,1fr) 10ch 18ch;
 ```
    machines.desktop.os              "Ubuntu 26.04"                    ✓you   global
    services.postgres.endpoint       {host:"127.0.0.1", port:5432}     ✓you   global
-   routes.coding.model              "claude-opus-5"                   —      user:me
+   routes.coding.model              "claude-opus-5"                   -      user:me
  ▩ credentials.postgres.location    ▚▚▚▚▚▚▚▚                          ✓you   credentials:*
 ```
 Dotted keys are set in Iosevka with the dots at `--ink-low` and the segments at `--ink`, so the
 hierarchy reads without indentation. JSON in the index is single-line and elided; the apparatus
-pretty-prints it with 2-space indent, keys `--ink-mid`, strings `--ink`, numbers/booleans `--ink-hi`
-— three levels, not a rainbow. The five provenance fields are printed as a labelled block, never as
+pretty-prints it with 2-space indent, keys `--ink-mid`, strings `--ink`, numbers/booleans `--ink-hi`:
+three levels, not a rainbow. The five provenance fields are printed as a labelled block, never as
 badges:
 ```
   written by   claude-code · session 0f21…
@@ -407,23 +407,23 @@ badges:
 ## 6. Motion
 
 Default: nothing moves. The list does not stagger in, rows do not fade, the apparatus does not
-slide. Under `j`/`k` held down, any transition on the row or the apparatus smears — the correct
+slide. Under `j`/`k` held down, any transition on the row or the apparatus smears. The correct
 transition duration for keyboard navigation is 0ms, and that is what it is.
 
 Four exceptions, each earning its place:
 
-1. **Variant stack expand/collapse — 180ms `--ease` on grid-template-rows.** The user initiated a
-   structural change; the motion carries the parent–child relationship that indentation alone
+1. **Variant stack expand/collapse, 180ms `--ease` on grid-template-rows.** The user initiated a
+   structural change; the motion carries the parent-child relationship that indentation alone
    states weakly. Reduced motion: instant.
-2. **Hold-to-confirm delete — 600ms linear fill across the button.** Motion *is* the affordance;
+2. **Hold-to-confirm delete, 600ms linear fill across the button.** Motion *is* the affordance;
    it is a progress indicator for an irreversible act on a system that has no delete path today and
    no undo. **The 600ms gate is enforced by a JS timer; the fill only displays it**, so no CSS rule
    and no user preference can shorten the gate to a tap. Reduced motion keeps the fill (progress is
    information, not decoration) and drops the easing; a numeric `3 · 2 · 1` accompanies it either
    way.
-3. **Focus ring — 0ms, explicitly.** Stated as a rule so nobody adds a transition later. A focus
+3. **Focus ring, 0ms, explicitly.** Stated as a rule so nobody adds a transition later. A focus
    ring that animates is a focus ring you can outrun.
-4. **New-row tick — 500ms background wash from `--sel-field` to transparent, conditional.** Only if
+4. **New-row tick, 500ms background wash from `--sel-field` to transparent, conditional.** Only if
    a live tail transport exists; nothing in the repo specifies SSE or polling today, so this is
    speced but not scheduled. It exists because an insertion above the fold in a silent list is
    invisible. Reduced motion: a static `new` marker in the gutter's second cell for 5s instead.
@@ -451,14 +451,14 @@ until focus. Debounce 180ms, abort in-flight requests. The server already embeds
 (DECISIONS.md), so the round trip is ~60ms on the box.
 
 **Bands, not scores.** Results are grouped under printed headers computed from the distribution
-relative to the top hit plus an absolute floor — the same two numbers a person would use:
+relative to the top hit plus an absolute floor, the same two numbers a person would use:
 ```
   strong · 4 results
    19 Aug  Deploys go out Tuesday mornings, never Friday             claude-code   project:lumberroom
    …
   related · 11 results
    …
-  weak · 23 results — matched only faintly                                              ▸ show
+  weak · 23 results, matched only faintly                                              ▸ show
 ```
 The weak band is collapsed by default. That collapse is the honest presentation of "everything
 matches a little": the results exist, they are one keystroke away, and they are not competing for
@@ -476,7 +476,7 @@ absolute floor, there is no strong band and the screen says so:
 **Why it matched.** Every hit carries one of two clauses in its meta line: the lexical terms it
 matched (emphasised inline in the content), or `semantic only`. The blend is 0.35-weighted ts_rank
 over cosine (DECISIONS.md), and the owner should be able to see which half did the work. Facts from
-outside the primary namespace set carry `other project` — the 0.85 penalty made visible, because a
+outside the primary namespace set carry `other project`, the 0.85 penalty made visible, because a
 silent penalty is a silent recall failure.
 
 **Diagnostic overlay.** `?` reveals raw cosine, ts_rank, the blended score and the penalty, right-
@@ -511,33 +511,33 @@ disambiguation.
 ```
 
 Rules: Escape always steps out one level and never destroys work. Every destructive verb needs a
-second keystroke, and `d d` shows the hold-to-confirm. Focus is never lost — after a delete the
+second keystroke, and `d d` shows the hold-to-confirm. Focus is never lost: after a delete the
 cursor lands on the next row, not on `<body>`. A visible focus ring on every interactive element,
 2px `--focus`, at 0ms. The `?` sheet is generated from the same keymap table that binds the handlers,
 so it cannot drift.
 
 ## 9. States
 
-- **Loading** — no spinners. The index paints its hairline grid with the row count it already knows
+- **Loading**: no spinners. The index paints its hairline grid with the row count it already knows
   from the status bar, ink at `--ink-faint`, no shimmer. The apparatus keeps the previous entry
   until the new one arrives; blanking it would flash on every `j`.
-- **Empty (no facts yet)** — teaches the CLI, which is the right first move for this owner:
+- **Empty (no facts yet)**: teaches the CLI, which is the right first move for this owner:
   `No facts in user:me yet.` followed by the literal `lumberroom write "…" --namespace user:me` and the
   note that Claude Code writes here on its own once the SessionStart hook is installed.
-- **Empty (filter matched nothing)** — different copy, different fix: names the filter and offers to
+- **Empty (filter matched nothing)**: different copy, different fix: names the filter and offers to
   drop it. Never reuses the onboarding empty state.
-- **Error** — a full-width band at the top of the index in `--bad`, carrying the HTTP status, the
+- **Error**: a full-width band at the top of the index in `--bad`, carrying the HTTP status, the
   request id, and what to do. `Search failed · 503 · req 8f21c0 · the embedder fell back to hash;
   /readyz will confirm.` No apology, no illustration. The last good result set stays on screen
   underneath, because stale data beats no data when you are diagnosing.
-- **Permission denied** — this appears in two shapes and they must not look alike. (a) The owner's
+- **Permission denied**: this appears in two shapes and they must not look alike. (a) The owner's
   own UI is denied by the server: that is a bug or a misconfigured `lumberroom-ui` grant, and it is an
   error band. (b) The client lens is on and rows are outside that client's grant: that is the
   feature working, and it renders as an elision line inside the flow, in `--ink-mid`:
   ```
   ⋯ 14 facts here are outside chatgpt's grant (personal:finance, credentials:*)
   ```
-- **Sealed** — specified in §5. Not an error, not empty, not denied. It is a fourth thing: content
+- **Sealed**: specified in §5. Not an error, not empty, not denied. It is a fourth thing: content
   that exists, that this viewer is authorised to know about, and that no browser will ever decrypt.
   The copy must say that plainly and hand over the command.
 
@@ -550,8 +550,8 @@ escaping (~80 lines), one hand-written `lumberroom.css` (~600 lines) carrying th
 Total client payload target: **under 90KB, of which ~60KB is font.**
 
 - **Lists:** keyset pagination on `(created_at, id)`, 200 rows per page, `IntersectionObserver`
-  appends, and pages trimmed off the top past ~2000 rows. Windowing by page, not row virtualization
-  — virtualization breaks find-in-page, and this owner uses find-in-page.
+  appends, and pages trimmed off the top past ~2000 rows. Windowing by page, not row virtualization,
+  since virtualization breaks find-in-page and this owner uses find-in-page.
 - **The apparatus** is an HTML fragment endpoint. One template, rendered server-side, used for both
   the initial paint and the swap. No duplicated client renderer.
 - **Auth:** the UI is its own client identity (`lumberroom-ui`) with `sealed_capable: false`, so the
@@ -567,14 +567,14 @@ Total client payload target: **under 90KB, of which ~60KB is font.**
 
 **Avoid:** React/Next (a build toolchain, a `node_modules` tree and hydration cost on a 4-core A1,
 for one user and zero client state worth reconciling); Tailwind (the sensitivity encoding is
-safety-critical and must be auditable in one file — utility classes scatter it into markup where a
+safety-critical and must be auditable in one file, and utility classes scatter it into markup where a
 wrong class is invisible); any icon library (every glyph here comes from Iosevka); web fonts from a
 CDN (an outbound dependency on a box the deploy story is proud of not needing); service workers;
 client-side routing; analytics of any kind.
 
 ## 11. Screens
 
-### A. Facts — the index, compact, dark, client lens off
+### A. Facts: the index, compact, dark, client lens off
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ lumberroom   facts  registry  policy  signal                      lens: off      ⌘K   ?              ◐ theme      │
@@ -588,9 +588,9 @@ client-side routing; analytics of any kind.
 │    14 Jul  Never deploy the hour before standup            …     │  written by   claude-code               │
 │ related · 11                                                     │  on           19 Aug 2026, 09:12        │
 │    11 Jul  Release cadence is weekly     semantic only     …     │  id           7c41e8a2                  │
-│    09 Jul  CI runs on the ARM builder    other project     …     │  supersedes   —                         │
-│    …                                                             │  superseded by —                        │
-│ weak · 23 — matched only faintly                          ▸ show │                                         │
+│    09 Jul  CI runs on the ARM builder    other project     …     │  supersedes   -                         │
+│    …                                                             │  superseded by -                        │
+│ weak · 23, matched only faintly                            ▸ show │                                         │
 ├──────────────────────────────────────────────────────────────────┤  [e] edit  [s] supersede  [y] copy id   │
 │ ⋯ 2 facts here are sealed and cannot be shown in a browser       │  [Y] copy CLI     [d d] delete          │
 ├──────────────────────────────────────────────────────────────────┴─────────────────────────────────────────┤
@@ -598,7 +598,7 @@ client-side routing; analytics of any kind.
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### B. Policy — the grant matrix with the client lens armed
+### B. Policy: the grant matrix with the client lens armed
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ lumberroom   facts  registry  policy  signal                      lens: chatgpt   ⌘K   ?             ◐ theme      │
@@ -609,12 +609,12 @@ client-side routing; analytics of any kind.
 │                        user:me        global        project:*      personal:finance   credentials:*        │
 │                        r      w       r      w      r      w       r      w           r      w             │
 │  claude-code-mac      sealed sealed  sealed sealed sealed sealed  sealed sealed      sealed sealed         │
-│  chatgpt              open   open    open   —      open   —       —      —           —      —              │
-│  claude-web           open   open    open   —      open   open    —      —           —      —              │
-│  openwebui            open   —       open   —      —      —       —      —           —      —              │
-│  lumberroom-ui              sealed —       sealed —      sealed —       sealed —           sealed —              │
+│  chatgpt              open   open    open   -      open   -       -      -           -      -              │
+│  claude-web           open   open    open   -      open   open    -      -           -      -              │
+│  openwebui            open   -       open   -      -      -       -      -           -      -              │
+│  lumberroom-ui              sealed -       sealed -      sealed -       sealed -           sealed -              │
 │                                                                                                            │
-│  chatgpt · sealed_capable false — a sealed ceiling would still deliver ciphertext only                     │
+│  chatgpt · sealed_capable false: a sealed ceiling would still deliver ciphertext only                      │
 │                                                                                                            │
 │  ◆ private and ▩ sealed cells are the only coloured cells in this interface.                              │
 │  An empty cell is not granted. The model is allowlist-only: there is no deny rule,                        │
@@ -628,7 +628,7 @@ client-side routing; analytics of any kind.
 `[t]` is Phase 3's exit criterion as a button: pick a fact, pick a client, get a live assertion
 rather than an argument.
 
-### C. Signal — instrumentation
+### C. Signal: instrumentation
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ lumberroom   facts  registry  policy  signal          window: 1h  24h  [7d]  30d                  ◐ theme         │
@@ -641,7 +641,7 @@ rather than an argument.
 │   claude-code-mac   2,411        0   ████████░░░░░░░░ 0.41   44ms   238ms                                 │
 │   chatgpt             318       12   ██░░░░░░░░░░░░░░ 0.09   61ms   410ms                                 │
 │   claude-web          204        0   █████░░░░░░░░░░░ 0.28   52ms   198ms                                 │
-│   openwebui             0        —   ░░░░░░░░░░░░░░░░ —      —       —                                     │
+│   openwebui             0        -   ░░░░░░░░░░░░░░░░ -      -       -                                     │
 │                                                                                                            │
 │   tool                calls    failed                                                                      │
 │   memory_search       1,904         3      p50  44ms   p95 238ms                                           │
@@ -649,14 +649,14 @@ rather than an argument.
 │   memory_write          412         9      p50 184ms   p95 197ms                                           │
 │   registry_get          105         0      p50   6ms   p95  22ms                                           │
 │                                                                                                            │
-│   openwebui has made no calls in 7 days. Wired but silent — check the grant or the client.                 │
+│   openwebui has made no calls in 7 days. Wired but silent: check the grant or the client.                  │
 │                                                                                                            │
 ├────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
 │ 2,933 calls · 12 failed · lumberroom stats --hours 168                                                           │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 Filled/unfilled bar segments carry the unprompted share, so it survives greyscale. A zero-call
-client gets a sentence, not a green tick — the interesting instrumentation finding is always a
+client gets a sentence, not a green tick. The interesting instrumentation finding is always a
 surface that has gone quiet.
 
 ## 12. Least confident
@@ -667,7 +667,7 @@ surface that has gone quiet.
    column of width across the index. Decide by looking at it, not by arguing.
 2. **Mono for all chrome including nav and buttons.** It keeps the "machine vs language" rule pure
    and ships two font files, but mono buttons drift toward the terminal costume this direction
-   explicitly rejects. The alternative — a third family for chrome — costs a font file and muddies
+   explicitly rejects. The alternative, a third family for chrome, costs a font file and muddies
    the rule.
 3. **Dark as default.** The scene sentence forces it, but sensitivity review is the task where
    getting it wrong matters most, and the light theme has better colour separation
