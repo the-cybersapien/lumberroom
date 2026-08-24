@@ -565,7 +565,11 @@ key_hmac, so the lookup itself fails closed): $(head -c 120 "$WORK/unseal-incapa
 fi
 
 say "6/8 the credential tripwire: a live-looking token is refused at open, without echoing it back"
-SECRET='ghp_16C7e42F292c6912E7710c838347Ae178B4a'
+# Assembled at runtime, and the tail is invented rather than copied from anywhere. A public repo
+# carrying a literal token-shaped string collects secret-scanning alerts and push-protection
+# blocks forever after, and the tripwire matches on shape: prefix plus thirty or more tail
+# characters (src/domain/tripwire.rs). Shape is all this needs to be.
+SECRET="$(printf 'gh%s_' p)aB3dEf7hJk2mNp5qRs8tUv1wXy4zAc6eGi9L"
 if full write "the deploy key is $SECRET" --namespace "$OPEN_NS" >"$WORK/tripwire.txt" 2>&1; then
   die "a github-token-shaped write was accepted at 'open', which the tripwire exists to prevent"
 else
