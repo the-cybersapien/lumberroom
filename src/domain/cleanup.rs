@@ -127,7 +127,7 @@ pub fn cluster_key(kind: CleanupKind, member_ids: &[String]) -> String {
         h.update(b"\x1f");
         h.update(id.as_bytes());
     }
-    format!("{:x}", h.finalize())
+    hex::encode(h.finalize())
 }
 
 /// Why a proposal cannot be applied.

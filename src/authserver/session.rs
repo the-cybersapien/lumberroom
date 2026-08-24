@@ -17,7 +17,7 @@
 //! - `Path=/oauth`, so the cookie is not attached to `/mcp` or to a tool call.
 
 use axum::http::HeaderMap;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 use crate::config::Config;
