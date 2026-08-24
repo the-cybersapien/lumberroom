@@ -162,6 +162,13 @@ jobs:
           cat SHA256SUMS
           cd ..
 
+          # A tag carrying a prerelease suffix, v0.1.0-rc.5, is published as one. Without this every
+          # rc landed as a normal release and GitHub moved the Latest badge onto it, so the first
+          # thing anyone saw on the repository was a release candidate. Semver's rule is the whole
+          # test: a hyphen after the version means prerelease.
+          prerelease=""
+          case "${TAG#v}" in *-*) prerelease="--prerelease" ;; esac
+
           if ! gh release view "$TAG" --repo "$repo" >/dev/null 2>&1; then
             # The changelog is the release notes. `--generate-notes` lists commits, which on a first
             # release is mostly dependency bumps and says nothing about what this is. Generated
@@ -173,10 +180,11 @@ jobs:
             ' CHANGELOG.md 2>/dev/null)"
             if [ -n "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
               printf '%s\n' "$notes" > "$RUNNER_TEMP/notes.md"
-              gh release create "$TAG" --repo "$repo" --title "lumberroom $TAG" \
+              gh release create "$TAG" --repo "$repo" --title "lumberroom $TAG" $prerelease \
                 --notes-file "$RUNNER_TEMP/notes.md"
             else
-              gh release create "$TAG" --repo "$repo" --title "lumberroom $TAG" --generate-notes
+              gh release create "$TAG" --repo "$repo" --title "lumberroom $TAG" $prerelease \
+                --generate-notes
             fi
           fi
 
