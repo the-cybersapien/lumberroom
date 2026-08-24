@@ -1425,3 +1425,147 @@ async fn a_stranger_creates_no_client() {
         sqlx::query_scalar("SELECT count(*) FROM oauth_client").fetch_one(&h.pool).await.unwrap();
     assert_eq!(after, before, "a request with no session created a client");
 }
+
+// ---- rendering every screen for design work ------------------------------------------------------
+
+/// Writes every console screen to `design/current/` with real rows behind it.
+///
+/// Not a check. A screen that renders is what the suite above asserts; what it cannot see is a
+/// screen that reads badly, and reading one means looking at it. `dump_console.rs` renders the
+/// clients page from fixtures with no server; this drives the whole console through HTTP so the
+/// pages that need a store behind them have one.
+///
+///   ./scripts/cargo.sh test --test console -- --ignored dump_every_screen
+#[tokio::test]
+#[ignore = "writes files; a tool rather than a check"]
+async fn dump_every_screen() {
+    let Some(h) = setup().await else {
+        eprintln!("no database reachable, so nothing was rendered");
+        return;
+    };
+
+    // Enough rows for the layouts to have something to lay out. Three namespaces, one long fact,
+    // one private one, and a correction, because a page of one short row hides everything.
+    for (content, ns) in [
+        ("the owner runs lumberroom on a host of his own", "global"),
+        ("aditya prefers a plain answer before the context", "user:me"),
+        ("the console renders server side with no javascript", "project:lumberroom"),
+        (
+            "the sensitivity filter runs inside the query rather than as a pass over results, so a \
+             row a client may not see never enters that client's process",
+            "project:lumberroom",
+        ),
+        ("the embedder is bge-base-en-v1.5 quantised to eight bits", "project:lumberroom"),
+    ] {
+        write::run(&h.ctx, content, ns, None, None, None, None).await.unwrap();
+    }
+    let first = write::run(
+        &h.ctx,
+        "the cleanup pass runs every six hours",
+        "project:lumberroom",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    write::run(
+        &h.ctx,
+        "the cleanup pass runs every twelve hours",
+        "project:lumberroom",
+        None,
+        Some(&first.id.to_string()),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let private = write::run(
+        &h.ctx,
+        "the owner's home network sits behind a tunnel",
+        "user:me",
+        None,
+        None,
+        Some("private"),
+        None,
+    )
+    .await
+    .unwrap();
+
+    lumberroom_server::services::registry::set(
+        &h.ctx,
+        "global",
+        "host",
+        "services.lumberroom.mcp-endpoint",
+        &serde_json::json!("https://memory.example.com/mcp"),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    lumberroom_server::services::registry::set(
+        &h.ctx,
+        "project:lumberroom",
+        "service",
+        "services.lumberroom.database-host",
+        &serde_json::json!({ "host": "db.example.com", "port": 5432 }),
+        Some("private"),
+        None,
+    )
+    .await
+    .unwrap();
+
+    queued(&h, "the owner keeps his notes in one place").await;
+    queued(&h, "a proposal waiting on the owner reads as a claim and not as a fact").await;
+
+    let (_, aliases) = h.get("/console/aliases").await;
+    let record = alias_token(&aliases, "/console/aliases/record");
+    h.post(
+        "/console/aliases/record",
+        &[
+            ("csrf", &record),
+            ("namespace", "project:lumberroom"),
+            ("alias", "the console"),
+            ("canonical", "the lumberroom console"),
+        ],
+        Some(&h.cookie),
+    )
+    .await;
+
+    let (_, clients) = h.get("/console/clients").await;
+    let csrf = client_form_csrf(&clients);
+    for (name, preset) in [("claude-desktop", "read-write"), ("transcript-reader", "ingest-bot")] {
+        h.post(
+            "/console/clients/new",
+            &[("csrf", &csrf), ("name", name), ("preset", preset)],
+            Some(&h.cookie),
+        )
+        .await;
+    }
+
+    std::fs::create_dir_all("design/current").unwrap();
+    let screens: Vec<(&str, String)> = vec![
+        ("reading", "/console/reading".to_string()),
+        ("namespace", "/console/namespace?ns=project:lumberroom".to_string()),
+        ("fact", format!("/console/fact/{}", private.id)),
+        ("search", "/console/search?q=cleanup%20pass".to_string()),
+        ("search-empty", "/console/search".to_string()),
+        ("write", "/console/write".to_string()),
+        ("registry", "/console/registry".to_string()),
+        ("queue", "/console/queue".to_string()),
+        ("cleanup", "/console/cleanup".to_string()),
+        ("aliases", "/console/aliases".to_string()),
+        ("clients-live", "/console/clients".to_string()),
+    ];
+    for (name, path) in &screens {
+        let (status, html) = h.get(path).await;
+        let file = format!("design/current/{name}.html");
+        std::fs::write(&file, &html).unwrap();
+        println!("wrote {file} ({status}, {} bytes) from {path}", html.len());
+    }
+
+    let (_, login) = h.get_anonymous("/console/login").await;
+    std::fs::write("design/current/login.html", &login).unwrap();
+    println!("wrote design/current/login.html ({} bytes)", login.len());
+}

@@ -13,7 +13,7 @@
 //! **A sealed item is counted and never opened.** The server holds no key for one by construction,
 //! so the count is the whole honest answer and `Entry` carries no content for it to print.
 
-use chrono::{DateTime, Datelike, Utc};
+use chrono::{DateTime, Datelike, Timelike, Utc};
 use std::collections::HashMap;
 
 use crate::adapters::auth::{can_read, filter_readable};
@@ -100,6 +100,11 @@ impl Entry {
         } else {
             format!("{} {} {}", d.day(), month(d), d.year())
         }
+    }
+
+    /// `05:22`, for a row sitting under a daymark that already carries its date.
+    pub fn timeline(&self) -> String {
+        format!("{:02}:{:02}", self.created_at.hour(), self.created_at.minute())
     }
 
     /// The heading a run of entries sits under.

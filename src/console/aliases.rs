@@ -474,9 +474,10 @@ the facts written while the project was called Warden. Record the first one belo
         groups.iter().map(|group| group_html(group, forget_csrf)).collect()
     };
 
-    frame(
+    pages::shell(
         "lumberroom: aliases",
-        health,
+        pages::Tab::Aliases,
+        Some(health),
         &format!(
             "<main class=\"al-page\">\
 <div class=\"al-head\"><h2>Aliases</h2><div class=\"when\">{count}</div></div>\
@@ -505,7 +506,7 @@ fn group_html(group: &Group, forget_csrf: &dyn Fn(&str, &str) -> String) -> Stri
 <input type=\"hidden\" name=\"csrf\" value=\"{token}\">\
 <input type=\"hidden\" name=\"namespace\" value=\"{namespace}\">\
 <input type=\"hidden\" name=\"alias\" value=\"{alias_value}\">\
-<button type=\"submit\">Forget</button></form></div>",
+<button type=\"submit\" class=\"danger\">Forget</button></form></div>",
                 alias = escape(&row.alias),
                 period = escape(&period(row)),
                 origin = escape(&row.origin),
@@ -529,9 +530,10 @@ fn group_html(group: &Group, forget_csrf: &dyn Fn(&str, &str) -> String) -> Stri
 
 /// The question a forget asks before it happens.
 pub fn confirm_html(row: &AliasRecord, csrf: &str, health: &Health) -> String {
-    frame(
+    pages::shell(
         "lumberroom: forget an alias",
-        health,
+        pages::Tab::Aliases,
+        Some(health),
         &format!(
             "<main class=\"al-page\"><div class=\"al-ask\">\
 <div class=\"big\">Forget {alias} as a name for {canonical}?</div>\
@@ -580,8 +582,7 @@ autocomplete=\"off\" spellcheck=\"false\" required>\
 <div><label for=\"a-canon\">Canonical</label>\
 <input id=\"a-canon\" name=\"canonical\" value=\"{canonical}\" placeholder=\"lumen\" \
 autocomplete=\"off\" spellcheck=\"false\" required>\
-<p class=\"hint\">The name the group answers to. Naming a canonical that is itself an alias moves \
-the whole group onto the newer name.</p></div></div>\
+<p class=\"hint\">The name the group answers to.</p></div></div>\
 <div class=\"pair\">\
 <div><label for=\"a-since\">Current from</label>\
 <input id=\"a-since\" name=\"since\" value=\"{since}\" placeholder=\"2026-03-01\" \
@@ -643,71 +644,6 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     } else {
         many.to_string()
     }
-}
-
-/// The document, the chrome and the health line.
-fn frame(title: &str, health: &Health, body: &str) -> String {
-    let bad = !health.key_verified || health.degraded_embedder;
-    format!(
-        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
-<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-<meta name=\"robots\" content=\"noindex,nofollow\">{favicon}\
-<title>{title}</title><style>{style}</style></head>\n<body><div class=\"al-doc\">\
-<header class=\"al-top\">{brand}\
-<nav class=\"al-nav\">{nav}</nav>\
-<div class=\"al-health{badclass}\">{line}</div></header>{body}</div></body></html>\n",
-        title = escape(title),
-        style = style(),
-        favicon = super::pages::FAVICON,
-        brand = super::pages::BRAND,
-        nav = nav(),
-        badclass = if bad { " bad" } else { "" },
-        line = health_line(health),
-        body = body,
-    )
-}
-
-fn nav() -> String {
-    super::pages::nav(super::pages::Tab::Aliases)
-}
-
-/// What the server can and cannot do right now, in the words the rest of the console uses.
-fn health_line(health: &Health) -> String {
-    let key = if !health.keys_configured {
-        "key <b>not configured</b>"
-    } else if health.key_verified {
-        "key <b>verified</b>"
-    } else {
-        "key <b>does not match</b>"
-    };
-    let embedder = if health.degraded_embedder {
-        format!("embedder <b>{} fallback</b>", escape(&health.embedder))
-    } else {
-        format!("embedder {}", escape(&health.embedder))
-    };
-    format!("{key} &middot; {embedder}")
-}
-
-/// This page's stylesheet, scoped to `al-` so it can be appended to `pages::STYLE` unchanged.
-///
-/// The custom properties sit on `.al-doc` rather than `:root` for the same reason: a merged copy
-/// must not fight the block that file already declares.
-/// This screen's stylesheet. `include_str!` in a release build, read from disk on every render in
-/// a development one, so an edit to `aliases.css` shows up on a browser refresh instead of a recompile
-/// and a restart. See the longer note in `pages.rs`.
-const STYLE: &str = include_str!("aliases.css");
-
-#[cfg(debug_assertions)]
-fn style() -> std::borrow::Cow<'static, str> {
-    match std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/console/aliases.css")) {
-        Ok(css) => std::borrow::Cow::Owned(css),
-        Err(_) => std::borrow::Cow::Borrowed(STYLE),
-    }
-}
-
-#[cfg(not(debug_assertions))]
-fn style() -> std::borrow::Cow<'static, str> {
-    std::borrow::Cow::Borrowed(STYLE)
 }
 
 #[cfg(test)]

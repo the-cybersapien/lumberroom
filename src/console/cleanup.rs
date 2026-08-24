@@ -373,9 +373,10 @@ it finds lands here.</p><code>lumberroom cleanup run</code></div>"
         out
     };
 
-    frame(
+    pages::shell(
         "lumberroom: cleanup",
-        health,
+        pages::Tab::Cleanup,
+        Some(health),
         &format!(
             "<main class=\"cl-page\">\
 <div class=\"cl-head\"><h2>Cleanup</h2><div class=\"when\">{count}</div></div>\
@@ -528,17 +529,28 @@ fn member_mark(m: &Member) -> Option<&'static str> {
 /// that kind, so drawing the button would offer a control with one outcome, and the outcome is a
 /// refusal page that explains what this sentence explains better.
 fn controls_html(p: &Proposal, csrf: &dyn Fn(&str, &str) -> String) -> String {
-    let apply = if applicable(p.kind) {
+    let apply = if !applicable(p.kind) {
+        String::new()
+    } else if p.kind.deletes() {
+        // Deleting is the one Apply with no undo, so it reads differently and takes one extra
+        // click. `services::review::delete` is what runs behind it and nothing brings a row back.
+        format!(
+            "<details class=\"confirm\"><summary>Apply, deleting</summary>\
+<div class=\"why\"><p>This removes the rows below from the store. It cannot be undone.</p>\
+<form method=\"post\" action=\"/console/cleanup/{id}/apply\">\
+<input type=\"hidden\" name=\"csrf\" value=\"{token}\">\
+<button type=\"submit\" class=\"danger\">Delete them</button></form></div></details>",
+            id = escape(&p.id),
+            token = escape(&csrf(APPLY_ACTION, &p.id)),
+        )
+    } else {
         format!(
             "<form method=\"post\" action=\"/console/cleanup/{id}/apply\">\
 <input type=\"hidden\" name=\"csrf\" value=\"{token}\">\
-<button type=\"submit\" class=\"go\">{label}</button></form>",
+<button type=\"submit\" class=\"go\">Apply</button></form>",
             id = escape(&p.id),
             token = escape(&csrf(APPLY_ACTION, &p.id)),
-            label = if p.kind.deletes() { "Apply, deleting" } else { "Apply" },
         )
-    } else {
-        String::new()
     };
     // A contradiction gets one button per row instead of an Apply. Naming which fact holds is the
     // owner's call, which is why the pass leaves it, and this is where he makes it.
@@ -583,12 +595,14 @@ readable through its history.</p><div class=\"cl-keeps\">{keeps}</div>"
         "{note}<div class=\"cl-acts\"><div class=\"cl-main\">{apply}</div>\
 <form class=\"cl-quiet\" method=\"post\" action=\"/console/cleanup/{id}/reject\">\
 <input type=\"hidden\" name=\"csrf\" value=\"{token}\">\
-<input type=\"text\" name=\"reason\" placeholder=\"why not (optional)\" autocomplete=\"off\">\
+<label for=\"{reason_id}\">Reason</label>\
+<input type=\"text\" id=\"{reason_id}\" name=\"reason\" placeholder=\"why not (optional)\" autocomplete=\"off\">\
 <button type=\"submit\">Reject</button></form></div>",
         note = note,
         apply = apply,
         id = escape(&p.id),
         token = escape(&csrf(REJECT_ACTION, &p.id)),
+        reason_id = escape(&format!("cl-reason-{}", p.id)),
     )
 }
 
@@ -620,9 +634,13 @@ fn decided_html(p: &Proposal) -> String {
         Some(r) => format!(" &middot; {}", escape(r)),
         None => String::new(),
     };
+    // The store's own word for a settled contradiction is "obsolete", and the section it lands in
+    // is headed "Closed". Printed as read, the row would carry a word the owner never typed and the
+    // heading above it never uses.
+    let state = if p.state == "obsolete" { "closed" } else { p.state.as_str() };
     format!(
         "<p class=\"cl-state\">{state} {when}{reason}</p>",
-        state = escape(&p.state),
+        state = escape(state),
         when = escape(&when),
         reason = reason,
     )
@@ -663,71 +681,6 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     } else {
         many.to_string()
     }
-}
-
-/// The document, the chrome and the health line.
-fn frame(title: &str, health: &Health, body: &str) -> String {
-    let bad = !health.key_verified || health.degraded_embedder;
-    format!(
-        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
-<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-<meta name=\"robots\" content=\"noindex,nofollow\">{favicon}\
-<title>{title}</title><style>{style}</style></head>\n<body><div class=\"cl-doc\">\
-<header class=\"cl-top\">{brand}\
-<nav class=\"cl-nav\">{nav}</nav>\
-<div class=\"cl-health{badclass}\">{line}</div></header>{body}</div></body></html>\n",
-        title = escape(title),
-        style = style(),
-        favicon = super::pages::FAVICON,
-        brand = super::pages::BRAND,
-        nav = nav(),
-        badclass = if bad { " bad" } else { "" },
-        line = health_line(health),
-        body = body,
-    )
-}
-
-fn nav() -> String {
-    super::pages::nav(super::pages::Tab::Cleanup)
-}
-
-/// What the server can and cannot do right now, in the words the rest of the console uses.
-fn health_line(health: &Health) -> String {
-    let key = if !health.keys_configured {
-        "key <b>not configured</b>"
-    } else if health.key_verified {
-        "key <b>verified</b>"
-    } else {
-        "key <b>does not match</b>"
-    };
-    let embedder = if health.degraded_embedder {
-        format!("embedder <b>{} fallback</b>", escape(&health.embedder))
-    } else {
-        format!("embedder {}", escape(&health.embedder))
-    };
-    format!("{key} &middot; {embedder}")
-}
-
-/// This page's stylesheet, scoped to `cl-` so it can be appended to `pages::STYLE` unchanged.
-///
-/// The custom properties sit on `.cl-doc` rather than `:root` for the same reason `aliases.rs` puts
-/// its own on `.al-doc`: a merged copy must not fight the block that file already declares.
-/// This screen's stylesheet. `include_str!` in a release build, read from disk on every render in
-/// a development one, so an edit to `cleanup.css` shows up on a browser refresh instead of a recompile
-/// and a restart. See the longer note in `pages.rs`.
-const STYLE: &str = include_str!("cleanup.css");
-
-#[cfg(debug_assertions)]
-fn style() -> std::borrow::Cow<'static, str> {
-    match std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/console/cleanup.css")) {
-        Ok(css) => std::borrow::Cow::Owned(css),
-        Err(_) => std::borrow::Cow::Borrowed(STYLE),
-    }
-}
-
-#[cfg(not(debug_assertions))]
-fn style() -> std::borrow::Cow<'static, str> {
-    std::borrow::Cow::Borrowed(STYLE)
 }
 
 #[cfg(test)]
@@ -889,8 +842,8 @@ mod tests {
                 let rule = format!(".{class}");
                 // A rule can be `.x{`, `.x `, `.x,` or `.x:hover`, so match the name and then check
                 // the next character cannot continue an identifier.
-                let defined = STYLE.match_indices(&rule).any(|(i, _)| {
-                    STYLE[i + rule.len()..]
+                let defined = pages::STYLE.match_indices(&rule).any(|(i, _)| {
+                    pages::STYLE[i + rule.len()..]
                         .chars()
                         .next()
                         .is_none_or(|c| !c.is_alphanumeric() && c != '-' && c != '_')
@@ -910,11 +863,11 @@ mod tests {
 
     #[test]
     fn a_carried_out_finding_carries_no_controls_at_all() {
-        for state in ["applied", "obsolete"] {
+        for (state, printed) in [("applied", "applied"), ("obsolete", "closed")] {
             let html =
                 listing_html(&[proposal(CleanupKind::Paraphrase, state)], &health(), &token, None);
             assert!(!html.contains("<form"), "{state} is decided and offers no button: {html}");
-            assert!(html.contains(state), "and the page says which it is");
+            assert!(html.contains(printed), "and the page says which it is, in its own word");
         }
     }
 

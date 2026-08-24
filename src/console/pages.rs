@@ -101,7 +101,7 @@ impl Health {
 ///
 /// `[profile.dev-release]` sets `debug-assertions = true` to keep this arm switched on; it
 /// inherits from release, where the flag is off.
-const STYLE: &str = include_str!("console.css");
+pub(crate) const STYLE: &str = include_str!("console.css");
 
 #[cfg(debug_assertions)]
 fn style() -> std::borrow::Cow<'static, str> {
@@ -180,8 +180,9 @@ pub fn login(next: &str, error: Option<&str>) -> String {
             "<main class=\"signin\">\
 <img class=\"glyph\" src=\"/console/logo.svg\" width=\"32\" height=\"32\" alt=\"\">\
 <h1>Sign in to lumberroom</h1>\
-<p>Sign in with the owner password to read the store. It is the same password the consent screen \
-asks for.</p>{banner}\
+<p class=\"what\">A notebook of durable facts, kept in one place and read by every assistant you \
+use.</p>\
+<p>The owner password opens it. The same password answers when a client asks for access.</p>{banner}\
 <form method=\"post\" action=\"/console/login\">\
 <input type=\"hidden\" name=\"next\" value=\"{next}\">\
 <label for=\"password\">Owner password</label>\
@@ -283,7 +284,7 @@ a write landing while you read cannot show you one twice.</span></div>",
             "<div class=\"c-body\">{rail}<main class=\"page\">\
 <div class=\"pagehead\"><h2>{heading}</h2><div class=\"when\">{count}</div><div class=\"grow\"></div>\
 {ask}</div>{body}{older}</main></div>",
-            rail = rail(contents, namespace, health),
+            rail = rail(contents, namespace),
             heading = heading,
             count = escape(&count),
             ask = ask(""),
@@ -308,7 +309,18 @@ pub fn fact(
     min_occurred_age_secs: u64,
 ) -> String {
     let e = &leaf.entry;
-    let kicker = format!("{} entry, {}", if e.retired { "Retired" } else { "Live" }, e.sensitivity);
+    // The level rides as a class only when it is above open. An open fact wants no treatment, and
+    // a class with no rule behind it is the bug this console keeps a test for.
+    let kicker = format!(
+        "<div class=\"kicker{mark}\">{state} entry, {level}</div>",
+        mark = if e.sensitivity > Sensitivity::Open {
+            format!(" {}", e.sensitivity)
+        } else {
+            String::new()
+        },
+        state = if e.retired { "Retired" } else { "Live" },
+        level = e.sensitivity,
+    );
 
     let claim = if e.withheld {
         "<div class=\"claim\">Withheld. This entry is stored at sealed and this server holds no key \
@@ -333,14 +345,13 @@ for it.</div>"
         ),
         None => String::new(),
     };
-    let read = match (leaf.access_count, leaf.last_accessed_at) {
-        (0, _) => "No client has ever been handed it.".to_string(),
-        (n, Some(at)) => format!(
-            "It has been handed to a client <b>{n}</b> {}, last on <b>{}</b>.",
-            plural(n as i64, "time", "times"),
-            escape(&date(at))
-        ),
-        (n, None) => format!("It has been handed to a client <b>{n}</b> times."),
+    // The count and the last date are in the facts strip below. What the strip cannot say is that
+    // this store never records which client did the reading, and a reader who sees a count of four
+    // will otherwise go looking for the four.
+    let read = if leaf.access_count > 0 {
+        " Which client read it is not recorded.".to_string()
+    } else {
+        String::new()
     };
     // Valid time, in the same sentence as the write that recorded it, because the two dates get
     // confused the moment they sit apart: this store learning a fact on 20 August says nothing
@@ -353,11 +364,9 @@ for it.</div>"
         (None, Some(b)) => format!(" It held until <b>{}</b>.", escape(&date(b))),
         (None, None) => String::new(),
     };
-    // Which client received it is not recorded anywhere in this store, so the sentence says the
-    // thing is unrecorded rather than leaving a gap the reader fills in with a zero.
     let prov = format!(
         "<p class=\"prov\"><b>{who}</b> wrote this on <b>{when}</b> into <span class=\"m\">{ns}</span>.{held} \
-{confirmed} {read} Which client read it is not recorded.{retired}</p>",
+{confirmed}{read}{retired}</p>",
         who = escape(&e.source_client),
         when = escape(&stamp(e.created_at)),
         ns = escape(&e.namespace),
@@ -441,10 +450,10 @@ started. Nothing was deleted to make this read.</p></div>"
             "<div class=\"c-body\">{rail}<main class=\"page\">\
 <div class=\"pagehead\"><h2>Entry</h2><div class=\"when\">{ns} &middot; {when}</div>\
 <div class=\"grow\"></div><div class=\"when\"><span class=\"m\">{id}</span></div></div>\
-<div class=\"leaf\"><div class=\"kicker\">{kicker}</div>{claim}{prov}{facts}{history}{replace}\
+<div class=\"leaf\">{kicker}{claim}{prov}{facts}{history}{replace}\
 <div class=\"pager\"><a href=\"/console/reading\">&larr; Back to arrivals</a>\
 <a href=\"{ns_href}\">All of {ns}</a></div></div></main></div>",
-            rail = rail(contents, Some(&e.namespace), health),
+            rail = rail(contents, Some(&e.namespace)),
             ns = escape(&e.namespace),
             when = escape(&stamp(e.created_at)),
             id = escape(&e.id),
@@ -453,7 +462,7 @@ started. Nothing was deleted to make this read.</p></div>"
             prov = prov,
             facts = facts,
             history = history,
-            replace = replace_control(leaf, csrf, min_occurred_age_secs),
+            replace = replace_control(leaf, contents, csrf, min_occurred_age_secs),
             ns_href = escape(&namespace_href(&e.namespace)),
         ),
     )
@@ -469,7 +478,12 @@ started. Nothing was deleted to make this read.</p></div>"
 /// `write::run` refuses a second successor by pointing at the live row, so the page points there
 /// first. A sealed one is bytes this server cannot read, and a form prefilled with nothing would
 /// invite the owner to overwrite a secret with a blank.
-fn replace_control(leaf: &Leaf, csrf: &str, min_occurred_age_secs: u64) -> String {
+fn replace_control(
+    leaf: &Leaf,
+    contents: &Contents,
+    csrf: &str,
+    min_occurred_age_secs: u64,
+) -> String {
     let e = &leaf.entry;
 
     if e.withheld {
@@ -499,7 +513,7 @@ the store takes one successor per row.{pointer}</p></div>"
         "<details class=\"replace\"><summary>Replace this fact</summary>\
 <p class=\"why\">The entry above stops holding and this one takes over, with the two linked. Say \
 when the new fact became true and the old one ends there.</p>{form}</details>",
-        form = write_form(&draft, csrf, min_occurred_age_secs, None),
+        form = write_form(&draft, contents, csrf, min_occurred_age_secs, None),
     )
 }
 
@@ -578,10 +592,10 @@ pub fn compose(
 <div class=\"grow\"></div></div>\
 <div class=\"wr\"><p class=\"lede\">{lede}</p>\
 {form}</div></main></div>",
-            rail = rail(contents, None, health),
+            rail = rail(contents, None),
             heading = escape(heading),
             lede = escape(lede),
-            form = write_form(draft, csrf, min_occurred_age_secs, error),
+            form = write_form(draft, contents, csrf, min_occurred_age_secs, error),
         ),
     )
 }
@@ -592,7 +606,7 @@ pub fn search(answer: &Answer, contents: &Contents, health: &Health) -> String {
 
     if answer.query.is_empty() {
         body.push_str(
-            "<div class=\"band none\"><div class=\"bh\">Ask the notebook</div>\
+            "<div class=\"band none\"><div class=\"bh\">Nothing asked yet</div>\
 <p>Type a question in the box above. The notebook searches everything you may read and prints what \
 answers, closest first.</p></div>",
         );
@@ -640,13 +654,13 @@ notebook leaves them off the page.</p></div>",
             "<div class=\"c-body\">{rail}<main class=\"page\">\
 <div class=\"pagehead\"><h2>{heading}</h2><div class=\"when\">{scope}</div>\
 <div class=\"grow\"></div>{ask}</div>{body}</main></div>",
-            rail = rail(contents, None, health),
+            rail = rail(contents, None),
             heading =
-                if answer.query.is_empty() { "Ask".to_string() } else { escape(&answer.query) },
-            scope = escape(&if answer.namespaces.is_empty() {
+                if answer.query.is_empty() { "Search".to_string() } else { escape(&answer.query) },
+            scope = escape(&if answer.query.is_empty() {
                 String::new()
             } else {
-                format!("searched {}", answer.namespaces.join(", "))
+                format!("{} namespaces searched", answer.namespaces.len())
             }),
             ask = ask(&answer.query),
             body = body,
@@ -683,10 +697,17 @@ with the date and the client that set it. Write the first one from the command l
                             Some(from) => format!(" &middot; alias of {}", escape(from)),
                             None => String::new(),
                         };
+                        // A registry row holds credential locations, so the level it classifies at
+                        // gets the ink treatment an arrivals row gets rather than grey text in the
+                        // far column. A JSON object is data and reads in the identifier face; a
+                        // plain string stays prose.
+                        let structured = value.starts_with('{') || value.starts_with('[');
                         format!(
-                            "<div class=\"reg\"><span class=\"rk\">{key}<small>{kind}</small></span>\
-<span class=\"rv\">{value}</span>\
+                            "<div class=\"reg{mark}\"><span class=\"rk\">{key}<small>{kind}</small></span>\
+<span class=\"rv{mono}\">{value}</span>\
 <span class=\"rp\">{client} &middot; v{version} &middot; {confirmed} &middot; {level}{alias}</span></div>",
+                            mark = if entry.sensitivity > Sensitivity::Open { " private" } else { "" },
+                            mono = if structured { " mono" } else { "" },
                             key = escape(&entry.key),
                             kind = escape(&entry.kind),
                             value = escape(&value),
@@ -703,7 +724,10 @@ with the date and the client that set it. Write the first one from the command l
                     escape(&group.namespace)
                 )
             })
-            .collect()
+            .collect::<String>()
+            + "<p class=\"hint\">The console reads the registry. Writing a key is a command line \
+act, because a canonical key is a decision and not a note.</p>\
+<code class=\"cmd\">lumberroom registry set host machines.desktop.os \"Ubuntu 26.04\"</code>"
     };
 
     shell(
@@ -714,7 +738,7 @@ with the date and the client that set it. Write the first one from the command l
             "<div class=\"c-body\">{rail}<main class=\"page\">\
 <div class=\"pagehead\"><h2>Registry</h2><div class=\"when\">{total} {entries}, exact and keyed</div>\
 <div class=\"grow\"></div></div>{body}</main></div>",
-            rail = rail(contents, None, health),
+            rail = rail(contents, None),
             total = thousands(total as i64),
             entries = plural(total as i64, "entry", "entries"),
             body = body,
@@ -747,25 +771,47 @@ and what it finds lands here before anything reaches the store.</p>\
         let mut out = String::new();
         out.push_str(&queue_section(
             "Waiting",
-            "undecided. Approve sends it through the write path; reject blocks the content for \
-             good. The speaker is what the posting client said about itself; the auto badge is \
-             the server's, and means the poster could have written the row itself.",
+            "Approve sends a proposal through the write path. Reject blocks that content for good. \
+             The speaker is what the posting client said about itself; the auto badge is the \
+             server's, and means the poster could have written the row itself.",
             &view.proposed,
-            &[("approve", "Approve", true), ("reject", "Reject", false)],
+            &[
+                Act {
+                    action: "approve",
+                    label: "Approve",
+                    button: "Approve",
+                    why: "",
+                    weight: Weight::Primary,
+                },
+                Act {
+                    action: "reject",
+                    label: "Reject",
+                    button: "Reject for good",
+                    why: "This content stays blocked. Ingestion will not propose it again, and \
+                          nothing here brings it back except Return to queue on the rejected list.",
+                    weight: Weight::Grave,
+                },
+            ],
             csrf,
         ));
         out.push_str(&queue_section(
             "Written",
-            "already approved, now a memory.",
+            "Already approved, and a memory now.",
             &view.written,
             &[],
             csrf,
         ));
         out.push_str(&queue_section(
             "Rejected",
-            "the owner already answered this and the content stays blocked.",
+            "You answered these already and the content stays blocked.",
             &view.rejected,
-            &[("unreject", "Return to queue", false)],
+            &[Act {
+                action: "unreject",
+                label: "Return to queue",
+                button: "Return to queue",
+                why: "",
+                weight: Weight::Quiet,
+            }],
             csrf,
         ));
         out
@@ -780,11 +826,11 @@ and what it finds lands here before anything reaches the store.</p>\
 <div class=\"pagehead\"><h2>Queue</h2>\
 <div class=\"when\">{total} {rows} ingestion is asking about</div>\
 <div class=\"grow\"></div></div>{note}\
-<div class=\"note\" style=\"padding-top:14px\"><p>The command line still clears a queue in bulk: \
-<code style=\"display:inline;margin:0\">lumberroom ingest approve --run &lt;id&gt;</code>. Two \
-hundred rows is not a queue anybody clears one button at a time.</p></div>\
+<p class=\"hint\">The command line still clears a queue in bulk: \
+<code class=\"cmd inline\">lumberroom ingest approve --run &lt;id&gt;</code>. Two hundred rows is \
+not a queue anybody clears one button at a time.</p>\
 {body}</main></div>",
-            rail = rail(contents, None, health),
+            rail = rail(contents, None),
             total = thousands(view.total() as i64),
             rows = plural(view.total() as i64, "proposal", "proposals"),
             note = done_note(done),
@@ -833,10 +879,24 @@ aria-label=\"Ask the notebook\"><button type=\"submit\">Ask</button></form>",
 /// something the reader was told, rather than as a wall they walked into.
 fn write_form(
     draft: &Draft,
+    contents: &Contents,
     csrf: &str,
     min_occurred_age_secs: u64,
     error: Option<&str>,
 ) -> String {
+    // The rail beside this form lists the namespaces that exist. Retyping one of them by hand is
+    // how a fact ends up alone in `project:lumberoom`, so the field offers them and still takes
+    // anything typed: a namespace with nothing in it yet is a legitimate answer.
+    let known: String = contents
+        .namespaces
+        .iter()
+        .map(|line| format!("<option value=\"{}\">", escape(&line.namespace)))
+        .collect();
+    let known = if known.is_empty() {
+        String::new()
+    } else {
+        format!("<datalist id=\"w-ns-known\">{known}</datalist>")
+    };
     let banner = match error {
         Some(message) => format!("<p class=\"wrerr\">{}</p>", escape(message)),
         None => String::new(),
@@ -874,8 +934,9 @@ fn write_form(
 <div class=\"pair\">\
 <div><label for=\"w-ns\">Namespace</label>\
 <input id=\"w-ns\" name=\"namespace\" value=\"{namespace}\" placeholder=\"user:me\" \
-autocomplete=\"off\" spellcheck=\"false\" required>\
-<p class=\"hint\">global, user:&lt;id&gt;, project:&lt;slug&gt; or personal:&lt;slug&gt;.</p></div>\
+list=\"w-ns-known\" autocomplete=\"off\" spellcheck=\"false\" required>{known}\
+<p class=\"hint\">global, user:&lt;id&gt;, project:&lt;slug&gt; or personal:&lt;slug&gt;. The list \
+offers what the store already holds.</p></div>\
 <div><label for=\"w-tags\">Tags</label>\
 <input id=\"w-tags\" name=\"tags\" value=\"{tags}\" placeholder=\"deploy, postgres\" \
 autocomplete=\"off\">\
@@ -897,6 +958,7 @@ twice.</p></div></div>\
         csrf = escape(csrf),
         target = target,
         banner = banner,
+        known = known,
         replacing = replacing,
         content = escape(&draft.content),
         namespace = escape(&draft.namespace),
@@ -920,7 +982,7 @@ fn window(secs: u64) -> String {
     format!("{n} {}", plural(n as i64, unit, &format!("{unit}s")))
 }
 
-fn rail(contents: &Contents, current: Option<&str>, health: &Health) -> String {
+fn rail(contents: &Contents, current: Option<&str>) -> String {
     let mut out = String::from("<aside class=\"rail\"><h3>Contents</h3>");
 
     if contents.namespaces.is_empty() {
@@ -949,15 +1011,13 @@ fn rail(contents: &Contents, current: Option<&str>, health: &Health) -> String {
         ));
     }
 
+    // No last-write line here. The health line in the header carries it on every screen, and this
+    // rail sits directly under that header.
     out.push_str(&format!(
         "<div class=\"railfoot\"><div class=\"big\">{live} live</div>\
-<div class=\"sub\">{retired} retired and still readable.<br>{when}</div></div>",
+<div class=\"sub\">{retired} retired and still readable.</div></div>",
         live = thousands(contents.live),
         retired = thousands(contents.retired),
-        when = match contents.last_write {
-            Some(at) => format!("Last write {}.", escape(&ago(at, health.now))),
-            None => "Nothing has been written yet.".to_string(),
-        },
     ));
 
     if !contents.sealed.is_empty() {
@@ -987,14 +1047,26 @@ fn entries(list: &[Entry], now: DateTime<Utc>) -> String {
             out.push_str(&format!("<div class=\"daymark\">{}</div>", escape(&mark)));
             day = mark;
         }
-        out.push_str(&row(entry, now));
+        out.push_str(&row(entry, now, true));
     }
     out
 }
 
+/// What the left margin says, given the heading the row sits under.
+///
+/// A run of eight rows written on one day used to print that day nine times: once in the daymark
+/// and once per row. The hour is the part the heading cannot say.
+fn margin(entry: &Entry, now: DateTime<Utc>, under_its_own_daymark: bool) -> String {
+    if under_its_own_daymark {
+        entry.timeline()
+    } else {
+        entry.dateline(now)
+    }
+}
+
 /// One entry line. Sensitivity travels on four channels: the printed word, the left edge, the
 /// ground behind the text and a shape after it, so a black and white print still sorts by level.
-fn row(entry: &Entry, now: DateTime<Utc>) -> String {
+fn row(entry: &Entry, now: DateTime<Utc>, dated_above: bool) -> String {
     let mut class = String::from("e");
     if entry.withheld {
         class.push_str(" sealedrow");
@@ -1027,7 +1099,7 @@ fn row(entry: &Entry, now: DateTime<Utc>) -> String {
 <span class=\"ck\">{tick}</span></span></a>",
         class = class,
         id = escape(&entry.id),
-        when = escape(&entry.dateline(now)),
+        when = escape(&margin(entry, now, dated_above)),
         text = text,
         held = held,
         who = escape(&entry.source_client),
@@ -1036,13 +1108,36 @@ fn row(entry: &Entry, now: DateTime<Utc>) -> String {
     )
 }
 
+/// How much a control weighs, which decides how it is drawn and whether it asks first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Weight {
+    /// The act the screen exists for.
+    Primary,
+    /// Reversible, and drawn to stay out of the way.
+    Quiet,
+    /// No undo. Ink red, behind one confirmation step.
+    Grave,
+}
+
+/// One control on a queue row.
+struct Act {
+    action: &'static str,
+    /// The word on the closed control.
+    label: &'static str,
+    /// The word on the button that commits, which for a grave act is not the same word.
+    button: &'static str,
+    /// What committing does, said once the owner has opened the step.
+    why: &'static str,
+    weight: Weight,
+}
+
 /// One state's slice of the queue. Empty groups are left off the page rather than printed with
 /// nothing under the heading, so a queue with no rejections does not carry a heading for none.
 fn queue_section(
     title: &str,
     subtitle: &str,
     rows: &[QueueRow],
-    controls: &[(&str, &str, bool)],
+    controls: &[Act],
     csrf: &dyn Fn(&str, &str) -> String,
 ) -> String {
     if rows.is_empty() {
@@ -1051,7 +1146,7 @@ fn queue_section(
     let body: String = rows.iter().map(|row| queue_row(row, controls, csrf)).collect();
     format!(
         "<div class=\"group\"><h3>{title}<span class=\"qcount\"> &middot; {count}</span></h3>\
-<p style=\"font:400 12.5px/1.5 var(--sans);color:var(--ink-3);padding:2px 0 6px\">{subtitle}</p>{body}</div>",
+<p class=\"qsub\">{subtitle}</p>{body}</div>",
         title = escape(title),
         count = thousands(rows.len() as i64),
         subtitle = escape(subtitle),
@@ -1079,11 +1174,7 @@ const AUTO_PROVENANCE: &str =
 ///
 /// `controls` is what this row's state allows. A written row gets none: the memory exists and the
 /// button that would unwrite it is `lumberroom forget`, which is a different decision on a different page.
-fn queue_row(
-    row: &QueueRow,
-    controls: &[(&str, &str, bool)],
-    csrf: &dyn Fn(&str, &str) -> String,
-) -> String {
+fn queue_row(row: &QueueRow, controls: &[Act], csrf: &dyn Fn(&str, &str) -> String) -> String {
     let tags: String = if row.tags.is_empty() {
         String::new()
     } else {
@@ -1098,17 +1189,33 @@ fn queue_row(
     } else {
         let forms: String = controls
             .iter()
-            .map(|(action, label, primary)| {
-                format!(
+            .map(|act| {
+                let form = format!(
                     "<form method=\"post\" action=\"/console/queue/{id}/{action}\">\
 <input type=\"hidden\" name=\"csrf\" value=\"{token}\">\
 <button type=\"submit\"{class}>{label}</button></form>",
                     id = escape(&row.id),
-                    action = escape(action),
-                    token = escape(&csrf(action, &row.id)),
-                    class = if *primary { " class=\"go\"" } else { "" },
-                    label = escape(label),
-                )
+                    action = escape(act.action),
+                    token = escape(&csrf(act.action, &row.id)),
+                    class = match act.weight {
+                        Weight::Primary => " class=\"go\"",
+                        Weight::Quiet => "",
+                        Weight::Grave => " class=\"danger\"",
+                    },
+                    label = escape(act.button),
+                );
+                match act.weight {
+                    // One step between the click and a decision with no undo. Rejecting blocks that
+                    // content for good, and the old markup did it on a single stray click.
+                    Weight::Grave => format!(
+                        "<details class=\"confirm\"><summary>{label}</summary>\
+<div class=\"why\"><p>{why}</p>{form}</div></details>",
+                        label = escape(act.label),
+                        why = escape(act.why),
+                        form = form,
+                    ),
+                    _ => form,
+                }
             })
             .collect();
         format!("<div class=\"qacts\">{forms}</div>")
