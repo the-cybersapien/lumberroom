@@ -1010,9 +1010,9 @@ bytes are encrypted on your own machine, and lumberroom seal is what writes them
 <input id=\"w-when\" name=\"occurred_at\" value=\"{when}\" placeholder=\"2026-03-01\" \
 autocomplete=\"off\" spellcheck=\"false\">\
 <p class=\"hint\">When the fact started holding in the world, as 2026-03-01 or a full instant. \
-Leave it empty for a fact that has always held. A date inside the last {fence} is refused: this \
-notebook already stamps the moment it learned a thing, and today's date would write that clock \
-twice.</p></div></div>\
+Leave it empty for a fact that has always held. A date inside the last {fence} is refused unless \
+the fact itself names that day: this notebook already stamps the moment it learned a thing, and \
+today's date would otherwise write that clock twice.</p></div></div>\
 <div class=\"send\"><button type=\"submit\">{submit}</button>\
 <a href=\"/console/reading\">Back to reading</a></div></form>",
         csrf = escape(csrf),

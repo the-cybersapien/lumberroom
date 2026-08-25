@@ -551,11 +551,50 @@ rows you meant to the rows that merely scored next.");
 
 pub async fn review(c: &Client, args: &Args) -> Result<()> {
     require_token(c, &c.file.borrow().path.display().to_string())?;
+    let do_dates = args.present("dates");
     let do_stale = args.present("stale");
     let do_conflicts = args.present("conflicts");
     let do_registry = args.present("registry");
-    let all = !do_stale && !do_conflicts && !do_registry;
+    let all = !do_stale && !do_conflicts && !do_registry && !do_dates;
     let limit = args.int("limit", 25);
+
+    if do_dates {
+        let (status, body) = c.http_get(&format!("/admin/review/dates?limit={limit}")).await?;
+        if status != 200 {
+            return Err(err(format!("date review failed ({status}): {}", compact(&body))));
+        }
+        let review: wire::DateReview = typed(&body, "date review")?;
+        let ready = review.rows.iter().filter(|r| r.proposed.is_some()).count();
+        out(&format!(
+            "undated facts whose own text names a day: {} ({ready} with one date, {} with more)",
+            review.rows.len(),
+            review.rows.len() - ready
+        ));
+        for r in &review.rows {
+            match &r.proposed {
+                Some(day) => out(&format!(
+                    "  {}  [{}]  {day}\n      {}",
+                    r.id,
+                    r.namespace,
+                    r.content.chars().take(96).collect::<String>()
+                )),
+                None => out(&format!(
+                    "  {}  [{}]  names {} days: {}\n      {}",
+                    r.id,
+                    r.namespace,
+                    r.ambiguous.len(),
+                    r.ambiguous.join(", "),
+                    r.content.chars().take(96).collect::<String>()
+                )),
+            }
+        }
+        if ready > 0 {
+            out("");
+            out("Nothing was written. Fill one with:");
+            out("  lumberroom fill-date <id> <YYYY-MM-DD>");
+        }
+        return Ok(());
+    }
 
     if all || do_stale {
         let days = args.int("days", 90);
@@ -636,6 +675,26 @@ pub async fn supersede(c: &Client, args: &Args) -> Result<()> {
         return Err(err(format!("supersede failed ({status}): {}", compact(&body))));
     }
     out(&format!("{old_id} is now superseded by {new_id}"));
+    Ok(())
+}
+
+/// Fill a start date on one fact that never carried one.
+///
+/// The server refuses any date the fact's own text does not name, so this cannot invent history. It
+/// exists because the near-now fence means a fact recorded on the day it happened lost its date with
+/// no way to supply it afterwards.
+pub async fn fill_date(c: &Client, args: &Args) -> Result<()> {
+    require_token(c, &c.file.borrow().path.display().to_string())?;
+    let (Some(id), Some(date)) = (args.positional_at(1), args.positional_at(2)) else {
+        return Err(err("usage: lumberroom fill-date <id> <YYYY-MM-DD>"));
+    };
+    let path = format!("/admin/memory/{}/fill-date", urlencode(id));
+    let body = serde_json::json!({ "occurred_at": date });
+    let (status, body) = c.http_request(reqwest::Method::POST, &path, Some(body)).await?;
+    if status != 200 {
+        return Err(err(format!("fill-date failed ({status}): {}", compact(&body))));
+    }
+    out(&format!("{id} now carries occurred_at {date}"));
     Ok(())
 }
 

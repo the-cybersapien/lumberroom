@@ -15,11 +15,13 @@
 //! runs by hand with a small limit, and it means the review queue cannot become the convenience
 //! surface that leaks.
 
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use super::Ctx;
 use crate::adapters::auth::{can_read, can_write};
 use crate::domain::errors::{DomainError, Result};
+use crate::domain::policy;
 use crate::domain::types::{Memory, RegistryEntry, Sensitivity};
 use crate::ports::Staleness;
 
@@ -197,6 +199,124 @@ pub async fn supersede(ctx: &Ctx, old: &str, new: &str) -> Result<Resolved> {
         id: new_id.to_string(),
         superseded: Some(old_id.to_string()),
         end_left_open: done.end_left_open,
+    })
+}
+
+/// One undated row and the day its own text names.
+#[derive(Debug, Clone, Serialize)]
+pub struct DateCandidate {
+    pub id: String,
+    pub namespace: String,
+    pub content: String,
+    pub created_at: String,
+    /// The single day the content states. Absent when it names none, or more than one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposed: Option<String>,
+    /// Every day the text names, when it names more than one. The owner picks; nothing here does.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ambiguous: Vec<String>,
+}
+
+/// Live rows with no start date, paired with the day each one states about itself.
+///
+/// A review, never a filler. It proposes nothing where the text names nothing, and where the text
+/// names two days it reports both rather than picking: "approved on 4 March after the panel met on
+/// 9 January" has two real dates and only the owner knows which one the fact is about.
+///
+/// Rows that name no day at all are dropped rather than listed. Most of the store is undated
+/// because most facts are timeless, and a list of every preference the owner ever stated is not a
+/// review, it is the store.
+pub async fn date_candidates(ctx: &Ctx, limit: Option<i64>) -> Result<Vec<DateCandidate>> {
+    let limit = limit.unwrap_or(50).clamp(1, 500);
+    // Every namespace this caller may read, resolved from their grants the way `search` resolves a
+    // requested list. The store supplies the names; the grant decides which survive and at what
+    // ceiling, and the ceiling then runs inside the query.
+    let names: Vec<String> =
+        ctx.repos.memories.namespace_counts(ctx.tenant()).await?.into_keys().collect();
+    let readable = policy::resolve(&ctx.principal.read, &names);
+    // Scan wider than the answer. Undated rows are the common case and only a few name a day, so a
+    // page sized to the answer would return almost nothing.
+    let mut rows = ctx.repos.memories.undated(ctx.tenant(), &readable, limit * 20).await?;
+
+    // A private row arrives with empty content, because the repository will not render ciphertext
+    // as text. Without this the scan reads those rows as naming no day and drops them in silence,
+    // so the facts most worth dating would be the ones it never mentions. A row that will not open
+    // stays dropped, which is the same answer every other reader gives it.
+    super::decrypt(ctx, rows.iter_mut().collect()).await;
+
+    let today = Utc::now().date_naive();
+    let mut out = Vec::new();
+    for row in rows {
+        let mut days = crate::domain::dates::extract(&row.content);
+        // A day still ahead is a plan, not a record, and `fill_date` would refuse it anyway.
+        days.retain(|d| *d <= today);
+        if days.is_empty() {
+            continue;
+        }
+        let (proposed, ambiguous) = if days.len() == 1 {
+            (Some(days[0].to_string()), vec![])
+        } else {
+            (None, days.iter().map(|d| d.to_string()).collect())
+        };
+        out.push(DateCandidate {
+            id: row.id,
+            namespace: row.namespace,
+            content: row.content,
+            created_at: row.created_at.to_rfc3339(),
+            proposed,
+            ambiguous,
+        });
+        if out.len() as i64 >= limit {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// Fill a start date on a row that never carried one.
+///
+/// Three refusals, and each one exists because the alternative stores a date nobody can check.
+///
+/// **The content has to state the day.** The same rule the near-now fence uses, and it is the whole
+/// reason this is safe to expose: a date written in the row's own text can be checked against that
+/// row forever, by anyone, long after whoever proposed it is gone. Without that rule this is an
+/// endpoint for writing arbitrary history.
+///
+/// **A date already there is never moved.** The repository refuses it in the statement. Filling a
+/// gap adds what was missing; overwriting rewrites what the store already believed.
+///
+/// **Nothing in the future.** A future start reads live and never reads as-of, so the row would
+/// answer one query and not the other.
+pub async fn fill_date(ctx: &Ctx, id: &str, when: DateTime<Utc>) -> Result<Resolved> {
+    let (uuid, row) = writable_row(ctx, id).await?;
+    if when > Utc::now() {
+        return Err(DomainError::validation(
+            "occurred_at cannot be in the future: a fact does not become true later than now",
+        ));
+    }
+    if row.occurred_at.is_some() {
+        return Err(DomainError::conflict(format!(
+            "memory {id} already carries a start date. This fills a gap and never moves a start"
+        )));
+    }
+    if !crate::domain::dates::states(&row.content, when.date_naive()) {
+        return Err(DomainError::validation(format!(
+            "the content of memory {id} does not name {}, so this date cannot be checked against \
+             the row later. Only a date the fact itself states can be filled in",
+            when.date_naive()
+        )));
+    }
+    if !ctx.repos.memories.fill_occurred_at(ctx.tenant(), uuid, when).await? {
+        return Err(DomainError::conflict(format!(
+            "memory {id} gained a start date while this ran"
+        )));
+    }
+    super::bootstrap::clear_cache();
+    Ok(Resolved {
+        action: "fill_date",
+        id: uuid.to_string(),
+        superseded: None,
+        end_left_open: false,
     })
 }
 

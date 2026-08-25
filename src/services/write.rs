@@ -193,7 +193,12 @@ async fn run_inner(
     //
     // Before (e) and (h), which both query stored rows. A write about to be refused costs no read.
     if fence == Fence::Apply {
-        fence_occurred_at(occurred_at, ctx.cfg.policy.write_min_occurred_age_secs, Utc::now())?;
+        fence_occurred_at(
+            occurred_at,
+            ctx.cfg.policy.write_min_occurred_age_secs,
+            Utc::now(),
+            content,
+        )?;
     }
 
     let tags = clean_tags(tags);
@@ -640,12 +645,30 @@ fn fence_occurred_at(
     occurred_at: Option<DateTime<Utc>>,
     min_age_secs: u64,
     now: DateTime<Utc>,
+    content: &str,
 ) -> Result<()> {
     let Some(stated) = occurred_at else { return Ok(()) };
     // `try_from` rather than `as`: config refuses anything above a year, and a value that wrapped
     // negative here would widen the fence into accepting everything.
     let required = i64::try_from(min_age_secs).unwrap_or(i64::MAX);
     if now.signed_duration_since(stated).num_seconds() >= required {
+        return Ok(());
+    }
+    // The one way through, and it exists because the fence was costing real dates. An agent
+    // recording an event the day it happens could never date it, so a whole namespace of live
+    // event-writing carried NULL on every row: 0 of 175 in one measured case, while the ingest
+    // fill, which bypasses this, ran at 100%.
+    //
+    // The exemption answers the objection in the paragraph above rather than dodging it. The worry
+    // is that a date nobody can check reads afterwards exactly like a date the owner stated. A date
+    // written verbatim in the content is checkable forever, by anyone, against the row itself. It
+    // is corroboration stored beside the claim, which is the one thing an invented timestamp can
+    // never have.
+    //
+    // The future stays shut. A date ahead of now is refused whatever the text says, because content
+    // asserting a future date is a plan rather than a record, and a future `occurred_at` reads live
+    // and never reads as-of.
+    if stated <= now && crate::domain::dates::states(content, stated.date_naive()) {
         return Ok(());
     }
     Err(DomainError::validation(format!(
@@ -957,24 +980,43 @@ mod tests {
 
     #[test]
     fn a_write_carrying_no_date_is_never_the_fence_s_business() {
-        assert!(fence_occurred_at(None, DAY as u64, Utc::now()).is_ok());
+        assert!(
+            fence_occurred_at(None, DAY as u64, Utc::now(), "a fact with no date in it").is_ok()
+        );
     }
 
     #[test]
     fn a_date_the_owner_stated_months_ago_passes() {
-        assert!(fence_occurred_at(ago(90 * DAY), DAY as u64, Utc::now()).is_ok());
-        assert!(fence_occurred_at(ago(DAY + 1), DAY as u64, Utc::now()).is_ok());
+        assert!(fence_occurred_at(
+            ago(90 * DAY),
+            DAY as u64,
+            Utc::now(),
+            "a fact with no date in it"
+        )
+        .is_ok());
+        assert!(fence_occurred_at(
+            ago(DAY + 1),
+            DAY as u64,
+            Utc::now(),
+            "a fact with no date in it"
+        )
+        .is_ok());
         // The boundary. Exactly one window old is old enough, so an operator reading the setting
         // as "at least this old" reads it right.
         let now = Utc::now();
         let exactly = now - chrono::Duration::seconds(DAY);
-        assert!(fence_occurred_at(Some(exactly), DAY as u64, now).is_ok());
+        assert!(
+            fence_occurred_at(Some(exactly), DAY as u64, now, "a fact with no date in it").is_ok()
+        );
     }
 
     #[test]
     fn a_date_of_now_is_refused_because_it_repeats_created_at() {
-        assert!(fence_occurred_at(ago(0), DAY as u64, Utc::now()).is_err());
-        assert!(fence_occurred_at(ago(3600), DAY as u64, Utc::now()).is_err());
+        assert!(
+            fence_occurred_at(ago(0), DAY as u64, Utc::now(), "a fact with no date in it").is_err()
+        );
+        assert!(fence_occurred_at(ago(3600), DAY as u64, Utc::now(), "a fact with no date in it")
+            .is_err());
     }
 
     /// One bound covers both ends. `WRITE_MAX_FUTURE_OCCURRED_SECS` was cut for this reason: a date
@@ -984,7 +1026,8 @@ mod tests {
     fn a_future_date_is_refused_by_the_same_bound() {
         let now = Utc::now();
         let next_year = now + chrono::Duration::seconds(365 * DAY);
-        assert!(fence_occurred_at(Some(next_year), DAY as u64, now).is_err());
+        assert!(fence_occurred_at(Some(next_year), DAY as u64, now, "a fact with no date in it")
+            .is_err());
     }
 
     /// The wording is the fence. A caller told to send an older date sends one it made up, which
@@ -992,10 +1035,50 @@ mod tests {
     /// actually stated. This test fails if anybody rewords the refusal into suggesting a backdate.
     #[test]
     fn the_refusal_asks_for_omission_and_never_for_an_older_date() {
-        let err = fence_occurred_at(ago(60), DAY as u64, Utc::now()).unwrap_err().to_string();
+        let err = fence_occurred_at(ago(60), DAY as u64, Utc::now(), "a fact with no date in it")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("Omit occurred_at"), "the fix has to be stated: {err}");
         assert!(!err.contains("older"), "an older date is not the fix: {err}");
         assert!(!err.contains("earlier"), "an earlier date is not the fix: {err}");
+    }
+
+    /// The fence cost a whole namespace its dates. An agent recording an event on the day it happens
+    /// could never date it, so `project:investing` carried 0 dated rows out of 175 from one client
+    /// while the ingest fill, which bypasses the fence, ran at 100%. A date the content itself
+    /// states is checkable against the row forever, which is what an invented timestamp never is.
+    #[test]
+    fn a_same_day_date_passes_when_the_content_states_it_and_is_refused_when_it_does_not() {
+        let now = "2026-08-19T18:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let today = Some("2026-08-19T00:00:00Z".parse::<DateTime<Utc>>().unwrap());
+
+        for form in [
+            "the regulator approved it on 19 August 2026",
+            "the regulator approved it on 2026-08-19",
+            "the regulator approved it on August 19, 2026",
+            "the regulator approved it on 19 Aug 2026",
+        ] {
+            assert!(
+                fence_occurred_at(today, DAY as u64, now, form).is_ok(),
+                "content states the day: {form}"
+            );
+        }
+
+        // The same instant, with the day absent from the text, is the case the fence was built for.
+        assert!(fence_occurred_at(today, DAY as u64, now, "the regulator approved it").is_err());
+        // A different day in the text does not vouch for this one.
+        assert!(fence_occurred_at(today, DAY as u64, now, "approved on 3 March 2026").is_err());
+    }
+
+    /// The exemption does not open the future, whatever the sentence claims. A future `occurred_at`
+    /// reads live and never reads as-of, so the row would answer one query and not the other.
+    #[test]
+    fn content_naming_a_future_day_still_cannot_date_a_row_ahead_of_now() {
+        let now = "2026-08-19T18:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let ahead = Some("2027-03-12T00:00:00Z".parse::<DateTime<Utc>>().unwrap());
+        assert!(
+            fence_occurred_at(ahead, DAY as u64, now, "the decision is due 12 March 2027").is_err()
+        );
     }
 
     /// The exemption is a private enum behind a `pub(super)` function, so a model cannot reach it

@@ -2782,6 +2782,110 @@ async fn deleting_a_correction_does_not_revive_a_row_the_caller_cannot_reach() {
 }
 
 #[tokio::test]
+async fn the_date_review_proposes_one_day_reports_two_and_ignores_facts_that_name_none() {
+    let (ctx, _pool, _serial) = ctx_or_skip!();
+    let one = write::run(
+        &ctx,
+        "the auditor signed the report on 11 February 2026 without qualification",
+        "user:me",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let two = write::run(
+        &ctx,
+        "the filing went in on 2026-02-03 and the hearing followed on 9 April 2026",
+        "user:me",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let none = write::run(
+        &ctx,
+        "the auditor prefers quarterly reviews",
+        "user:me",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let found = review::date_candidates(&ctx, Some(200)).await.unwrap();
+    let by_id = |id: &str| found.iter().find(|c| c.id == id);
+
+    let single = by_id(&one.id).expect("a fact naming one day is a candidate");
+    assert_eq!(single.proposed.as_deref(), Some("2026-02-11"));
+    assert!(single.ambiguous.is_empty());
+
+    let pair = by_id(&two.id).expect("a fact naming two days is still worth showing");
+    assert_eq!(pair.proposed, None, "two dates means the owner picks, not the scan");
+    assert_eq!(pair.ambiguous, vec!["2026-02-03", "2026-04-09"]);
+
+    assert!(by_id(&none.id).is_none(), "a timeless fact is not a date candidate");
+
+    // The review proposes and writes nothing.
+    let still = review::date_candidates(&ctx, Some(200)).await.unwrap();
+    assert!(by_id(&one.id).is_some() && still.iter().any(|c| c.id == one.id));
+}
+
+#[tokio::test]
+async fn filling_a_date_takes_only_one_the_fact_itself_names_and_never_moves_an_existing_start() {
+    let (ctx, _pool, _serial) = ctx_or_skip!();
+    let day = "2026-03-04T00:00:00Z".parse::<chrono::DateTime<chrono::Utc>>().unwrap();
+    let other = "2026-03-05T00:00:00Z".parse::<chrono::DateTime<chrono::Utc>>().unwrap();
+
+    let row = write::run(
+        &ctx,
+        "the regulator cleared the filing on 4 March 2026",
+        "user:me",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // A day the text does not name is refused, because nothing could check it against the row later.
+    let refused = review::fill_date(&ctx, &row.id, other).await.unwrap_err();
+    assert!(refused.client_message().contains("does not name"), "{}", refused.client_message());
+
+    // The day the sentence states goes in.
+    review::fill_date(&ctx, &row.id, day).await.unwrap();
+    let after = review::fill_date(&ctx, &row.id, day).await.unwrap_err();
+    assert!(
+        after.client_message().contains("already carries"),
+        "a start is filled once and never moved: {}",
+        after.client_message()
+    );
+
+    // And it reaches the read it was missing from.
+    let hits = search::run(
+        &ctx,
+        "regulator cleared the filing",
+        None,
+        Some(10),
+        None,
+        None,
+        Some("2026-03-10T00:00:00Z".parse().unwrap()),
+    )
+    .await
+    .unwrap();
+    assert!(
+        hits.hits.iter().any(|h| h.id == row.id),
+        "the filled date should let an as-of read after it return the row"
+    );
+}
+
+#[tokio::test]
 async fn as_of_on_the_model_surface_still_answers_to_the_history_capability() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
     let instant = "2026-05-01T00:00:00Z".parse::<chrono::DateTime<chrono::Utc>>().unwrap();

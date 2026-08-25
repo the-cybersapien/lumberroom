@@ -74,6 +74,24 @@ pub struct Memory {
     pub created_at: String,
 }
 
+/// `GET /admin/review/dates`.
+#[derive(Debug, Deserialize)]
+pub struct DateReview {
+    #[serde(default)]
+    pub rows: Vec<DateCandidate>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DateCandidate {
+    pub id: String,
+    pub namespace: String,
+    pub content: String,
+    #[serde(default)]
+    pub proposed: Option<String>,
+    #[serde(default)]
+    pub ambiguous: Vec<String>,
+}
+
 /// `GET /admin/review/stale`.
 #[derive(Debug, Deserialize)]
 pub struct StaleReview {

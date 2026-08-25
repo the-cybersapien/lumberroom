@@ -421,6 +421,33 @@ pub trait MemoryRepository: Send + Sync {
     async fn supersede(&self, tenant: &str, old: uuid::Uuid, new: uuid::Uuid)
         -> Result<Superseded>;
 
+    /// Live rows carrying no start date, newest first, for the date review.
+    ///
+    /// Both grant axes, like every other read. The review reads content to look for a day the fact
+    /// states about itself, so a row the caller may not read must not reach that scan.
+    async fn undated(
+        &self,
+        tenant: &str,
+        readable: &[NamespaceCeiling],
+        limit: i64,
+    ) -> Result<Vec<Memory>>;
+
+    /// Fill a start date that was never recorded. Fills only where `occurred_at` is NULL, and
+    /// answers false when the row already carries one.
+    ///
+    /// Fill, never change. A supersession ends a period and never moves its start, and until this
+    /// landed nothing in the store could write `occurred_at` after the insert at all. That was not
+    /// an oversight so much as an unexamined consequence: the near-now fence refused a same-day
+    /// date, so a fact recorded the day it happened lost its date permanently with no way back.
+    /// Filling a NULL adds a fact the row never held; overwriting one would rewrite history, so the
+    /// statement refuses it rather than trusting the caller.
+    async fn fill_occurred_at(
+        &self,
+        tenant: &str,
+        id: uuid::Uuid,
+        when: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool>;
+
     /// Walk the chain to the row that is live now, so a rejection can name the current head.
     async fn supersession_head(&self, tenant: &str, id: uuid::Uuid) -> Result<Option<Memory>>;
 

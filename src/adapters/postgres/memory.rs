@@ -453,6 +453,30 @@ const RECENT_ALL: &str = recent_sql!("true");
 ///
 /// `end_open` is the same-day case surfacing where somebody will see it: the row was retired and its
 /// period never closed, so every as-of read still reports it as holding.
+/// Live rows carrying no start date, for the date review.
+///
+/// Live only. A retired row's missing start is not worth the owner's attention: nothing reads it as
+/// current, and filling it would move a boundary inside a chain that is already closed.
+const UNDATED_SQL: &str = r#"
+    WITH reachable AS (
+        SELECT namespace, min(sensitivity_rank(max)) AS max_rank
+          FROM unnest($2::text[], $3::text[]) AS g(namespace, max)
+         GROUP BY namespace
+    )
+    SELECT m.id, m.namespace, m.content, m.tags, m.source_client, m.embedding_model,
+           m.sensitivity, m.supersedes, m.superseded_by, m.superseded_at,
+           m.access_count, m.last_accessed_at, m.last_confirmed_at, m.created_at,
+           m.occurred_at, m.occurred_until
+      FROM memory m
+      JOIN reachable rg ON rg.namespace = m.namespace
+     WHERE m.tenant_id = $1
+       AND sensitivity_rank(m.sensitivity) <= rg.max_rank
+       AND m.occurred_at IS NULL
+       AND m.superseded_by IS NULL
+     ORDER BY m.created_at DESC, m.id DESC
+     LIMIT $4
+"#;
+
 const RETIRED_SQL: &str = r#"
     WITH reachable AS (
         SELECT namespace, min(sensitivity_rank(max)) AS max_rank
@@ -1683,6 +1707,51 @@ impl MemoryRepository for PgMemoryRepository {
 
         tx.commit().await?;
         Ok(Superseded { end_left_open: until.is_none() })
+    }
+
+    /// Live rows with no start date, newest first.
+    async fn undated(
+        &self,
+        tenant: &str,
+        readable: &[NamespaceCeiling],
+        limit: i64,
+    ) -> Result<Vec<Memory>> {
+        if readable.is_empty() {
+            return Ok(vec![]);
+        }
+        let (readable_ns, readable_max) = split_ceilings(readable);
+        let rows = sqlx::query(UNDATED_SQL)
+            .bind(tenant)
+            .bind(&readable_ns)
+            .bind(&readable_max)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.iter().map(memory_from_row).collect())
+    }
+
+    /// Fill a start date that was never recorded, and refuse to move one that was.
+    ///
+    /// `occurred_at IS NULL` in the WHERE rather than a read-then-write: two callers filling the
+    /// same row race, and the loser has to lose inside the statement rather than after reading a
+    /// NULL that stopped being true. The row count answers which one this was.
+    async fn fill_occurred_at(
+        &self,
+        tenant: &str,
+        id: uuid::Uuid,
+        when: DateTime<Utc>,
+    ) -> Result<bool> {
+        let done = sqlx::query(
+            "UPDATE memory SET occurred_at = $3
+              WHERE tenant_id = $1 AND id = $2 AND occurred_at IS NULL",
+        )
+        .bind(tenant)
+        .bind(id)
+        .bind(when)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(done == 1)
     }
 
     /// The last row on the chain from `id`. Depth-capped like every other walk, so a table that

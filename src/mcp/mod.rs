@@ -138,9 +138,11 @@ pub struct WriteArgs {
     /// When this fact became true in the world. Two forms are accepted: a date, `2026-03-01`, read
     /// as midnight UTC, or a full RFC 3339 instant, `2026-03-01T09:30:00Z`. A bare month or year
     /// has no form here, so "since March" is omitted rather than turned into a day you chose. Set
-    /// it only when the user stated the time, as in "we moved to Postgres 16 on 4 June 2026". Never
-    /// infer a date from context, and never pass today's date because today is when you heard it:
-    /// the store already records that separately.
+    /// it whenever the time is stated rather than worked out: by the user, as in "we moved to
+    /// Postgres 16 on 4 June 2026", or by the fact itself naming the day an event happened, as in
+    /// "the regulator approved it on 19 August 2026". Never infer a date from context, and never
+    /// pass today's date because today is when you heard it: the store already records that
+    /// separately.
     pub occurred_at: Option<String>,
 }
 
