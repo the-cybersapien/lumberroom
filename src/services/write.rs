@@ -240,6 +240,7 @@ async fn run_inner(
                     sensitivity: existing.sensitivity,
                     deduplicated: true,
                     superseded: None,
+                    end_left_open: false,
                     possible_conflicts: vec![],
                 });
             }
@@ -278,6 +279,7 @@ async fn run_inner(
                         sensitivity: resolved,
                         deduplicated: true,
                         superseded: None,
+                        end_left_open: false,
                         possible_conflicts: vec![],
                     });
                 }
@@ -346,21 +348,24 @@ async fn run_inner(
     let new_id = uuid::Uuid::parse_str(&written.id)
         .map_err(|_| DomainError::internal("repository returned an id that is not a uuid"))?;
 
+    let mut end_left_open = false;
     let superseded = match supersedes_id {
         Some(old) => {
             // The forward link is already on the new row from the insert; this writes the reverse
             // link and the timestamp on the old one. A failure here leaves a live new row and an
             // un-retired old one, so the error names the row that was written: a caller that
             // retries blindly would otherwise create a second copy.
-            ctx.repos.memories.supersede(ctx.tenant(), old, new_id).await.map_err(|e| {
-                DomainError::new(
-                    e.kind,
-                    format!(
-                        "memory {new_id} was written but {old} was not retired: {}",
-                        e.client_message()
-                    ),
-                )
-            })?;
+            let done =
+                ctx.repos.memories.supersede(ctx.tenant(), old, new_id).await.map_err(|e| {
+                    DomainError::new(
+                        e.kind,
+                        format!(
+                            "memory {new_id} was written but {old} was not retired: {}",
+                            e.client_message()
+                        ),
+                    )
+                })?;
+            end_left_open = done.end_left_open;
             Some(old.to_string())
         }
         None => None,
@@ -375,6 +380,7 @@ async fn run_inner(
         sensitivity: resolved,
         deduplicated: false,
         superseded,
+        end_left_open,
         possible_conflicts,
     })
 }

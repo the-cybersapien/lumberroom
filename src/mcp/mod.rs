@@ -88,9 +88,8 @@ pub struct BootstrapArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchArgs {
-    // No as_of, occurred_before or occurred_after. A range filter belongs to the as-of query that
-    // decision 0008 defers, and a model guessing a range from a question is the pattern this system
-    // refuses everywhere else.
+    // No occurred_before or occurred_after. A range asks the caller to invent two instants where
+    // `as_of` asks for one it was given, and two guesses compound.
     /// What you want to know, in natural language. Full sentences retrieve better than keywords.
     pub query: String,
     /// Restrict the search to exactly these namespaces. Omit it unless you have a reason.
@@ -107,6 +106,14 @@ pub struct SearchArgs {
     /// before".
     #[serde(default)]
     pub include_superseded: Option<bool>,
+    /// What the store held at this instant, as a date, `2026-03-01`, read as midnight UTC, or a
+    /// full RFC 3339 instant. Pass it only when the person named a time. Working one out from the
+    /// question is a guess, and a guess here is worse than no argument at all: the filter drops
+    /// every fact that started after the instant you chose, so a date that is too early answers
+    /// "nothing is known" about facts the store holds. Omit it and the search answers as of now,
+    /// which is what almost every question wants.
+    #[serde(default)]
+    pub as_of: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -203,6 +210,10 @@ Superseded facts are excluded: every hit is what is believed now."
         rc: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         self.run("memory_search", None, &rc, |ctx| async move {
+            let as_of = match args.as_of.as_deref() {
+                Some(raw) => Some(tools::parse_as_of(raw)?),
+                None => None,
+            };
             let result = search::run(
                 &ctx,
                 &args.query,
@@ -210,10 +221,13 @@ Superseded facts are excluded: every hit is what is believed now."
                 args.limit,
                 args.project.as_deref(),
                 args.include_superseded,
-                // No as_of on this surface. A model guessing a date range from a
-                // question is the pattern this system refuses everywhere, and reading retired
-                // facts is a capability an operator grants rather than a tool argument.
-                None,
+                // Reversed on 25 August 2026, and the reversal is narrow. What this surface refused
+                // was a model turning a question into a date; what it takes now is an instant the
+                // person named, which the description says in the words the model reads. The store
+                // records no difference between the two, so this argument is the caller's assertion
+                // and the wording is the only thing holding the line. `services::search` gates it on
+                // `may_read_history` before the statement runs, as it always did.
+                as_of,
             )
             .await?;
             let json = serde_json::to_value(&result).unwrap_or_default();

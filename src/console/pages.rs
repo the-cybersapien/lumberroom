@@ -24,6 +24,7 @@ use crate::console::data::{
     Answer, Contents, Cursor, Entry, Leaf, Page, QueueRow, QueueView, RegistryGroup,
 };
 use crate::domain::types::Sensitivity;
+use crate::ports::memory::Retired;
 
 /// The mark, compiled in and served at `/console/logo.svg`.
 ///
@@ -49,6 +50,7 @@ pub enum Tab {
     Registry,
     Aliases,
     Queue,
+    Retired,
     /// Sign-in and the notices, which belong to no section.
     None,
     Cleanup,
@@ -152,6 +154,7 @@ pub fn nav(tab: Tab) -> String {
         ("Registry", "/console/registry", Tab::Registry),
         ("Aliases", "/console/aliases", Tab::Aliases),
         ("Queue", "/console/queue", Tab::Queue),
+        ("Retired", "/console/retired", Tab::Retired),
         ("Cleanup", "/console/cleanup", Tab::Cleanup),
         ("Clients", "/console/clients", Tab::Clients),
     ]
@@ -754,6 +757,63 @@ act, because a canonical key is a decision and not a note.</p>\
 ///
 /// `csrf` arrives as a maker so the session type stays out of this module and a test can render the
 /// page without one.
+/// What got retired lately, newest first, with the row that retired it.
+///
+/// The page exists because approving a supersession is the one act in this console that removes a
+/// fact from every future answer without deleting anything, and nothing else lists what a run took.
+/// An open end gets its own mark: that row is retired and still reads as holding at every instant,
+/// so an as-of read and a live read disagree about it.
+pub fn retired(rows: &[Retired], contents: &Contents, health: &Health) -> String {
+    let body = if rows.is_empty() {
+        "<div class=\"note\"><div class=\"big2\">Nothing was retired this week.</div>\
+<p>A fact lands here when something replaced it, whether you pressed Replace, approved a proposal, \
+or a cleanup ran. Seven days, newest first.</p></div>"
+            .to_string()
+    } else {
+        let items: String = rows
+            .iter()
+            .map(|r| {
+                let successor = match &r.successor_id {
+                    Some(id) => format!(
+                        "<a href=\"/console/fact/{id}\">what replaced it</a>",
+                        id = escape(&id.to_string())
+                    ),
+                    // The chain was spliced past a deleted successor, so nothing here names it.
+                    None => "replaced by a row that has since been deleted".to_string(),
+                };
+                let open = if r.end_open {
+                    "<span class=\"warn\">end date unknown, still reads as current at every \
+                     instant</span>"
+                } else {
+                    ""
+                };
+                format!(
+                    "<li><div class=\"row\"><a href=\"/console/fact/{id}\">{content}</a></div>\
+<div class=\"when\">{ns}, retired {at}, {successor} {open}</div></li>",
+                    id = escape(&r.id.to_string()),
+                    content = escape(&r.content),
+                    ns = escape(&r.namespace),
+                    at = date(r.superseded_at),
+                )
+            })
+            .collect();
+        format!("<ul class=\"list\">{items}</ul>")
+    };
+
+    shell(
+        "lumberroom: retired",
+        Tab::Retired,
+        Some(health),
+        &format!(
+            "<div class=\"c-body\">{rail}<main class=\"page\">\
+<div class=\"pagehead\"><h2>Retired this week</h2>\
+<div class=\"when\">{n} in the last seven days</div></div>{body}</main></div>",
+            rail = rail(contents, None),
+            n = rows.len(),
+        ),
+    )
+}
+
 pub fn queue(
     view: &QueueView,
     contents: &Contents,
@@ -1387,6 +1447,49 @@ mod tests {
             confirmed: false,
             withheld: sensitivity == Sensitivity::Sealed,
         }
+    }
+
+    fn retired_row(end_open: bool, successor: bool) -> Retired {
+        Retired {
+            id: uuid::Uuid::nil(),
+            namespace: "user:me".into(),
+            content: "the deploy target is fly.io".into(),
+            sensitivity: Sensitivity::Open,
+            superseded_at: "2026-08-19T14:02:00Z".parse().unwrap(),
+            occurred_at: Some("2026-08-17T00:00:00Z".parse().unwrap()),
+            occurred_until: if end_open {
+                None
+            } else {
+                Some("2026-08-19T00:00:00Z".parse().unwrap())
+            },
+            end_open,
+            successor_id: successor.then(|| uuid::Uuid::from_u128(2)),
+            successor_namespace: successor.then(|| "user:me".to_string()),
+        }
+    }
+
+    #[test]
+    fn the_retired_page_marks_a_row_whose_period_never_closed() {
+        let closed = retired(&[retired_row(false, true)], &contents(), &health());
+        assert!(!closed.contains("end date unknown"), "an ordinary retirement needs no warning");
+
+        let open = retired(&[retired_row(true, true)], &contents(), &health());
+        assert!(open.contains("end date unknown"), "{open}");
+        assert!(open.contains("19 Aug 2026"), "the retirement date is what this page sorts on");
+    }
+
+    #[test]
+    fn a_retirement_whose_successor_was_deleted_says_so_rather_than_linking_nowhere() {
+        let html = retired(&[retired_row(false, false)], &contents(), &health());
+        assert!(html.contains("has since been deleted"), "{html}");
+        // One link, to the retired row itself. A missing successor must not render a dead href.
+        assert_eq!(html.matches("/console/fact/").count(), 1, "{html}");
+    }
+
+    #[test]
+    fn an_empty_retired_page_says_nothing_happened_rather_than_showing_an_empty_list() {
+        let html = retired(&[], &contents(), &health());
+        assert!(html.contains("Nothing was retired this week"), "{html}");
     }
 
     fn contents() -> Contents {

@@ -18,12 +18,13 @@ carries a marker pointing here.
 | [0005](0005-private-drops-lexical-search.md) | The lexical index covers `open` only, so private content is semantic-only | 19 Aug 2026 | accepted, shipped in migration 004 |
 | [0006](0006-console-decides-the-queue.md) | The console decides the ingest queue through the same service call the CLI makes | 20 Aug 2026 | accepted, verified |
 | [0007](0007-longmemeval-as-the-retrieval-gate.md) | LongMemEval-S retrieval recall is the standing retrieval gate, run on the embedder the one published comparison used | 20 Aug 2026 | accepted, verified |
-| [0008](0008-valid-time.md) | A memory carries valid time beside transaction time, and the as-of query reads it | 20 Aug 2026 | accepted, implemented; amended on why phase 2 was deferred |
+| [0008](0008-valid-time.md) | A memory carries valid time beside transaction time, and the as-of query reads it | 20 Aug 2026 | accepted, implemented; amended twice, on the deferral and on rule D1 |
 | [0009](0009-aliases-are-query-expansion.md) | Two names for one subject is an alias with valid time, and search expands over the group rather than walking a graph | 20 Aug 2026 | accepted, implemented |
 | [0010](0010-registry-history.md) | A registry upsert keeps the value it replaces, readable behind may_read_history and through no tool | 21 Aug 2026 | accepted, implemented |
 | [0011](0011-cleanup-proposes.md) | A periodic pass proposes cleanups and never acts, and the model half only ever sees rows at open | 21 Aug 2026 | accepted, verified |
 | [0012](0012-cli-distribution.md) | `lumberroom` ships as four raw binaries off a git tag, built from two places | 22 Aug 2026 | accepted, scripted; the darwin leg unverified |
 | [0013](0013-delete-splices-the-chain.md) | A delete splices the supersession chain and revives a predecessor only under the caller's grant | 23 Aug 2026 | accepted, implemented; not run live on this branch |
+| [0014](0014-nothing-finds-the-pair-a-supersession-needs.md) | The store can record a supersession and nothing finds the pair; four parts, three of them held | 25 Aug 2026 | draft; parts 1 and 2 implemented and tested bar the measure, parts 3 and 4 unbuilt, the gating rerun run and passed |
 
 **On "verified".** All four gates ran against a live server on 20 August 2026 and passed. An OAuth
 flow completed end to end, a private row was encrypted and read back, and a replayed refresh token

@@ -2475,6 +2475,15 @@ async fn memory_links(pool: &PgPool, id: &str) -> (Option<String>, Option<String
     )
 }
 
+async fn occurred_until(pool: &PgPool, id: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    sqlx::query("SELECT occurred_until FROM memory WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(id).unwrap())
+        .fetch_one(pool)
+        .await
+        .unwrap()
+        .get("occurred_until")
+}
+
 async fn memory_exists(pool: &PgPool, id: &str) -> bool {
     sqlx::query_scalar::<_, i64>("SELECT count(*) FROM memory WHERE id = $1")
         .bind(uuid::Uuid::parse_str(id).unwrap())
@@ -2770,6 +2779,100 @@ async fn deleting_a_correction_does_not_revive_a_row_the_caller_cannot_reach() {
     assert_eq!(done.revived, vec![retired.id.clone()], "{}", done.text);
     assert!(done.text.contains("Revived 1 row"), "{}", done.text);
     assert_eq!(memory_links(&pool, &retired.id).await, (None, None));
+}
+
+#[tokio::test]
+async fn as_of_on_the_model_surface_still_answers_to_the_history_capability() {
+    let (ctx, _pool, _serial) = ctx_or_skip!();
+    let instant = "2026-05-01T00:00:00Z".parse::<chrono::DateTime<chrono::Utc>>().unwrap();
+
+    // The argument reaching a tool changes nothing about who may use it. This is the check that
+    // would have caught the door being opened by a second spelling, which is how it went wrong once.
+    let blind = with_principal(&ctx, |p| p.may_read_history = false);
+    let refused = search::run(&blind, "anything", None, None, None, None, Some(instant))
+        .await
+        .expect_err("as_of without the capability has to refuse");
+    assert_eq!(refused.kind.http_status(), 403, "{}", refused.client_message());
+
+    // And it still refuses the pair, because the as-of statement applies no supersession filter of
+    // its own and the flag would be ignored rather than honoured.
+    let both = search::run(&ctx, "anything", None, None, None, Some(true), Some(instant))
+        .await
+        .expect_err("as_of beside include_superseded is a caller believing two things");
+    assert!(both.client_message().contains("include_superseded"), "{}", both.client_message());
+}
+
+#[tokio::test]
+async fn two_undated_facts_do_not_both_answer_an_instant_before_either_was_written() {
+    let (ctx, _pool, _serial) = ctx_or_skip!();
+    // Neither row carries a date, which is most of the store. Before the fallback landed, both
+    // matched every instant and an as-of read handed back a fact and its replacement together.
+    let old = write::run(&ctx, "the terminal theme is dark", "user:me", None, None, None, None)
+        .await
+        .unwrap();
+    let new =
+        write::run(&ctx, "the terminal theme is light", "user:me", None, Some(&old.id), None, None)
+            .await
+            .unwrap();
+
+    let long_ago = "2020-01-01T00:00:00Z".parse::<chrono::DateTime<chrono::Utc>>().unwrap();
+    let before = search::run(&ctx, "terminal theme", None, Some(10), None, None, Some(long_ago))
+        .await
+        .unwrap();
+    let ids: Vec<&str> = before.hits.iter().map(|h| h.id.as_str()).collect();
+    assert!(
+        !ids.contains(&old.id.as_str()) && !ids.contains(&new.id.as_str()),
+        "the store cannot claim either fact held in 2020: {ids:?}"
+    );
+
+    // Now, the live head answers and the row it retired does not.
+    let now =
+        search::run(&ctx, "terminal theme", None, Some(10), None, None, Some(chrono::Utc::now()))
+            .await
+            .unwrap();
+    let ids: Vec<&str> = now.hits.iter().map(|h| h.id.as_str()).collect();
+    assert!(ids.contains(&new.id.as_str()), "the live fact has to answer now: {ids:?}");
+    assert!(!ids.contains(&old.id.as_str()), "the retired fact answered too: {ids:?}");
+}
+
+#[tokio::test]
+async fn a_revived_row_comes_back_to_the_as_of_read_as_well_as_the_live_one() {
+    let (ctx, pool, _serial) = ctx_or_skip!();
+    let retired =
+        write::run(&ctx, "the deploy target is fly.io", "user:me", None, None, None, None)
+            .await
+            .unwrap();
+    let correction = write::run(
+        &ctx,
+        "the deploy target is a hetzner box",
+        "user:me",
+        None,
+        Some(&retired.id),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        occurred_until(&pool, &retired.id).await.is_some(),
+        "supersession has to close the predecessor's period, or this test proves nothing"
+    );
+
+    forget::by_id(&ctx, &correction.id, Some("test"), false).await.unwrap();
+
+    // Both reads, because the bug put them out of step: live search filters on `superseded_by`
+    // alone and returned the row, every as-of read filters on `occurred_until` and did not.
+    assert_eq!(occurred_until(&pool, &retired.id).await, None);
+    let live = search::run(&ctx, "deploy target", None, Some(10), None, None, None).await.unwrap();
+    assert!(live.hits.iter().any(|h| h.id == retired.id), "the revived row is missing from search");
+    let as_of =
+        search::run(&ctx, "deploy target", None, Some(10), None, None, Some(chrono::Utc::now()))
+            .await
+            .unwrap();
+    assert!(
+        as_of.hits.iter().any(|h| h.id == retired.id),
+        "the revived row reads as ended, so as-of denies a fact live search returns"
+    );
 }
 
 #[tokio::test]
