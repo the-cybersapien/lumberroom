@@ -47,7 +47,7 @@ pub fn prompt(text: &str) {
 }
 
 const COMMANDS: &str =
-    "doctor, whoami, login, clients, bootstrap, search, write, forget, review, supersede, \
+    "doctor, whoami, login, clients, bootstrap, search, write, forget, review, supersede, fill-date, \
 registry, stats, export, ingest, import, cleanup, history, alias, seal, unseal, recall, tools, \
 hash-password, eval-longmemeval, version, help";
 
@@ -102,6 +102,7 @@ async fn dispatch(client: &Client, args: &Args, command: &str) -> Result<()> {
         "forget" => commands::forget(client, args, read_line).await,
         "review" => commands::review(client, args).await,
         "supersede" => commands::supersede(client, args).await,
+        "fill-date" => commands::fill_date(client, args).await,
         "registry" => commands::registry(client, args).await,
         "stats" => commands::stats(client, args).await,
         "export" => commands::export(client, args).await,

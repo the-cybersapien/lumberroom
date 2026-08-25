@@ -1,6 +1,6 @@
 # 0008. A memory carries two clocks, and only one of them exists today
 
-20 August 2026. Accepted, implemented, including the phase 2 this record deferred. See the amendment below.
+20 August 2026. Accepted, implemented, including the phase 2 this record deferred. Amended twice, on 20 and 25 August 2026; the second edits rule D1 and makes `occurred_at` fillable. Both amendments are below.
 
 The header first read "phase 1 implemented". That was wrong on the day it was written: `occurred_at`
 appeared in this record and nowhere else in the tree, and two researchers found the discrepancy
@@ -101,6 +101,45 @@ is not a grant over the history behind them, so `may_read_history` follows `may_
 repository holds no principal and the statement would otherwise serve retired rows to anyone.
 
 `docs/specs/phase-7-valid-time.md` and decision 0009 carry what shipped.
+
+## Amendment, 25 August 2026: the fence made the column ceremony, and nearly fired the reversal
+
+The reversal condition at the bottom says the column is ceremony if a year of use shows nothing
+setting it outside ingestion. Eight days in, measured on the live store: **0 of 175** rows written
+directly by one client into `project:investing` carried a date, while the same client ran at **100%**
+in `project:lumberroom`, `global` and `user:me`. The split is not habit. Those namespaces are filled
+by the ingest path, which calls `write::run_observed` and bypasses the near-now fence.
+
+The fence is what did it. `memory_write` refuses any `occurred_at` inside 86,400 seconds of now, so
+an agent recording an event on the day it happens cannot date it, ever, and no path existed to supply
+the date later: nothing in the store wrote `occurred_at` after the insert. The reasoning behind the
+refusal was sound and its blast radius was not examined. Rule D1 stopped a model stamping today onto
+something it merely heard today, and it also stopped every real date an event carried.
+
+Three changes, and the first one is the rule this amendment edits.
+
+**The fence now admits a same-day date the content itself names.** Rule D1 stands in every other
+case. The objection it was built on is that an invented date is indistinguishable afterwards from a
+stated one; a date written verbatim in the row's own text is checkable against that row forever, by
+anyone, which is the one thing an invented timestamp can never be. Four renderings are matched, day
+precision only. The future stays shut regardless of what the sentence claims, because a future start
+reads live and never reads as-of.
+
+**`occurred_at` becomes fillable, and stays immovable.** A new repository method writes it only
+where it is NULL, refused in the statement rather than by the caller, so a gap can be filled and a
+start can never be moved. The service refuses any date the content does not name, refuses the future,
+and requires the caller's write grant. This exists because roughly 90 rows already carry an explicit
+date in their prose with `occurred_at` NULL, and before this they were unrecoverable.
+
+**An undated row no longer holds at every instant.** The as-of predicate read
+`occurred_at IS NULL OR occurred_at <= t`, so a row with no date matched every instant including
+instants before the store existed, and a retired fact came back beside its undated replacement. It
+now falls back to `created_at`: the store does not claim a fact held before it learned it. No field
+says which clock answered because the row already does, since a hit carries `occurred_at` only when
+it is set.
+
+What this does not fix: two facts dated the same day still write no end when one supersedes the
+other, because closing the period would write an empty interval. That is recorded in 0014.
 
 ## Phase 2, deferred and specified
 

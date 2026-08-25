@@ -104,9 +104,11 @@ pub fn router(state: Arc<AppState>, auth: Arc<dyn Authenticator>) -> Router {
         )
         .route("/admin/memory/{id}", get(admin_memory_get).delete(admin_memory_delete))
         .route("/admin/memory/{id}/supersede", post(admin_memory_supersede))
+        .route("/admin/memory/{id}/fill-date", post(admin_memory_fill_date))
         .route("/admin/review/stale", get(admin_review_stale))
         .route("/admin/review/conflicts", get(admin_review_conflicts))
         .route("/admin/review/registry", get(admin_review_registry))
+        .route("/admin/review/dates", get(admin_review_dates))
         .route("/admin/export", get(admin_export))
         .route(
             "/admin/sealed",
@@ -877,6 +879,54 @@ async fn admin_memory_supersede(
     match review::supersede(&ctx, &id, &body.new_id).await {
         Ok(resolved) => Json(resolved).into_response(),
         Err(e) => domain_error(&e, "supersede_failed"),
+    }
+}
+
+#[derive(Deserialize)]
+struct DateReviewQuery {
+    limit: Option<i64>,
+}
+
+/// Undated live rows whose own text names a day. A review list, never a filler.
+async fn admin_review_dates(
+    State(http): State<Http>,
+    headers: HeaderMap,
+    Query(q): Query<DateReviewQuery>,
+) -> Response {
+    let ctx = match authed(&http, &headers).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    match review::date_candidates(&ctx, q.limit).await {
+        Ok(rows) => Json(serde_json::json!({ "rows": rows })).into_response(),
+        Err(e) => domain_error(&e, "date_review_failed"),
+    }
+}
+
+#[derive(Deserialize)]
+struct FillDateBody {
+    /// `YYYY-MM-DD` or a full RFC 3339 instant, the two forms `memory_write` takes.
+    occurred_at: String,
+}
+
+/// Fill a start date the row never carried. Refuses to move one it already has.
+async fn admin_memory_fill_date(
+    State(http): State<Http>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<FillDateBody>,
+) -> Response {
+    let ctx = match authed(&http, &headers).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let when = match crate::mcp::tools::parse_occurred_at(&body.occurred_at) {
+        Ok(w) => w,
+        Err(e) => return domain_error(&e, "fill_date_failed"),
+    };
+    match review::fill_date(&ctx, &id, when).await {
+        Ok(resolved) => Json(resolved).into_response(),
+        Err(e) => domain_error(&e, "fill_date_failed"),
     }
 }
 
