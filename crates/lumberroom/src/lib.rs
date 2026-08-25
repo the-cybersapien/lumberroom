@@ -15,6 +15,7 @@ pub mod commands;
 pub mod config;
 pub mod eval;
 pub mod format;
+pub mod import;
 pub mod ingest;
 pub mod oauth;
 pub mod sealed;
@@ -47,7 +48,7 @@ pub fn prompt(text: &str) {
 
 const COMMANDS: &str =
     "doctor, whoami, login, clients, bootstrap, search, write, forget, review, supersede, \
-registry, stats, export, ingest, cleanup, history, alias, seal, unseal, recall, tools, \
+registry, stats, export, ingest, import, cleanup, history, alias, seal, unseal, recall, tools, \
 hash-password, eval-longmemeval, version, help";
 
 /// Parse, dispatch, and turn a failure into the exit code the scripts read.
@@ -116,6 +117,17 @@ async fn dispatch(client: &Client, args: &Args, command: &str) -> Result<()> {
             let sub = args.positional_at(1).unwrap_or("plan").to_string();
             ingest::dispatch(client, args, &sub).await
         }
+        // No default subcommand. Import acts on a path the owner names, and guessing which of
+        // several archives in a downloads directory was meant is a wrong import to undo by hand.
+        "import" => {
+            let sub = args
+                .positional_at(1)
+                .ok_or_else(|| {
+                    err(format!("import needs a subcommand. Available: {}", import::SUBCOMMANDS))
+                })?
+                .to_string();
+            import::dispatch(client, args, &sub).await
+        }
         // Named rather than silently unsupported: the node CLI still has them and this says so.
         "seal" => sealed::seal(client, args, &ProcessEnv).await,
         "unseal" => sealed::unseal(client, args, &ProcessEnv).await,
@@ -134,7 +146,7 @@ async fn dispatch(client: &Client, args: &Args, command: &str) -> Result<()> {
     }
 }
 
-fn read_line() -> std::io::Result<String> {
+pub fn read_line() -> std::io::Result<String> {
     let mut buf = String::new();
     std::io::stdin().read_line(&mut buf)?;
     Ok(buf)
