@@ -135,6 +135,10 @@ pub struct WriteOutcome {
     /// Set when this write retired an earlier row.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub superseded: Option<String>,
+    /// The row this write retired kept an open end, so it still reads as holding at every instant.
+    /// Two facts dated the same day do this, and a dump gives every line in a day the same date.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub end_left_open: bool,
     /// Live rows near enough to be the fact this write should have replaced.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub possible_conflicts: Vec<ConflictCandidate>,

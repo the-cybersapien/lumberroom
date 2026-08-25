@@ -10,13 +10,17 @@
 //! `WriteArgs::occurred_at` has to match it word for word, and a test compares the generated JSON
 //! schema against this constant so an edit to either one fails rather than drifting.
 //!
-//! **`memory_search` gains no date argument, and this is where somebody will come looking for the
-//! reason.** A range filter belongs to the as-of query, which decision 0008 defers to phase 2. The
-//! shape it would take here is worse than deferring it: a model turning a question into a date
-//! range is guessing, a hard filter drops the right row when the guess is wrong, and the store
-//! then answers "nothing is known" about a fact it holds. That failure is the one this system
-//! refuses everywhere else. Search hits already carry `occurred_at` when it is set, so a model
-//! sees when a fact became true without any argument that lets it filter on a guess.
+//! **`memory_search` took an `as_of` argument on 25 August 2026, reversing the refusal that used to
+//! sit here.** The old reason was sound and too broad: a model turning a question into a date is
+//! guessing, a hard filter drops the right row when the guess is wrong, and the store then answers
+//! "nothing is known" about a fact it holds. That failure is real and `AS_OF_DESCRIPTION` names it
+//! in the words the model reads, which is the only lever there is. What the refusal also blocked
+//! was the person who states a time outright, and no surface could reach the as-of query at all:
+//! every caller passed `None`, so a whole column of behaviour had no way to be exercised.
+//!
+//! The narrowing that makes it safe is not in this file. `services::search` gates `as_of` on
+//! `may_read_history` before the statement runs, and refuses it beside `include_superseded`.
+//! Decision 0014 carries the argument.
 
 use chrono::{DateTime, NaiveDate, Utc};
 
@@ -34,6 +38,18 @@ accepted: a date, `2026-03-01`, read as midnight UTC, or a full RFC 3339 instant
 rather than turned into a day you chose. Set it only when the user stated the time, as in \"we \
 moved to Postgres 16 on 4 June 2026\". Never infer a date from context, and never pass today's \
 date because today is when you heard it: the store already records that separately.";
+
+/// The `as_of` argument on `memory_search`, and the one place its wording lives.
+///
+/// Kept beside `OCCURRED_AT_DESCRIPTION` and pinned by the same schema test, because the two
+/// sentences have to disagree about nothing: one says when a fact became true, the other asks what
+/// held at an instant, and a model reading them together must not conclude it may invent either.
+pub const AS_OF_DESCRIPTION: &str = "What the store held at this instant, as a date, \
+`2026-03-01`, read as midnight UTC, or a full RFC 3339 instant. Pass it only when the person named \
+a time. Working one out from the question is a guess, and a guess here is worse than no argument \
+at all: the filter drops every fact that started after the instant you chose, so a date that is too \
+early answers \"nothing is known\" about facts the store holds. Omit it and the search answers as \
+of now, which is what almost every question wants.";
 
 /// The date form, accepted beside RFC 3339 and read as midnight UTC.
 const DATE_ONLY: &str = "%Y-%m-%d";
@@ -61,6 +77,31 @@ pub fn parse_occurred_at(raw: &str) -> Result<DateTime<Utc>> {
     }
 
     Err(refusal(value))
+}
+
+/// The `as_of` argument, parsed. Same two forms as `occurred_at`, different refusal.
+///
+/// A separate function rather than a reuse, because the repair differs. `occurred_at` tells a caller
+/// to omit the field, since a write with no date is a write the owner can still fix. `as_of` tells
+/// it to omit the field too, but for the opposite reason: omitting means "now", which is the answer
+/// almost every question wants, so falling back is safe here in a way it never is on a write.
+pub fn parse_as_of(raw: &str) -> Result<DateTime<Utc>> {
+    let value = raw.trim();
+    if let Ok(instant) = DateTime::parse_from_rfc3339(value) {
+        return Ok(instant.with_timezone(&Utc));
+    }
+    if let Ok(date) = NaiveDate::parse_from_str(value, DATE_ONLY) {
+        return Ok(date
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight exists on every calendar date")
+            .and_utc());
+    }
+    Err(DomainError::validation(format!(
+        "as_of `{}` is not one of the two accepted forms. Pass a date, `2026-03-01`, read as \
+midnight UTC, or a full RFC 3339 instant, `2026-03-01T09:30:00Z`. A bare month or year cannot be \
+represented, so omit as_of and the search answers as of now.",
+        clip(value)
+    )))
 }
 
 /// One message for every rejected form, and it never suggests a repair.
@@ -189,6 +230,45 @@ mod tests {
     /// What a model reads is the generated schema, so assert against the schema rather than the
     /// constant alone. Equality in both directions: a doc comment edited in `mod.rs` and a constant
     /// edited here both fail.
+    /// The same guard `occurred_at` gets, for the same reason: the description is the only thing
+    /// standing between an argument a caller was given and an argument it worked out, and a rewrite
+    /// for brevity drops the warning first.
+    #[test]
+    fn search_schema_carries_the_as_of_wording_verbatim() {
+        let schema = serde_json::to_value(schemars::schema_for!(crate::mcp::SearchArgs))
+            .expect("the derived schema serialises");
+        let property = schema
+            .get("properties")
+            .and_then(|p| p.get("as_of"))
+            .unwrap_or_else(|| panic!("memory_search has no as_of argument: {schema}"));
+        let described = property
+            .get("description")
+            .and_then(|d| d.as_str())
+            .unwrap_or_else(|| panic!("as_of carries no description: {property}"));
+
+        assert_eq!(squash(described), squash(AS_OF_DESCRIPTION));
+        for phrase in [
+            "only when the person named a time",
+            "is a guess",
+            "nothing is known",
+            "answers as of now",
+        ] {
+            assert!(squash(described).contains(phrase), "the description lost {phrase:?}");
+        }
+    }
+
+    #[test]
+    fn as_of_takes_the_two_forms_and_refuses_a_bare_month() {
+        assert_eq!(parse_as_of("2026-03-01").unwrap().to_rfc3339(), "2026-03-01T00:00:00+00:00");
+        assert_eq!(
+            parse_as_of("2026-03-01T09:30:00Z").unwrap().to_rfc3339(),
+            "2026-03-01T09:30:00+00:00"
+        );
+        let err = parse_as_of("2026-03").expect_err("a month is not an instant");
+        // The repair is omission, and for as_of omission has a meaning worth stating.
+        assert!(err.client_message().contains("answers as of now"), "{}", err.client_message());
+    }
+
     #[test]
     fn write_schema_carries_the_fence_verbatim() {
         let schema = serde_json::to_value(schemars::schema_for!(crate::mcp::WriteArgs))

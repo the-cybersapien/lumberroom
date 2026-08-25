@@ -97,6 +97,36 @@ pub struct ChainEdits {
     pub relinked: Vec<uuid::Uuid>,
 }
 
+/// One retired row, with what retired it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Retired {
+    pub id: uuid::Uuid,
+    pub namespace: String,
+    pub content: String,
+    pub sensitivity: crate::domain::types::Sensitivity,
+    pub superseded_at: chrono::DateTime<chrono::Utc>,
+    pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub occurred_until: Option<chrono::DateTime<chrono::Utc>>,
+    /// The row was retired and its period never closed, so as-of reads still report it as holding.
+    pub end_open: bool,
+    /// Absent when the successor was deleted and the chain spliced past it.
+    pub successor_id: Option<uuid::Uuid>,
+    pub successor_namespace: Option<String>,
+}
+
+/// What a supersession did to the retired row's valid period.
+///
+/// The link is always written. The end is not always datable: a successor that starts on the same
+/// day as the fact it replaces would close the period to `[T, T)`, an empty period meaning "never
+/// true", so the store leaves the end open instead. That case used to reach the operator as a log
+/// line and nobody else, which put the owner one dump apart from a timeline hole they could not
+/// see. Both callers now hand it back, so the surface that asked for the supersession can say so.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Superseded {
+    /// True when the retired row kept an open end, so it reads as still holding at every instant.
+    pub end_left_open: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum DeleteOutcome {
     /// No row by this id in this tenant. A delete that lost a race lands here too.
@@ -336,6 +366,19 @@ pub trait MemoryRepository: Send + Sync {
     /// the grant has to be part of the plan rather than a pass over the rows.
     async fn recent(&self, q: RecentQuery) -> Result<Vec<Memory>>;
 
+    /// Rows retired inside a window, newest retirement first.
+    ///
+    /// Ordered on when the row was retired, not on when it was written, because those are different
+    /// questions and `recent` already answers the second. A wrong supersession is otherwise found by
+    /// missing a fact, which is the one way this store loses something quietly.
+    async fn retired_since(
+        &self,
+        tenant: &str,
+        readable: &[NamespaceCeiling],
+        since: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> Result<Vec<Retired>>;
+
     /// Per-namespace counts and the last write, for a reader deciding where to look.
     ///
     /// Both axes, so a namespace whose rows all sit above the caller's ceiling is absent rather
@@ -375,7 +418,8 @@ pub trait MemoryRepository: Send + Sync {
     ///
     /// Must reject a target that is already superseded, and must reject a cycle: a two-row cycle
     /// makes both rows invisible, which is data loss dressed as a correction.
-    async fn supersede(&self, tenant: &str, old: uuid::Uuid, new: uuid::Uuid) -> Result<()>;
+    async fn supersede(&self, tenant: &str, old: uuid::Uuid, new: uuid::Uuid)
+        -> Result<Superseded>;
 
     /// Walk the chain to the row that is live now, so a rejection can name the current head.
     async fn supersession_head(&self, tenant: &str, id: uuid::Uuid) -> Result<Option<Memory>>;

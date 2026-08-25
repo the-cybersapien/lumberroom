@@ -247,6 +247,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/console/write", get(compose).post(write))
         .route("/console/registry", get(registry))
         .route("/console/queue", get(queue))
+        .route("/console/retired", get(retired))
         .route("/console/queue/{id}/approve", post(queue_approve))
         .route("/console/queue/{id}/reject", post(queue_reject))
         .route("/console/queue/{id}/unreject", post(queue_unreject))
@@ -907,6 +908,34 @@ async fn registry(State(app): State<Console>, headers: HeaderMap) -> Response {
 /// The ingest store hangs off `AppState` rather than `Ctx.repos`, because the proposal queue is an
 /// operator surface and no MCP tool reaches it. The controls this page draws post back to the three
 /// routes below, each of which calls the same `services::ingest` function `lumberroom ingest` calls.
+/// What got retired lately.
+///
+/// Read-only, and the owner's own view: no grant narrower than theirs reaches this console, and the
+/// query still runs both axes rather than trusting that.
+async fn retired(State(app): State<Console>, headers: HeaderMap) -> Response {
+    if let Err(response) = app.guard(&headers, "/console/retired") {
+        return response;
+    }
+    let ctx = app.ctx();
+    let mut health = app.health();
+
+    let readable = match data::readable(&ctx).await {
+        Ok(r) => r,
+        Err(e) => return failed(&app, "the store did not answer", &e),
+    };
+    let contents = match data::contents(&ctx, &readable).await {
+        Ok(c) => c,
+        Err(e) => return failed(&app, "the store did not answer", &e),
+    };
+    health.last_write = contents.last_write;
+
+    let rows = match data::retired(&ctx, &readable).await {
+        Ok(r) => r,
+        Err(e) => return failed(&app, "the retired list did not load", &e),
+    };
+    page(StatusCode::OK, pages::retired(&rows, &contents, &health))
+}
+
 async fn queue(
     State(app): State<Console>,
     headers: HeaderMap,

@@ -227,7 +227,15 @@ pub fn history_line(e: &HistoryEntry) -> String {
         (None, None) => "always".to_string(),
     };
     let ending = if e.superseded_by.is_some() {
-        "superseded"
+        // A superseded row with no end is the same-day case: the successor started on the day the
+        // predecessor did, so closing the period would have written `[T, T)`, which reads as never
+        // true. Saying "superseded" alone leaves the owner to notice a missing date on a line that
+        // otherwise looks finished, and the as-of read they cannot see is the one that suffers.
+        if e.occurred_at.is_some() && e.occurred_until.is_none() {
+            "superseded, end date unknown"
+        } else {
+            "superseded"
+        }
     } else if e.occurred_until.is_some() {
         "ended, nothing replaced it"
     } else {
@@ -426,10 +434,16 @@ mod tests {
     #[test]
     fn a_superseded_row_with_an_unknown_end_says_since_not_a_false_until() {
         // S4's second case: the successor states an older fact, so the link is written but the
-        // end date is left unknown rather than guessed from arrival order.
+        // end date is left unknown rather than guessed from arrival order. The same shape arrives
+        // from a dump, where every line in a day carries that day's date and the successor cannot
+        // start after the fact it replaces. The line names the gap: `since` alone read as finished
+        // and sent the owner looking for an end date that was never written.
         let mut e = entry("1", "port is 8080", Some("2026-08-01T00:00:00Z"));
         e.superseded_by = Some("2".to_string());
-        assert_eq!(history_line(&e), "port is 8080: since 1 Aug 2026, superseded");
+        assert_eq!(
+            history_line(&e),
+            "port is 8080: since 1 Aug 2026, superseded, end date unknown"
+        );
     }
 
     #[test]

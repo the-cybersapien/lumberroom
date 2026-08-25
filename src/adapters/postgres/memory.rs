@@ -27,7 +27,8 @@ use crate::domain::errors::{DomainError, Result};
 use crate::domain::policy::{NamespaceCeiling, NamespaceGrant};
 use crate::domain::types::{ConflictCandidate, Memory, SearchHit, Sensitivity};
 use crate::ports::memory::{
-    ChainEdits, ChainLink, ChainNeighbours, DeleteOutcome, DeletePlan, Timeline,
+    ChainEdits, ChainLink, ChainNeighbours, DeleteOutcome, DeletePlan, Retired, Superseded,
+    Timeline,
 };
 use crate::ports::{
     ConflictPair, DigestData, DigestQuery, Emission, MemoryRepository, NamespaceSummary,
@@ -371,11 +372,21 @@ const SEARCH_RRF_ALL: &str = rrf_search_sql!("true");
 /// and `ef_search` settings migration 003 puts on the database. Both are acceptable on a read that
 /// is not on the bootstrap path.
 ///
+/// **The start falls back to `created_at`, and that is the fix for a row with no date at all.**
+/// `occurred_at IS NULL OR occurred_at <= t` made an undated row match every instant, including
+/// instants before the store existed. Most rows are undated, so an as-of read returned a retired
+/// fact and its undated replacement together for any instant before the retirement, which is the
+/// double answer this whole read exists to prevent. Falling back says the honest thing instead: the
+/// store cannot claim a fact held before it learned it.
+///
+/// No extra column says which clock answered, because the row already tells you. A hit carries
+/// `occurred_at` only when it is set, so its absence beside a `created_at` is the fallback speaking.
+///
 /// Two literals rather than one constant because `concat!` takes literals alone. They differ in one
 /// character: the parameter number, which is the first number each blend has spare. Edit one and
 /// edit the other.
 const SEARCH_AS_OF: &str = linear_search_sql!(
-    r#"((m.occurred_at    IS NULL OR m.occurred_at    <= $14)
+    r#"(COALESCE(m.occurred_at, m.created_at) <= $14
                    AND (m.occurred_until IS NULL OR m.occurred_until >  $14))"#
 );
 /// Rank fusion already binds `k` as the fourteenth, so as-of lands on the fifteenth here.
@@ -383,7 +394,7 @@ const SEARCH_AS_OF: &str = linear_search_sql!(
 /// Renumbering `k` would have given both blends the same as-of parameter and changed the text of
 /// two statements that are not changing, which is the one thing this addition may not do.
 const SEARCH_RRF_AS_OF: &str = rrf_search_sql!(
-    r#"((m.occurred_at    IS NULL OR m.occurred_at    <= $15)
+    r#"(COALESCE(m.occurred_at, m.created_at) <= $15
                    AND (m.occurred_until IS NULL OR m.occurred_until >  $15))"#
 );
 
@@ -429,6 +440,39 @@ macro_rules! recent_sql {
 const RECENT_LIVE: &str = recent_sql!("m.superseded_by IS NULL");
 /// History alongside the live rows, so a correction reads as a revision in place.
 const RECENT_ALL: &str = recent_sql!("true");
+
+/// Rows retired inside a window, newest retirement first, with the row that retired them.
+///
+/// Ordered by `superseded_at` rather than `created_at`, which is the whole point: a fact written in
+/// March and retired yesterday belongs at the top of this list and nowhere near the top of `recent`.
+///
+/// Both endpoints run through `reachable`. The successor is joined but never filtered on, because a
+/// successor the caller cannot read would otherwise drop the retirement itself out of the list and
+/// tell them nothing happened. Its content is not selected; the id and the namespace are what the
+/// page needs, and the page reads as the owner.
+///
+/// `end_open` is the same-day case surfacing where somebody will see it: the row was retired and its
+/// period never closed, so every as-of read still reports it as holding.
+const RETIRED_SQL: &str = r#"
+    WITH reachable AS (
+        SELECT namespace, min(sensitivity_rank(max)) AS max_rank
+          FROM unnest($2::text[], $3::text[]) AS g(namespace, max)
+         GROUP BY namespace
+    )
+    SELECT m.id, m.namespace, m.content, m.sensitivity, m.superseded_at, m.occurred_at,
+           m.occurred_until,
+           (m.occurred_at IS NOT NULL AND m.occurred_until IS NULL) AS end_open,
+           s.id AS successor_id, s.namespace AS successor_namespace
+      FROM memory m
+      JOIN reachable rg ON rg.namespace = m.namespace
+      LEFT JOIN memory s ON s.id = m.superseded_by AND s.tenant_id = m.tenant_id
+     WHERE m.tenant_id = $1
+       AND sensitivity_rank(m.sensitivity) <= rg.max_rank
+       AND m.superseded_at IS NOT NULL
+       AND m.superseded_at >= $4
+     ORDER BY m.superseded_at DESC, m.id DESC
+     LIMIT $5
+"#;
 
 /// Per-namespace counts and the last write, on both axes.
 ///
@@ -1339,6 +1383,46 @@ impl MemoryRepository for PgMemoryRepository {
         Ok(rows.iter().map(memory_from_row).collect())
     }
 
+    /// Rows retired inside a window, newest retirement first.
+    async fn retired_since(
+        &self,
+        tenant: &str,
+        readable: &[NamespaceCeiling],
+        since: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> Result<Vec<Retired>> {
+        if readable.is_empty() {
+            return Ok(vec![]);
+        }
+        let (readable_ns, readable_max) = split_ceilings(readable);
+        let rows = sqlx::query(RETIRED_SQL)
+            .bind(tenant)
+            .bind(&readable_ns)
+            .bind(&readable_max)
+            .bind(since)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| Retired {
+                id: r.get("id"),
+                namespace: r.get("namespace"),
+                content: r.get("content"),
+                // Same rule as `memory_from_row`: an unrecognised level reads as the most
+                // restrictive, and the query already filtered on `sensitivity_rank`.
+                sensitivity: Sensitivity::parse(r.get::<&str, _>("sensitivity"))
+                    .unwrap_or(Sensitivity::Sealed),
+                superseded_at: r.get("superseded_at"),
+                occurred_at: r.get("occurred_at"),
+                occurred_until: r.get("occurred_until"),
+                end_open: r.get("end_open"),
+                successor_id: r.get("successor_id"),
+                successor_namespace: r.get("successor_namespace"),
+            })
+            .collect())
+    }
+
     /// Per-namespace counts and the last write, on both axes.
     async fn namespace_summary(
         &self,
@@ -1480,7 +1564,12 @@ impl MemoryRepository for PgMemoryRepository {
     /// means the caller is holding a stale id: the error names the current head so the retry has
     /// somewhere to go. The fourth is `supersession_until`, which refuses a successor that became
     /// true before the fact it replaces.
-    async fn supersede(&self, tenant: &str, old: uuid::Uuid, new: uuid::Uuid) -> Result<()> {
+    async fn supersede(
+        &self,
+        tenant: &str,
+        old: uuid::Uuid,
+        new: uuid::Uuid,
+    ) -> Result<Superseded> {
         if old == new {
             return Err(DomainError::validation("a memory cannot supersede itself"));
         }
@@ -1493,7 +1582,7 @@ impl MemoryRepository for PgMemoryRepository {
         // the same lock as the cycle check, and reading them here costs nothing a second statement
         // would not.
         let locked = sqlx::query(
-            "SELECT id, superseded_by, occurred_at, created_at FROM memory
+            "SELECT id, superseded_by, occurred_at, occurred_until, created_at FROM memory
                                   WHERE tenant_id = $1 AND id IN ($2, $3)
                                   ORDER BY id FOR UPDATE",
         )
@@ -1515,7 +1604,14 @@ impl MemoryRepository for PgMemoryRepository {
         // an answer it can proceed on rather than a conflict it has to interpret.
         if old_superseded_by == Some(new) {
             tx.rollback().await?;
-            return Ok(());
+            // The answer describes the row as it stands, not as this call left it. A caller that
+            // re-asserts an existing link still needs to know the period behind it never closed.
+            let row = locked.iter().find(|r| r.get::<uuid::Uuid, _>("id") == old);
+            let open = row.is_some_and(|r| {
+                r.get::<Option<DateTime<Utc>>, _>("occurred_at").is_some()
+                    && r.get::<Option<DateTime<Utc>>, _>("occurred_until").is_none()
+            });
+            return Ok(Superseded { end_left_open: open });
         }
 
         if let Some(next) = old_superseded_by {
@@ -1586,7 +1682,7 @@ impl MemoryRepository for PgMemoryRepository {
         .await?;
 
         tx.commit().await?;
-        Ok(())
+        Ok(Superseded { end_left_open: until.is_none() })
     }
 
     /// The last row on the chain from `id`. Depth-capped like every other walk, so a table that
@@ -1816,8 +1912,15 @@ impl MemoryRepository for PgMemoryRepository {
 
         let mut edits = ChainEdits::default();
         if !plan.revive.is_empty() {
+            // `occurred_until` goes back to NULL with the rest of the retirement. It is written in
+            // exactly one place, `RETIRE_PREDECESSOR_SQL`, and the insert never carries it, so the
+            // only value here is the one that supersession wrote and reviving is undoing. Leaving it
+            // set stranded the row: live search filters on `superseded_by IS NULL` and returned it,
+            // every as-of read filters on `occurred_until` and did not, and the COALESCE in the
+            // retire statement meant a later supersession kept the stale end rather than correcting
+            // it. The owner's only repair was psql.
             let rows = sqlx::query(
-                "UPDATE memory SET superseded_by = NULL, superseded_at = NULL
+                "UPDATE memory SET superseded_by = NULL, superseded_at = NULL, occurred_until = NULL
                   WHERE tenant_id = $1 AND superseded_by = $2 AND id = ANY($3)
               RETURNING id",
             )
@@ -2218,11 +2321,17 @@ mod tests {
     fn the_as_of_predicate_excludes_the_end_instant_on_both_arms() {
         for (sql, n) in [(SEARCH_AS_OF, "$14"), (SEARCH_RRF_AS_OF, "$15")] {
             let predicate = format!(
-                "((m.occurred_at    IS NULL OR m.occurred_at    <= {n})
+                "(COALESCE(m.occurred_at, m.created_at) <= {n}
                    AND (m.occurred_until IS NULL OR m.occurred_until >  {n}))"
             );
             assert_eq!(sql.matches(&predicate).count(), 2, "the vector arm and the lexical arm");
             assert!(!sql.contains("occurred_until >="), "the end instant is outside the period");
+            // The start must never read `occurred_at IS NULL OR`: that spelling made an undated row
+            // match every instant, and most rows are undated.
+            assert!(
+                !sql.contains("m.occurred_at    IS NULL OR"),
+                "an undated row would hold at every instant again"
+            );
         }
     }
 

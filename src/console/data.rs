@@ -22,6 +22,7 @@ use crate::domain::namespaces;
 use crate::domain::policy::NamespaceCeiling;
 use crate::domain::types::{Memory, RegistryEntry, Sensitivity};
 use crate::ports::ingest::{IngestRepository, Proposal, ProposalFilter};
+use crate::ports::memory::Retired;
 use crate::ports::RecentQuery;
 use crate::ports::Timeline;
 use crate::services::{search, Ctx};
@@ -384,6 +385,17 @@ pub async fn leaf(ctx: &Ctx, id: &str) -> Result<Option<Leaf>> {
         superseded_at: row.superseded_at,
         revisions,
     }))
+}
+
+/// What got retired lately, newest first.
+///
+/// The window is a week because that is the cadence the owner reads the queue on, and a supersession
+/// approved in a batch of forty is the one that needs finding before the next batch. A wrong
+/// supersession is otherwise discovered by missing a fact, and by then nothing says which run did
+/// it: the only undo runs off the delete plan, so it costs the successor row and a new id.
+pub async fn retired(ctx: &Ctx, readable: &[NamespaceCeiling]) -> Result<Vec<Retired>> {
+    let since = chrono::Utc::now() - chrono::Duration::days(7);
+    ctx.repos.memories.retired_since(ctx.tenant(), readable, since, 100).await
 }
 
 /// Every version of this fact, oldest first, with the ids whose content would not open.

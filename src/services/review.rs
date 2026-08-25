@@ -88,6 +88,10 @@ pub struct Resolved {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub superseded: Option<String>,
+    /// The retired row kept an open end, so it still reads as holding at every instant. Absent on
+    /// every action that retires nothing, and on the ordinary supersession that dated its end.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub end_left_open: bool,
 }
 
 pub async fn queue(ctx: &Ctx, limit: Option<i64>) -> Result<ReviewQueue> {
@@ -166,7 +170,7 @@ pub async fn queue(ctx: &Ctx, limit: Option<i64>) -> Result<ReviewQueue> {
 pub async fn confirm(ctx: &Ctx, id: &str) -> Result<Resolved> {
     let (uuid, _) = writable_row(ctx, id).await?;
     ctx.repos.memories.confirm(ctx.tenant(), uuid).await?;
-    Ok(Resolved { action: "confirm", id: uuid.to_string(), superseded: None })
+    Ok(Resolved { action: "confirm", id: uuid.to_string(), superseded: None, end_left_open: false })
 }
 
 /// Retire `old` in favour of `new`. The chain and cycle rules live in the repository, because a
@@ -186,12 +190,13 @@ pub async fn supersede(ctx: &Ctx, old: &str, new: &str) -> Result<Resolved> {
         )));
     }
 
-    ctx.repos.memories.supersede(ctx.tenant(), old_id, new_id).await?;
+    let done = ctx.repos.memories.supersede(ctx.tenant(), old_id, new_id).await?;
     super::bootstrap::clear_cache();
     Ok(Resolved {
         action: "supersede",
         id: new_id.to_string(),
         superseded: Some(old_id.to_string()),
+        end_left_open: done.end_left_open,
     })
 }
 
