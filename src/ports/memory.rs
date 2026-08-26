@@ -320,6 +320,18 @@ pub struct NamespaceSummary {
     pub last_write: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Rows keyed to one namespace in one table.
+///
+/// Per table because the remediation is per table: eight of them carry a `namespace` column and an
+/// operator who moves only `memory` leaves the registry, the aliases and the ingest queue behind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamespaceRows {
+    pub namespace: String,
+    /// The table name as `migrations/` spells it.
+    pub table: String,
+    pub rows: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct DigestQuery {
     pub tenant_id: String,
@@ -422,6 +434,18 @@ pub trait MemoryRepository: Send + Sync {
     /// anything there: a ceiling of open over a namespace holding private rows publishes a name the
     /// second axis refused. Publish a name only once a both-axes count has put a row behind it.
     async fn namespace_counts(&self, tenant: &str) -> Result<HashMap<String, i64>>;
+
+    /// Every row under a `user:` namespace, per table, superseded rows included.
+    ///
+    /// Deliberately not `namespace_counts`. That one answers "which namespaces exist for glob
+    /// resolution" and answers it for live memory rows plus registry names, which is the wrong
+    /// question for an upgrade guard: a namespace holding only retired rows never appears there at
+    /// all, and a registry-only namespace appears with a count of zero. Both are stranded, and both
+    /// boot clean if the guard reads that map.
+    ///
+    /// Same contract as `namespace_counts` on what may be done with the result: pre-policy, for the
+    /// operator's log and never for a client response.
+    async fn user_namespace_rows(&self, tenant: &str) -> Result<Vec<NamespaceRows>>;
 
     /// One page of facts, newest first, filtered on both axes inside the query.
     ///

@@ -119,6 +119,8 @@ async fn run() -> Result<()> {
         Arc::new(pg::PgCleanupRepository::new(pool.clone()));
     let aliases: Arc<dyn lumberroom_server::ports::AliasRepository> =
         Arc::new(pg::PgAliasRepository::new(pool.clone()));
+    warn_on_stranded_user_namespaces(memories.as_ref(), &cfg).await;
+
     let repos = services::Repos {
         aliases: Arc::clone(&aliases),
         memories: memories.clone(),
@@ -166,6 +168,96 @@ async fn run() -> Result<()> {
 
     tracing::info!("shut down cleanly");
     Ok(())
+}
+
+/// Warn when rows sit in a `user:` namespace outside the default read set.
+///
+/// The personal namespace used to be `user:<TENANT_ID>` and is now always `user:me`. A store that
+/// ran under any other tenant therefore holds rows under a name the profile section of the digest,
+/// `registry::precedence` and `forget::by_query`'s default set no longer ask for. Search is the
+/// exception and the reason the warning does not say "never read": `SEARCH_INCLUDE_ALL_PROJECTS`
+/// defaults on, so `search::other_namespaces` still finds the name and searches it as a penalised
+/// secondary whenever the grant covers it. An operator who greps, finds their rows in a search
+/// result and reads "never" concludes the warning is noise.
+///
+/// A warning rather than a refusal. The rows are safe, and refusing to boot over recoverable data
+/// an operator has not noticed yet is the wrong trade.
+///
+/// It does not tell anyone to merge. A store running two people under `user:alice` and `user:bob`
+/// is misconfigured in a different way, and an UPDATE that collapses both into `user:me` cannot be
+/// undone without a backup.
+async fn warn_on_stranded_user_namespaces(
+    memories: &dyn ports::MemoryRepository,
+    cfg: &config::Config,
+) {
+    warn_on_grants_that_miss_user_me(cfg);
+
+    let rows = match memories.user_namespace_rows(&cfg.tenant_id).await {
+        Ok(rows) => rows,
+        // Logged rather than dropped. Silence here is indistinguishable from a clean store, and an
+        // operator who upgraded a store this query could not read would get no warning and no
+        // reason for its absence.
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "cannot tell whether any user namespace was stranded by the move to user:me"
+            );
+            return;
+        }
+    };
+
+    let mut by_namespace: std::collections::BTreeMap<&str, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for row in rows.iter().filter(|r| r.namespace != "user:me" && r.rows > 0) {
+        by_namespace
+            .entry(row.namespace.as_str())
+            .or_default()
+            .push(format!("{}={}", row.table, row.rows));
+    }
+
+    for (ns, tables) in by_namespace {
+        tracing::warn!(
+            namespace = %ns,
+            rows = %tables.join(" "),
+            "rows sit in a user namespace outside the default read set. The personal namespace is \
+             now always user:me: the bootstrap profile, registry precedence and memory_forget's \
+             default set ask for user:me and never for this name, though search still reaches it \
+             while SEARCH_INCLUDE_ALL_PROJECTS is on and a grant covers it. If these rows are \
+             yours, CHANGELOG.md carries the per-table migration; every table listed here has to \
+             move, not just memory. If they belong to a second person, leave them and give that \
+             person their own TENANT_ID."
+        );
+    }
+}
+
+/// Warn when a grant names a user namespace but not `user:me`.
+///
+/// The row check above cannot see this one. A fresh store configured with `TENANT_ID=alice` and a
+/// grant reading `user:alice` holds no rows to count, boots clean, then refuses every personal
+/// write and answers `context_bootstrap` with an empty profile.
+fn warn_on_grants_that_miss_user_me(cfg: &config::Config) {
+    for grant in &cfg.auth.grants {
+        for (axis, patterns) in [("read", grant.read_grants()), ("write", grant.write_grants())] {
+            let named: Vec<String> = patterns
+                .iter()
+                .map(|p| p.namespace.trim().to_ascii_lowercase())
+                .filter(|p| p.starts_with("user:"))
+                .collect();
+            if named.is_empty()
+                || patterns.iter().any(|p| domain::namespaces::matches(&p.namespace, "user:me"))
+            {
+                continue;
+            }
+            tracing::warn!(
+                client = %grant.client,
+                axis,
+                patterns = %named.join(", "),
+                "a grant names a user namespace but does not cover user:me, which is the only one \
+                 this build reads or writes by default. This client's personal writes will be \
+                 refused and its bootstrap profile will be empty."
+            );
+        }
+    }
 }
 
 /// Where the KEK comes from. `None` means writes at `private` are refused rather than stored in

@@ -4,6 +4,10 @@
 //! Grants are namespace globs so a client can be denied a namespace without touching the
 //! authorization path.
 //!
+//! `user:me` is the only user namespace a write may name. Validation still admits the others,
+//! because a store that ran under another tenant holds rows under them; `check_writable` carries
+//! the reservation.
+//!
 //! `personal:*` and `credentials:*` exist here because the classification table classifies them.
 //! A shape the sensitivity table calls private or sealed but that validation refuses is a rule that
 //! can never fire, which leaves every reachable namespace classified open: the exact failure the
@@ -20,7 +24,7 @@ pub fn normalize(input: &str) -> Result<String> {
         Ok(ns)
     } else {
         Err(DomainError::validation(format!(
-            "invalid namespace {input:?}. Use 'global', 'user:<id>', 'project:<slug>', \
+            "invalid namespace {input:?}. Use 'global', 'user:me', 'project:<slug>', \
              'personal:<slug>' or 'credentials:<slug>'."
         )))
     }
@@ -30,6 +34,10 @@ fn is_valid(ns: &str) -> bool {
     if ns == "global" {
         return true;
     }
+    // Still every `user:<id>`, and `check_writable` is what refuses the ones that are not
+    // `user:me`. A store that ran under another tenant holds rows under those names; making them
+    // invalid here would take the console page, the export and the explicit-namespace search away
+    // from the operator who has to move them, and would fail a grant that still names one.
     if let Some(rest) = ns.strip_prefix("user:") {
         return valid_segment(rest, 64, false);
     }
@@ -113,13 +121,41 @@ pub fn project_namespace(input: &str) -> Result<String> {
     }
 }
 
-pub fn user_namespace(tenant_id: &str) -> String {
-    format!("user:{tenant_id}")
+/// Always `user:me`, whatever `TENANT_ID` is set to.
+///
+/// This used to interpolate the tenant, which made the personal namespace `user:<tenant_id>` and
+/// left the CLI telling a lie. `lumberroom write` prints
+/// `--namespace is required (user:me | project:<slug> | global)` to everyone, so on a store with
+/// `TENANT_ID` set to anything else a person followed that instruction, wrote to `user:me`, and put
+/// the memory in a namespace `default_read_namespaces` never asks for. The write succeeded and the
+/// fact was gone.
+///
+/// `user:me` reads as "mine" rather than as a tenant, which is what it always meant. At the default
+/// `TENANT_ID=me` this changes nothing at all.
+pub fn user_namespace() -> String {
+    "user:me".to_string()
+}
+
+/// Refuses a write to a `user:` namespace other than `user:me`.
+///
+/// The read side stays permissive on purpose, so this is the only place the reservation bites.
+/// Without it the shape validates, the write succeeds, and nothing in the default read set ever
+/// asks for the name again: the fact is stored and gone, which is the failure this whole change
+/// exists to close. A second person gets their own `TENANT_ID`, never their own `user:<id>`.
+pub fn check_writable(ns: &str) -> Result<()> {
+    if ns.starts_with("user:") && ns != "user:me" {
+        return Err(DomainError::validation(format!(
+            "cannot write to {ns}. The personal namespace is always user:me, whatever TENANT_ID is \
+             set to, and nothing reads any other user namespace by default. Write to 'user:me', or \
+             name a 'project:<slug>'."
+        )));
+    }
+    Ok(())
 }
 
 /// PRD §5: the default set is the user namespace and global, plus the active project.
-pub fn default_read_namespaces(tenant_id: &str, project: Option<&str>) -> Result<Vec<String>> {
-    let mut list = vec![user_namespace(tenant_id), "global".to_string()];
+pub fn default_read_namespaces(project: Option<&str>) -> Result<Vec<String>> {
+    let mut list = vec![user_namespace(), "global".to_string()];
     if let Some(p) = project {
         if !p.trim().is_empty() {
             list.push(project_namespace(p)?);
@@ -223,6 +259,23 @@ mod tests {
     }
 
     #[test]
+    fn reserves_the_personal_namespace_on_the_write_path_only() {
+        assert!(check_writable("user:me").is_ok());
+        assert!(check_writable("global").is_ok());
+        assert!(check_writable("project:warden").is_ok());
+        assert!(check_writable("user:aditya").is_err());
+        // Readable, so the operator moving stranded rows can still reach them.
+        assert!(normalize("user:aditya").is_ok());
+    }
+
+    #[test]
+    fn the_refusal_text_names_only_the_personal_namespace_that_works() {
+        let e = normalize("nonsense").unwrap_err().to_string();
+        assert!(e.contains("user:me"), "{e}");
+        assert!(!e.contains("user:<id>"), "{e}");
+    }
+
+    #[test]
     fn takes_the_last_path_segment() {
         assert_eq!(project_slug("/Users/example/work/acme/memoryEngine").unwrap(), "memoryengine");
         assert_eq!(project_slug("/Users/example/work/acme/memoryEngine/").unwrap(), "memoryengine");
@@ -248,20 +301,20 @@ mod tests {
 
     #[test]
     fn default_set_is_user_and_global() {
-        assert_eq!(default_read_namespaces("me", None).unwrap(), vec!["user:me", "global"]);
+        assert_eq!(default_read_namespaces(None).unwrap(), vec!["user:me", "global"]);
     }
 
     #[test]
     fn default_set_adds_the_active_project() {
         assert_eq!(
-            default_read_namespaces("me", Some("/tmp/warden")).unwrap(),
+            default_read_namespaces(Some("/tmp/warden")).unwrap(),
             vec!["user:me", "global", "project:warden"]
         );
     }
 
     #[test]
     fn default_set_does_not_duplicate() {
-        assert_eq!(default_read_namespaces("me", Some("project:warden")).unwrap().len(), 3);
+        assert_eq!(default_read_namespaces(Some("project:warden")).unwrap().len(), 3);
     }
 
     #[test]

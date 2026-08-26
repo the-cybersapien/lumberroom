@@ -31,8 +31,9 @@ use crate::ports::memory::{
     Retired, Superseded, Timeline, WalkBounds,
 };
 use crate::ports::{
-    ConflictPair, DigestData, DigestQuery, Emission, MemoryRepository, NamespaceSummary,
-    NeighbourQuery, NewMemory, RecentQuery, RegistrySummary, SearchQuery, Staleness,
+    ConflictPair, DigestData, DigestQuery, Emission, MemoryRepository, NamespaceRows,
+    NamespaceSummary, NeighbourQuery, NewMemory, RecentQuery, RegistrySummary, SearchQuery,
+    Staleness,
 };
 
 pub struct PgMemoryRepository {
@@ -1566,6 +1567,54 @@ impl MemoryRepository for PgMemoryRepository {
             *counts.entry(r.get("namespace")).or_insert(0) += r.get::<i64, _>("n");
         }
         Ok(counts)
+    }
+
+    /// Every `user:` row this store holds, per table.
+    ///
+    /// Eight tables key on namespace and all eight are counted, superseded memory rows included.
+    /// The guard that reads this is looking for rows an upgrade left unreachable, and a namespace
+    /// holding nothing but a registry entry or nothing but retired rows is exactly that case.
+    ///
+    /// `tool_calls` carries a namespace and is left out. It records what a client asked for at the
+    /// time it asked, and an audit row rewritten to a name the call never used is a falsified log.
+    async fn user_namespace_rows(&self, tenant: &str) -> Result<Vec<NamespaceRows>> {
+        let rows = sqlx::query(
+            "SELECT 'memory'::text AS t, namespace, count(*) AS n FROM memory
+              WHERE tenant_id = $1 AND namespace LIKE 'user:%' GROUP BY namespace
+             UNION ALL
+             SELECT 'registry'::text, namespace, count(*) FROM registry
+              WHERE tenant_id = $1 AND namespace LIKE 'user:%' GROUP BY namespace
+             UNION ALL
+             SELECT 'registry_history'::text, namespace, count(*) FROM registry_history
+              WHERE tenant_id = $1 AND namespace LIKE 'user:%' GROUP BY namespace
+             UNION ALL
+             SELECT 'registry_alias'::text, namespace, count(*) FROM registry_alias
+              WHERE tenant_id = $1 AND namespace LIKE 'user:%' GROUP BY namespace
+             UNION ALL
+             SELECT 'entity_alias'::text, namespace, count(*) FROM entity_alias
+              WHERE tenant_id = $1 AND namespace LIKE 'user:%' GROUP BY namespace
+             UNION ALL
+             SELECT 'ingest_proposal'::text, namespace, count(*) FROM ingest_proposal
+              WHERE tenant_id = $1 AND namespace LIKE 'user:%' GROUP BY namespace
+             UNION ALL
+             SELECT 'cleanup_proposal'::text, namespace, count(*) FROM cleanup_proposal
+              WHERE tenant_id = $1 AND namespace LIKE 'user:%' GROUP BY namespace
+             UNION ALL
+             SELECT 'sealed_item'::text, namespace, count(*) FROM sealed_item
+              WHERE tenant_id = $1 AND namespace LIKE 'user:%' GROUP BY namespace
+             ORDER BY 2, 1",
+        )
+        .bind(tenant)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| NamespaceRows {
+                namespace: r.get("namespace"),
+                table: r.get("t"),
+                rows: r.get::<i64, _>("n"),
+            })
+            .collect())
     }
 
     /// One page of facts, newest first, filtered on both axes inside the query.

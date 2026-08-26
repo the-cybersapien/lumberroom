@@ -112,6 +112,9 @@ async fn run_inner(
     }
 
     let namespace = namespaces::normalize(namespace)?;
+    // The personal namespace is reserved before anything is resolved on the write's behalf. A
+    // write to `user:<anything else>` validates, stores, and is then read by nothing.
+    namespaces::check_writable(&namespace)?;
 
     // (a0) A credentials namespace never takes plaintext, whatever the classification table says.
     //

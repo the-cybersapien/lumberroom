@@ -187,7 +187,7 @@ pub async fn run(
 async fn readable(ctx: &Ctx) -> Result<Vec<crate::domain::policy::NamespaceCeiling>> {
     let counts = ctx.repos.memories.namespace_counts(ctx.tenant()).await?;
     let mut all: Vec<String> = counts.into_keys().collect();
-    all.extend(crate::domain::namespaces::default_read_namespaces(&ctx.cfg.tenant_id, None)?);
+    all.extend(crate::domain::namespaces::default_read_namespaces(None)?);
     all.sort();
     crate::domain::namespaces::dedupe(&mut all);
     Ok(crate::adapters::auth::filter_readable(&ctx.principal, &all))

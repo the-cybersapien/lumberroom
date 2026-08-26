@@ -2,6 +2,89 @@
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **The personal namespace is always `user:me`, whatever `TENANT_ID` is set to.** It used to be
+  `user:<TENANT_ID>`, while `lumberroom write` printed
+  `--namespace is required (user:me | project:<slug> | global)` to everyone. On a store configured
+  with any other tenant, a person followed that instruction, the write succeeded, and the memory
+  landed in a namespace `default_read_namespaces` never asks for. It was gone with no error.
+
+  At the default `TENANT_ID=me` nothing changes.
+
+  **If you set `TENANT_ID` to anything else, your existing personal memories are stranded.** They are
+  intact, and the bootstrap profile, registry precedence and `memory_forget`'s default set no longer
+  ask for them. Search still reaches them as a penalised secondary namespace while
+  `SEARCH_INCLUDE_ALL_PROJECTS` is on, which is why they can show up in a result and still be
+  missing from everything else.
+
+  Boot warns once per affected namespace, listing the row count for each table that holds rows under
+  it. Eight tables key on namespace and all of them have to move, or the registry, the aliases and
+  the ingest queue stay behind:
+
+  ```sql
+  -- Stop the server before running this. It moves rows a running server writes to, and nothing
+  -- here holds a concurrent write off; a write that lands mid-block can put a fresh row under the
+  -- old namespace behind an UPDATE that has already passed.
+  --
+  -- One run per stranded namespace. A store that used more than one tenant over its life has more
+  -- than one, and boot names each.
+  BEGIN;
+  -- Drop this line and its partner below if you do not own `registry`. The archive trigger is
+  -- unconditional by design, so moving a registry row files a revision that records a value nothing
+  -- changed. Turning it off for the transaction keeps the archive honest. Without it the block is
+  -- still correct, because `registry_history` moves last and carries those rows along.
+  ALTER TABLE registry DISABLE TRIGGER registry_archive;
+  UPDATE memory           SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>';
+  UPDATE ingest_proposal  SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>';
+  UPDATE cleanup_proposal SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>';
+  -- These four are keyed on (tenant_id, namespace, ...), so a row that already exists under
+  -- `user:me` collides. Decide per key which value wins; the UPDATE below keeps the one already
+  -- under `user:me` and leaves the old row in place for you to read and delete.
+  UPDATE registry       SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>'
+    AND NOT EXISTS (SELECT 1 FROM registry r
+                     WHERE r.tenant_id = registry.tenant_id AND r.namespace = 'user:me'
+                       AND r.kind = registry.kind AND r.key = registry.key);
+  UPDATE registry_alias SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>'
+    AND NOT EXISTS (SELECT 1 FROM registry_alias a
+                     WHERE a.tenant_id = registry_alias.tenant_id AND a.namespace = 'user:me'
+                       AND a.kind = registry_alias.kind AND a.alias_key = registry_alias.alias_key);
+  UPDATE entity_alias   SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>'
+    AND NOT EXISTS (SELECT 1 FROM entity_alias e
+                     WHERE e.tenant_id = entity_alias.tenant_id AND e.namespace = 'user:me'
+                       AND e.alias = entity_alias.alias);
+  UPDATE sealed_item    SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>'
+    AND NOT EXISTS (SELECT 1 FROM sealed_item s
+                     WHERE s.tenant_id = sealed_item.tenant_id AND s.namespace = 'user:me'
+                       AND s.key_hmac = sealed_item.key_hmac);
+  -- Last, and this order is the point when the trigger is left on. `registry` carries an
+  -- unconditional AFTER UPDATE trigger that archives the pre-update row, so moving a registry row
+  -- lays down a fresh `registry_history` row under the old namespace. Moving the history first
+  -- leaves that one behind and boot warns again about a migration that looked like it worked.
+  UPDATE registry_history SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>';
+  ALTER TABLE registry ENABLE TRIGGER registry_archive;
+  COMMIT;
+  ```
+
+  Re-run the server afterwards: anything the warning still names is a row a collision left behind.
+  `tool_calls` also carries a namespace and is deliberately not moved, because it records what a
+  client asked for at the time it asked.
+
+  Then update any `AUTH_TOKENS` grant naming `user:<your tenant>`. Boot warns about those separately,
+  including on a store with no rows yet.
+
+  **A second person gets their own `TENANT_ID`, not their own `user:<id>`.** If `user:alice` and
+  `user:bob` hold two people's facts, leave them where they are: merging them into `user:me` cannot
+  be undone without a backup.
+
+- **`user:me` is the only user namespace a write may name.** `memory_write` and the ingest queue now
+  refuse `user:<anything else>` with a message that says so, instead of storing a fact nothing reads
+  again. Reads stay permissive, so the console, the export and an explicit-namespace search still
+  reach stranded rows while you move them. The validation error and the console's namespace hint no
+  longer offer `user:<id>` as a shape, which is what led people into this in the first place.
+
 ## [0.1.0] - 2026-08-24
 
 First tagged release. One Rust binary, a Postgres database with pgvector, and two clients that talk
