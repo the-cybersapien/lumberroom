@@ -49,7 +49,7 @@ pub fn prompt(text: &str) {
 const COMMANDS: &str =
     "doctor, whoami, login, clients, bootstrap, search, write, forget, review, supersede, fill-date, \
 registry, stats, export, ingest, import, cleanup, history, alias, seal, unseal, recall, tools, \
-currency, arity, \
+currency, arity, graph, \
 hash-password, eval-longmemeval, version, help";
 
 /// Parse, dispatch, and turn a failure into the exit code the scripts read.
@@ -106,6 +106,7 @@ async fn dispatch(client: &Client, args: &Args, command: &str) -> Result<()> {
         "fill-date" => commands::fill_date(client, args).await,
         "currency" => commands::currency(client, args).await,
         "arity" => commands::arity(client, args).await,
+        "graph" => commands::graph(client, args).await,
         "registry" => commands::registry(client, args).await,
         "stats" => commands::stats(client, args).await,
         "export" => commands::export(client, args).await,

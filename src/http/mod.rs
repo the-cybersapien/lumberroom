@@ -28,7 +28,7 @@ use crate::mcp::{AppState, Lumberroom, SessionId, SERVER_NAME, SERVER_VERSION};
 use crate::ports::ingest::{EmissionProbe, ProposalFilter, ProposalSource, RunTotals};
 use crate::ports::{AliasOrigin, ClientStats, Staleness, ToolCallStats};
 use crate::services::{
-    alias, cleanup, currency, forget, history, ingest, recall, registry, review, sealed,
+    alias, cleanup, currency, forget, graph, history, ingest, recall, registry, review, sealed,
     supersession, Ctx,
 };
 
@@ -114,6 +114,8 @@ pub fn router(state: Arc<AppState>, auth: Arc<dyn Authenticator>) -> Router {
         .route("/admin/arity", get(admin_arity_list).post(admin_arity_declare))
         .route("/admin/arity/{tag}", get(admin_arity_preview).delete(admin_arity_forget))
         .route("/admin/supersession/run", post(admin_supersession_run))
+        .route("/admin/graph/walk", get(admin_graph_walk))
+        .route("/admin/graph/rebuild", post(admin_graph_rebuild))
         .route("/admin/export", get(admin_export))
         .route(
             "/admin/sealed",
@@ -887,54 +889,6 @@ async fn admin_memory_supersede(
     }
 }
 
-#[derive(Deserialize)]
-struct DateReviewQuery {
-    limit: Option<i64>,
-}
-
-/// Undated live rows whose own text names a day. A review list, never a filler.
-async fn admin_review_dates(
-    State(http): State<Http>,
-    headers: HeaderMap,
-    Query(q): Query<DateReviewQuery>,
-) -> Response {
-    let ctx = match authed(&http, &headers).await {
-        Ok(c) => c,
-        Err(r) => return r,
-    };
-    match review::date_candidates(&ctx, q.limit).await {
-        Ok(rows) => Json(serde_json::json!({ "rows": rows })).into_response(),
-        Err(e) => domain_error(&e, "date_review_failed"),
-    }
-}
-
-#[derive(Deserialize)]
-struct FillDateBody {
-    /// `YYYY-MM-DD` or a full RFC 3339 instant, the two forms `memory_write` takes.
-    occurred_at: String,
-}
-
-/// Fill a start date the row never carried. Refuses to move one it already has.
-async fn admin_memory_fill_date(
-    State(http): State<Http>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    Json(body): Json<FillDateBody>,
-) -> Response {
-    let ctx = match authed(&http, &headers).await {
-        Ok(c) => c,
-        Err(r) => return r,
-    };
-    let when = match crate::mcp::tools::parse_occurred_at(&body.occurred_at) {
-        Ok(w) => w,
-        Err(e) => return domain_error(&e, "fill_date_failed"),
-    };
-    match review::fill_date(&ctx, &id, when).await {
-        Ok(resolved) => Json(resolved).into_response(),
-        Err(e) => domain_error(&e, "fill_date_failed"),
-    }
-}
-
 /// The currency measure. Coverage always; accuracy when the caller posts cases.
 ///
 /// POST rather than GET because the fixture is the body. A GET with the cases in a query string
@@ -959,6 +913,54 @@ struct CurrencyBody {
     /// Absent runs coverage alone, which is the number 0014 wants first and needs no fixture.
     #[serde(default)]
     cases: Vec<currency::CurrencyCase>,
+}
+
+#[derive(Deserialize)]
+struct WalkQuery {
+    q: String,
+    /// A node with more readable edges than this is skipped. Default 60: high enough that ordinary
+    /// subjects survive, low enough that a filing-convention tag does not drag the whole store in.
+    #[serde(default)]
+    degree_cap: Option<i64>,
+    /// Walk whatever the router says. For calibration, not for callers.
+    #[serde(default)]
+    force: Option<bool>,
+}
+
+/// Walk out from what search finds. Reads only.
+async fn admin_graph_walk(
+    State(http): State<Http>,
+    headers: HeaderMap,
+    Query(q): Query<WalkQuery>,
+) -> Response {
+    let ctx = match authed(&http, &headers).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let cap = q.degree_cap.unwrap_or(60);
+    // `force` skips the router. It exists for calibration: comparing what a walk would have found
+    // against what the router decided needs a way to walk a question the router refused.
+    let result = if q.force.unwrap_or(false) {
+        graph::walk(&ctx, &q.q, cap).await
+    } else {
+        graph::routed(&ctx, &q.q, cap).await
+    };
+    match result {
+        Ok(w) => Json(w).into_response(),
+        Err(e) => domain_error(&e, "graph_failed"),
+    }
+}
+
+/// Rebuild the edge table from structure. Idempotent, calls no model.
+async fn admin_graph_rebuild(State(http): State<Http>, headers: HeaderMap) -> Response {
+    let ctx = match authed(&http, &headers).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    match graph::rebuild(&ctx).await {
+        Ok(total) => Json(serde_json::json!({ "edges": total })).into_response(),
+        Err(e) => domain_error(&e, "graph_failed"),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1056,6 +1058,54 @@ async fn admin_supersession_run(State(http): State<Http>, headers: HeaderMap) ->
     match supersession::run(&ctx, http.state.cleanup.as_ref()).await {
         Ok(report) => Json(report).into_response(),
         Err(e) => domain_error(&e, "supersession_failed"),
+    }
+}
+
+#[derive(Deserialize)]
+struct DateReviewQuery {
+    limit: Option<i64>,
+}
+
+/// Undated live rows whose own text names a day. A review list, never a filler.
+async fn admin_review_dates(
+    State(http): State<Http>,
+    headers: HeaderMap,
+    Query(q): Query<DateReviewQuery>,
+) -> Response {
+    let ctx = match authed(&http, &headers).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    match review::date_candidates(&ctx, q.limit).await {
+        Ok(rows) => Json(serde_json::json!({ "rows": rows })).into_response(),
+        Err(e) => domain_error(&e, "date_review_failed"),
+    }
+}
+
+#[derive(Deserialize)]
+struct FillDateBody {
+    /// `YYYY-MM-DD` or a full RFC 3339 instant, the two forms `memory_write` takes.
+    occurred_at: String,
+}
+
+/// Fill a start date the row never carried. Refuses to move one it already has.
+async fn admin_memory_fill_date(
+    State(http): State<Http>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<FillDateBody>,
+) -> Response {
+    let ctx = match authed(&http, &headers).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let when = match crate::mcp::tools::parse_occurred_at(&body.occurred_at) {
+        Ok(w) => w,
+        Err(e) => return domain_error(&e, "fill_date_failed"),
+    };
+    match review::fill_date(&ctx, &id, when).await {
+        Ok(resolved) => Json(resolved).into_response(),
+        Err(e) => domain_error(&e, "fill_date_failed"),
     }
 }
 

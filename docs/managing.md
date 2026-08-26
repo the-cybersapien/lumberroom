@@ -182,14 +182,23 @@ lumberroom review [--stale] [--conflicts] [--registry]
 lumberroom stats [--hours 168] [--by-client]
 lumberroom forget <id> [--dry-run]    # needs mayDelete on the credential
 lumberroom seal <key> --namespace credentials:aws
+lumberroom review --dates             # undated facts whose own text names a day
+lumberroom fill-date <id> <date>      # fill that day in; it never moves a date already there
 lumberroom currency [--fixture f]     # does the store report the fact that held
 lumberroom arity preview|declare|forget|run|list
+lumberroom graph walk "<question>" | lumberroom graph rebuild
 ```
 
-`arity` decides what the store hides. Declaring a tag `single` lets the cleanup pass propose that
-one dated fact ended another, so `arity preview <tag>` shows what a declaration would end before
-anything is written. Approving those proposals oldest first matters: applying a later pair retires a
-row an earlier pair still names, and the earlier one can then never be applied.
+`arity` and `graph` are the two worth reading about before use, because both decide what the store
+hides. Declaring a tag `single` lets the cleanup pass propose that one dated fact ended another, so
+`arity preview <tag>` shows what a declaration would end before anything is written. Approving those
+proposals oldest first matters: applying a later pair retires a row an earlier pair still names, and
+the earlier one can then never be applied.
+
+`graph walk` asks the router whether a walk is worth its cost and says why either way. It answers
+questions that join two things the store knows separately, which ordinary search cannot reach.
+`--force` walks anyway, which is how a refused question gets compared against what a walk would have
+found.
 
 Changing a static bearer client's grant means editing `AUTH_TOKENS` and restarting. Editing the
 seeded namespace defaults in `sensitivity_default` is psql, and a twice-a-year job at most.
