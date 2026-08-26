@@ -391,6 +391,14 @@ pub trait MemoryRepository: Send + Sync {
 
     async fn find_by_id(&self, tenant: &str, id: uuid::Uuid) -> Result<Option<Memory>>;
 
+    /// Many rows by id, in one query. Ids that do not exist are absent rather than an error.
+    ///
+    /// A walk reaches thousands of nodes at the documented bounds, and one `find_by_id` each would
+    /// be thousands of serial round trips inside one request. No grant filter here: the caller
+    /// decided reachability, and every id reaching this point came out of a query that already
+    /// applied both axes to both endpoints.
+    async fn find_many(&self, tenant: &str, ids: &[uuid::Uuid]) -> Result<Vec<Memory>>;
+
     /// One round trip. The bootstrap latency budget depends on it staying that way.
     async fn digest(&self, q: DigestQuery) -> Result<DigestData>;
 
@@ -476,6 +484,39 @@ pub trait MemoryRepository: Send + Sync {
     async fn supersede(&self, tenant: &str, old: uuid::Uuid, new: uuid::Uuid)
         -> Result<Superseded>;
 
+    /// Rebuild edges from structure the store already holds, and report how many exist after.
+    ///
+    /// Three seeders, none of which calls a model. A supersession link is an edge. Two rows whose
+    /// names the alias table says denote one subject are an edge. Two rows sharing a tag the owner
+    /// curated are an edge. 0014 assumed entity extraction and warned the graph has to earn that
+    /// cost; these cost nothing, so they go first and the extractor waits for evidence that they
+    /// were not enough.
+    ///
+    /// Idempotent. Running it twice writes nothing the second time, which is what makes it safe on
+    /// a schedule.
+    async fn rebuild_edges(&self, tenant: &str) -> Result<i64>;
+
+    /// One hop out from `from`, inside the caller\'s subgraph.
+    ///
+    /// Every edge returned has **both** endpoints readable under `grants`. A node the caller may not
+    /// read is not a node it may walk through: passing through a forbidden node while withholding
+    /// its content would leak the existence of a fact and the shape around it, and edge count and
+    /// path length are facts no content filter hides.
+    ///
+    /// This severs, which reverses what `subject_history` does on purpose. That statement filters
+    /// after the recursion so a chain stays whole across a row it must withhold, and it can report
+    /// the gap as a bare count because a chain has one subject and a readable anchor. A graph has
+    /// neither past hop one: its shape is the answer, so describing the gap is the answer leaking.
+    /// No count and no flag comes back from here for that reason.
+    async fn graph_neighbours(
+        &self,
+        tenant: &str,
+        grants: &[NamespaceGrant],
+        from: &[uuid::Uuid],
+        bounds: WalkBounds,
+    ) -> Result<Vec<GraphEdge>>;
+
+    /// Count what supersession did to the periods it closed, on both grant axes.
     async fn pair_counts(&self, tenant: &str, grants: &[NamespaceGrant]) -> Result<PairCounts>;
 
     /// Live rows carrying no start date, newest first, for the date review.

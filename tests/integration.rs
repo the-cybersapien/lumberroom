@@ -15,7 +15,7 @@ use lumberroom_server::domain::types::{Invocation, Principal, Sensitivity, ToolC
 use lumberroom_server::ports::registry::RegistryUpsert;
 use lumberroom_server::ports::RegistryWrite;
 use lumberroom_server::services::{
-    bootstrap, currency, export, forget, recall, registry, review, search, write, Ctx, Repos,
+    bootstrap, currency, export, forget, graph, recall, registry, review, search, write, Ctx, Repos,
 };
 use sqlx::{PgPool, Row};
 
@@ -2883,6 +2883,290 @@ async fn filling_a_date_takes_only_one_the_fact_itself_names_and_never_moves_an_
         hits.hits.iter().any(|h| h.id == row.id),
         "the filled date should let an as-of read after it return the row"
     );
+}
+
+// ---- decision 0014 part 4: the graph ----
+
+/// The severing claim, which is the production-tier one. An edge whose far end the caller may not
+/// read must not exist for that caller, because edge count and path length are facts about the store
+/// that no content filter hides.
+#[tokio::test]
+async fn a_walk_never_crosses_a_node_the_caller_may_not_read() {
+    let (ctx, _pool, _serial) = ctx_or_skip!();
+    let tag = vec!["quarterly-close".to_string()];
+
+    // Three rows on one tag. The middle one is private, so a narrow client must not reach the third
+    // through it, and must not learn that a third exists.
+    let a = write::run(
+        &ctx,
+        "the close starts on the first working day",
+        "user:me",
+        Some(tag.clone()),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let secret = write::run(
+        &ctx,
+        "the close depends on the restricted ledger key",
+        "user:me",
+        Some(tag.clone()),
+        None,
+        Some("private"),
+        None,
+    )
+    .await
+    .unwrap();
+    let c = write::run(
+        &ctx,
+        "the close is signed off by the auditor",
+        "user:me",
+        Some(tag),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    graph::rebuild(&ctx).await.unwrap();
+
+    // The owner sees all three joined.
+    let owner = graph::walk(&ctx, "the close", 60).await.unwrap();
+    let owner_ids: Vec<&str> = owner.reached.iter().map(|r| r.id.as_str()).collect();
+    assert!(owner_ids.contains(&secret.id.as_str()), "the owner reads private rows: {owner_ids:?}");
+
+    // A client capped at open reaches the open rows and never the private one, by any path.
+    let narrow = narrow(&ctx, "user:me", Sensitivity::Open);
+    let seen = graph::walk(&narrow, "the close", 60).await.unwrap();
+    let ids: Vec<&str> = seen.reached.iter().map(|r| r.id.as_str()).collect();
+    assert!(!ids.contains(&secret.id.as_str()), "a private row was walked into: {ids:?}");
+
+    // And no edge naming it comes back either. An edge is a fact about the store even when its
+    // content is withheld.
+    let touches_secret = seen
+        .edges
+        .iter()
+        .any(|e| e.from_id.to_string() == secret.id || e.to_id.to_string() == secret.id);
+    assert!(!touches_secret, "an edge named a row the caller cannot read");
+
+    // The open rows are still joined to each other, so severing did not cost the answer.
+    assert!(ids.contains(&a.id.as_str()) || ids.contains(&c.id.as_str()));
+}
+
+/// The router is what keeps a walk from being the default path. A question search answers must not
+/// pay for one, and the verdict has to come back either way so the thresholds can be calibrated.
+#[tokio::test]
+async fn a_question_search_answers_does_not_pay_for_a_walk() {
+    let (ctx, _pool, _serial) = ctx_or_skip!();
+    write::run(
+        &ctx,
+        "the deployment runbook lives in docs/runbook.md",
+        "user:me",
+        Some(vec!["runbook".into()]),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    write::run(
+        &ctx,
+        "the deployment runbook was reviewed in June",
+        "user:me",
+        Some(vec!["runbook".into()]),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    graph::rebuild(&ctx).await.unwrap();
+
+    // A question that names its subject plainly. Search stands clear of the field, so no walk.
+    let routed = graph::routed(&ctx, "where does the deployment runbook live", 60).await.unwrap();
+    let v = routed.verdict.clone().expect("a routed call always reports its verdict");
+    assert!(!v.because.is_empty(), "a verdict has to say why");
+    // Asserted, not guarded by an `if`. Wrapping this in a condition on the route makes the test
+    // pass whenever the router changes its mind, which is exactly the regression it exists to catch.
+    assert_eq!(
+        v.route,
+        lumberroom_server::domain::routing::Route::Search,
+        "a question naming its subject plainly must not pay for a walk: {v:?}"
+    );
+    assert!(routed.edges.is_empty(), "the search route walked anyway: {routed:?}");
+
+    // Forcing walks whatever the router said, which is what makes calibration possible.
+    let forced = graph::walk(&ctx, "where does the deployment runbook live", 60).await.unwrap();
+    assert!(forced.verdict.is_none(), "a forced walk asked nobody");
+    assert!(forced.seeds > 0);
+}
+
+/// An empty question is not a walk and not an error.
+#[tokio::test]
+async fn an_empty_question_routes_nowhere() {
+    let (ctx, _pool, _serial) = ctx_or_skip!();
+    let w = graph::routed(&ctx, "   ", 60).await.unwrap();
+    assert_eq!(w.seeds, 0);
+    assert!(w.edges.is_empty());
+    assert!(w.verdict.is_none(), "nothing was asked, so nothing was decided");
+}
+
+/// A supersession edge reaches exactly what `memory_history` refuses. That gate has been opened by
+/// a second spelling once already, which is why this checks the third.
+#[tokio::test]
+async fn a_walk_reaches_retired_rows_only_with_the_history_capability() {
+    let (ctx, _pool, _serial) = ctx_or_skip!();
+    let old = write::run(
+        &ctx,
+        "the signing key lives in the old vault",
+        "user:me",
+        Some(vec!["signing".into()]),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    write::run(
+        &ctx,
+        "the signing key lives in the new vault",
+        "user:me",
+        Some(vec!["signing".into()]),
+        Some(&old.id),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    graph::rebuild(&ctx).await.unwrap();
+
+    let blind = with_principal(&ctx, |p| p.may_read_history = false);
+    let refused = graph::walk(&blind, "the signing key", 60).await.unwrap();
+    let ids: Vec<&str> = refused.reached.iter().map(|r| r.id.as_str()).collect();
+    assert!(
+        !ids.contains(&old.id.as_str()),
+        "a retired row was walked to without the history capability: {ids:?}"
+    );
+    assert!(
+        !refused.edges.iter().any(|e| e.relation == "supersedes"),
+        "a supersession edge is history by another name"
+    );
+}
+
+/// Rebuilding is idempotent, which is what makes it safe to run on a schedule.
+#[tokio::test]
+async fn rebuilding_the_edge_table_twice_writes_nothing_the_second_time() {
+    let (ctx, _pool, _serial) = ctx_or_skip!();
+    for text in ["the racks are in row four", "the racks were audited in row four"] {
+        write::run(&ctx, text, "user:me", Some(vec!["racks".into()]), None, None, None)
+            .await
+            .unwrap();
+    }
+    let first = graph::rebuild(&ctx).await.unwrap();
+    let second = graph::rebuild(&ctx).await.unwrap();
+    assert_eq!(first, second, "a second pass wrote new edges");
+    assert!(first > 0, "two rows sharing a curated tag are an edge");
+}
+
+/// Rebuild has to mean rebuild. The idempotency test cannot catch this, because it rebuilds twice
+/// over a store that never changed: an edge whose reason disappears has to disappear with it, or the
+/// walk keeps crossing a join the store no longer believes in.
+#[tokio::test]
+async fn an_edge_whose_reason_is_gone_does_not_survive_a_rebuild() {
+    let (ctx, pool, _serial) = ctx_or_skip!();
+    let a = write::run(
+        &ctx,
+        "the failover drill runs on the first Tuesday",
+        "user:me",
+        Some(vec!["drill".into()]),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    write::run(
+        &ctx,
+        "the failover drill needs two operators",
+        "user:me",
+        Some(vec!["drill".into()]),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let with_tag = graph::rebuild(&ctx).await.unwrap();
+    assert!(with_tag > 0, "two rows sharing a curated tag are an edge");
+
+    // Take the tag off one row. The shared subject is gone, so the edge has no reason left.
+    sqlx::query("UPDATE memory SET tags = ARRAY[]::text[] WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(&a.id).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let after = graph::rebuild(&ctx).await.unwrap();
+    assert!(
+        after < with_tag,
+        "the edge outlived the tag that justified it: {with_tag} then {after}"
+    );
+    let still: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM memory_edge WHERE (src_id = $1 OR dst_id = $1) AND relation = 'shares_tag'",
+    )
+    .bind(uuid::Uuid::parse_str(&a.id).unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(still, 0, "a shares_tag edge survived the tag being removed");
+}
+
+/// Deleting a row takes its edges with it. Two foreign keys with the default would reproduce the
+/// shred failure 0013 was written about, and an edge outliving a shredded row leaks its shape.
+#[tokio::test]
+async fn deleting_a_row_removes_its_edges_rather_than_blocking_the_delete() {
+    let (ctx, pool, _serial) = ctx_or_skip!();
+    let a = write::run(
+        &ctx,
+        "the spare parts are in bin nine",
+        "user:me",
+        Some(vec!["bins".into()]),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    write::run(
+        &ctx,
+        "the spare parts were counted in bin nine",
+        "user:me",
+        Some(vec!["bins".into()]),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    graph::rebuild(&ctx).await.unwrap();
+
+    let before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM memory_edge").fetch_one(&pool).await.unwrap();
+    assert!(before > 0);
+
+    forget::by_id(&ctx, &a.id, Some("test"), false).await.expect("the delete must not be blocked");
+
+    let touching: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM memory_edge WHERE src_id = $1 OR dst_id = $1")
+            .bind(uuid::Uuid::parse_str(&a.id).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(touching, 0, "an edge outlived the row it named");
 }
 
 #[tokio::test]

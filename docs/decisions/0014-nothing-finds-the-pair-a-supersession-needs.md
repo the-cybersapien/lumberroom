@@ -1,8 +1,15 @@
 # 0014. Nothing finds the pair a supersession needs
 
-25 August 2026. Draft. Parts 1, 2 and 3 are implemented and tested. Part 4 is not built. The gate that decided whether part 4 was worth building has
-been run and part 4 passed it, on the live store and on a replica. Every number here says whether a
-run produced it.
+25 August 2026. Draft. All four parts are implemented and tested. The gate that decided whether
+part 4 was worth building ran and passed, on the live store and on a replica.
+
+Part 4's first result is the open question. A bounded walk over edges that cost no extraction
+reaches the answer search missed, and only with a net wide enough to hold half the store. That reads
+as evidence for the entity extractor rather than against it, which is the opposite of why those
+edges were built first. Nothing is deployed to the live store, so every figure below that names a
+store names the replica.
+
+Every number here says whether a run produced it.
 
 ## The decision
 
@@ -167,11 +174,13 @@ same `memory_search` a model calls, and scores the answer. A case naming no expe
 rather than scored, because it would pass and measure nothing.
 
 Coverage alone is not enough and the module says so: a store could close every interval and still
-answer the wrong version if the boundaries are wrong.
+answer the wrong version if the boundaries are wrong. Coverage says the bookkeeping happened,
+accuracy says it is right.
 
 **First run, on the dev replica: 5 pairs, all closed, 1 with both halves dated.** That number is not
 worth much yet. The replica was rebuilt through `memory_write` without replaying supersession links,
-so those five are the dev store's own history rather than the imported corpus.
+so those five are the dev store's own history rather than the imported corpus. The figure this
+record wants comes from the live store and needs this built there first.
 
 Two honest limits on it. The measure scores parts 2 and 3 and **cannot adjudicate part 4**: the
 graph is argued from a compositional question that carries no dates and names no entity, which a
@@ -214,26 +223,20 @@ deleting the successor and rewriting it under a new id, losing `created_at`, the
 every export link that named it. 0011 settled proposing over applying for cleanup and it holds
 harder here.
 
-**Built on 25 August 2026, and one thing the draft expected turned out unnecessary.** The draft
-assumed a judgement pass and therefore a prompt clause carrying dates, which would have reversed the
-policy that the cleanup prompt withholds them, guarded by a test. No model is in this path. A
-declared arity plus two dates decides the pair on its own, so the prompt is untouched and nothing
-extra leaves the machine.
+**Built on 25 August 2026, and one thing the draft expected turned out to be unnecessary.** The
+draft assumed a judgement pass and therefore a prompt clause carrying dates, which would have
+reversed the policy that the cleanup prompt withholds dates, guarded by a test. No model is in this
+path. A declared arity plus two dates decides the pair on its own, so the prompt is untouched and
+nothing extra leaves the machine. Asking a model to confirm arithmetic the owner already declared
+would have been the reversal buying nothing.
 
-Candidates come from the declaration rather than from a cosine band. A tag the owner declared is a
-better candidate set than either: exact, cheap, and wrong only where the owner was wrong. What that
-costs is coverage, since an undeclared subject is invisible however dated its rows are, which is why
-the preview exists.
+Candidates come from the declaration rather than from a cosine band, which is the other thing that
+changed. The draft expected part 3 to lean on part 4's graph for candidates because similarity
+cannot supply them for this shape. A tag the owner declared is a better candidate set than either:
+exact, cheap, and wrong only where the owner was wrong.
 
-Ordering reads valid time and never `created_at`, and the scan window bites at the old end: the
-newest fact on a single-valued subject is the one that holds today, so taking the oldest N would
-leave the subject's real current value invisible to the pass. Both the preview and the pass report
-say when the window truncated.
-
-Chained pairs are order-dependent on apply. Three dated facts queue two proposals, and approving the
-later one retires a row the earlier one still names, leaving it permanently unappliable. The
-rationale the owner reads says so, because enforcing it here would mean this pass reaching into the
-queue's ordering.
+What that costs is coverage. Part 3 sees a subject only once it is declared, so an undeclared one is
+invisible however dated its rows are. That is the intended trade, and it is why the preview exists.
 
 **Approval is not one click.** The queue's least dangerous act already sits behind a confirmation
 and its most dangerous would not. A supersession proposal names both rows in full, prints the
@@ -294,6 +297,83 @@ prompt existed carry no guarantee.
 **Two assets shorten the build.** `entity_alias` is already a typed-name table with valid time and a
 one-hop invariant, which is half a node table. `SUBJECT_HISTORY_SQL` is a working depth-capped
 recursive walk that matches grants in SQL.
+
+### Built on 25 August 2026, and the first result argues against the shortcut it was built on
+
+The bet was that structure the store already holds would do the job without an extractor. A
+supersession link is an edge, a current alias is an edge, and two rows sharing a curated tag are an
+edge. All three cost nothing, so they were built first: if a bounded walk over free edges answered
+the question, the extraction cost this record warned about was never owed.
+
+It answered, and the answer is not good enough.
+
+On the replica, 4,736 structural edges. The failing query at ten seeds, twenty-five fan-out, depth
+two reaches the answer row at **hop two, via `shares_tag`**, which is more than search managed at
+twenty. But it reaches it only with the degree cap at 40 or above, and at that setting the walk
+returns **256 nodes out of roughly 447 readable rows**.
+
+| degree cap | nodes reached | answer reached |
+|---|---|---|
+| 40 | 256 | yes |
+| 20 | 105 | no |
+| 12 | 10 | no |
+
+Over half the store is a net, not an answer. Tighten the cap to something selective and the answer
+falls out. So the honest reading is that a curated tag is too coarse an edge to carry this join: it
+groups by filing convention, and the pair that matters is buried among everything else filed
+alongside it.
+
+**That is evidence for the extractor rather than against it**, which inverts the reason these edges
+were built first. A typed entity edge would connect the held position to the named catalyst directly
+and survive a degree cap that a tag cannot. The traversal, the gates and the table are built and
+tested; what is unproven is that free edges make them worth using.
+
+The reversal condition below stands unchanged and is now the live question. Ten questions, written
+down first.
+
+**The graph is not free, and nothing routes every query through it.** That walk cost 2,539 edge
+lookups and returned 256 rows to answer one question. Search costs one statement. A store that walks
+on every question has replaced a cheap read with an expensive one for the large majority of
+questions that never needed a join.
+
+**A router decides, and it is not a model.** Built 26 August 2026 in `domain::routing`. It reads the
+scores search already produced, so a refusal costs one search and nothing more. Three signals: the
+best score, the spread between it and rank five, and whether the question names an entity
+`entity_alias` knows. A low best score beside a flat field is the shape of a question similarity
+cannot answer, because it says nothing looks like the question and several things look equally
+unlike it.
+
+Both conditions, never either. A weak-but-sharp result is a poor answer that is still an answer; a
+strong-but-flat one is a cluster of near-duplicates. Only the pair means no single row resembles the
+question.
+
+Measured on the replica:
+
+| question | top | spread | route | reached the answer |
+|---|---|---|---|---|
+| the compositional one | 0.511 | 0.033 | walk | yes |
+| asked by name | 0.679 | 0.175 | search | yes, search had it |
+| a plain lookup | 0.648 | 0.204 | search | n/a |
+
+**The thresholds are guesses and say so.** Two observations is not a calibration, so every verdict
+publishes the signals behind it, the same position 0011 took on the dedupe bands. `GRAPH_ROUTE_MAX_TOP`
+and `GRAPH_ROUTE_MAX_SPREAD` move them without a rebuild, both are validated at boot, and `force`
+walks a question the router refused so the two can be compared.
+
+**They are cosine values, and only cosine values.** Under `SEARCH_FUSION=rrf` a rank-one hit scores
+about 1/61 and the whole field spans under 0.01, so compared against these numbers every question
+would read weak and flat and every question would walk: the default path this router exists to
+prevent, arrived at silently. The router follows the blend and stands down under one it was not
+measured on, rather than inventing a second pair of numbers with no run behind them.
+
+**The entity short-circuit is the weakest rule, and the counterexample is already in.** On the same
+store, a question naming a recorded alias scored 0.474 with a spread of 0.034: weak and flat, the
+shape that otherwise warrants a walk, refused because it named a name. Naming an entity is not the
+same as search having answered. It stays for now because the bias is toward not walking while the
+numbers are guesses, and it is pinned by a test so the weakness stays visible.
+
+The bias throughout is against walking. A false negative costs the answer search would have given
+anyway. A false positive costs thousands of edge lookups and hands back half the store.
 
 ### Traversal is strict, and it reverses a rule this codebase already made
 
@@ -409,8 +489,14 @@ per-candidate reasoning before the verdict, as a schema requirement.
 whether none exists or none is theirs, and now with no count and no flag either. This widens a gap
 already in the store, where an ungranted namespace answers search with an empty list. A client
 reasoning off a severed subgraph will be confidently incomplete with nothing marking it, and
-debugging that lands on the owner. The console reads as the owner, so it shows the whole graph and
-marks which edges each client would refuse.
+debugging that lands on the owner. The console reads as the owner, so it could show the whole graph
+and mark which edges each client would refuse.
+
+**That console view is not built.** The graph reaches the owner through `lumberroom graph walk` and
+`/admin/graph/walk`, both of which apply the caller's own grant, so nothing today shows the owner an
+edge a client would be refused. Nor is there a console page for cardinality declarations or for
+supersession proposals, which arrive in the existing cleanup queue without the confirmation this
+record asks for. Named here rather than left as an implication that it exists.
 
 **Two similar walks now filter in opposite places**, held apart by the paragraph above and by
 citation, with no compiler or test enforcing the distinction.

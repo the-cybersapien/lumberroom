@@ -167,6 +167,7 @@ mod tests {
                 max_chars_by_client: std::collections::HashMap::new(),
             },
             search: SearchConfig {
+                graph_route: crate::domain::routing::Thresholds::default(),
                 default_limit: 8,
                 max_limit: 50,
                 vector_weight: 1.0,

@@ -12,6 +12,7 @@ pub mod currency;
 pub mod eval;
 pub mod export;
 pub mod forget;
+pub mod graph;
 pub mod history;
 pub mod ingest;
 pub mod recall;

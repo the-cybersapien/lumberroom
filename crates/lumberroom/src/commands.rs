@@ -757,6 +757,86 @@ pub async fn currency(c: &Client, args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// `lumberroom graph walk "<question>" [--degree-cap n] [--force]` and `lumberroom graph rebuild`.
+///
+/// A walk is expensive, so the router decides whether one is warranted and reports why either way.
+/// `--force` walks regardless, which is how a refused question gets compared against what a walk
+/// would have found.
+pub async fn graph(c: &Client, args: &Args) -> Result<()> {
+    require_token(c, &c.file.borrow().path.display().to_string())?;
+    match args.positional_at(1).unwrap_or("walk") {
+        "rebuild" => {
+            let (status, body) =
+                c.http_request(reqwest::Method::POST, "/admin/graph/rebuild", None).await?;
+            if status != 200 {
+                return Err(err(format!("rebuild failed ({status}): {}", compact(&body))));
+            }
+            let n = body.get("edges").and_then(|v| v.as_i64()).unwrap_or(0);
+            out(&format!("{n} edges, built from supersession links, aliases and shared tags"));
+            Ok(())
+        }
+        "walk" => {
+            let Some(q) = args.positional_at(2) else {
+                return Err(err(
+                    "usage: lumberroom graph walk \"<question>\" [--degree-cap n] [--force]",
+                ));
+            };
+            let mut path = format!("/admin/graph/walk?q={}", urlencode(q));
+            if let Some(cap) = args.value("degree-cap") {
+                path.push_str(&format!("&degree_cap={}", urlencode(cap)));
+            }
+            if args.present("force") {
+                path.push_str("&force=true");
+            }
+            let (status, body) = c.http_get(&path).await?;
+            if status != 200 {
+                return Err(err(format!("walk failed ({status}): {}", compact(&body))));
+            }
+            if args.present("json") {
+                out_json(&body);
+                return Ok(());
+            }
+            let reached =
+                body.get("reached").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let edges = body.get("edges").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+            match body.get("verdict") {
+                Some(v) if !v.is_null() => {
+                    let s = v.get("signals").cloned().unwrap_or_default();
+                    let num = |k: &str| s.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+                    out(&format!(
+                        "{}: top {:.3}, spread {:.3}",
+                        v.get("route").and_then(|r| r.as_str()).unwrap_or("?"),
+                        num("top"),
+                        num("spread")
+                    ));
+                    if let Some(why) = v.get("because").and_then(|b| b.as_array()) {
+                        for reason in why {
+                            out(&format!("  {}", reason.as_str().unwrap_or("")));
+                        }
+                    }
+                }
+                _ => out("walked without asking the router"),
+            }
+            out("");
+            out(&format!("{} rows reached over {edges} edges", reached.len()));
+            for r in reached.iter().take(20) {
+                let hop = r.get("hop").and_then(|v| v.as_u64()).unwrap_or(0);
+                let via = r.get("via").and_then(|v| v.as_str()).unwrap_or("seed");
+                let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                out(&format!(
+                    "  hop {hop} {via:<13} {}",
+                    content.chars().take(88).collect::<String>()
+                ));
+            }
+            if reached.len() > 20 {
+                out(&format!("  and {} more", reached.len() - 20));
+            }
+            Ok(())
+        }
+        other => Err(err(format!("unknown graph subcommand `{other}`. Available: walk, rebuild"))),
+    }
+}
+
 /// `lumberroom arity` and its subcommands. Decision 0014 part 3.
 ///
 /// Cardinality is the one thing about supersession no model can read off the text: "the limit is 40k

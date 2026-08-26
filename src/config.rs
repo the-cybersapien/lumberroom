@@ -310,6 +310,11 @@ impl BootstrapConfig {
 pub struct SearchConfig {
     pub default_limit: i64,
     pub max_limit: i64,
+    /// When a question is shaped like a join rather than a lookup, and a graph walk is worth its
+    /// cost. Both are design targets set from two observations on 25 August 2026, which is not a
+    /// calibration; `domain::routing` publishes the signals behind every verdict so a run over real
+    /// questions can move them.
+    pub graph_route: crate::domain::routing::Thresholds,
     pub vector_weight: f64,
     pub lexical_weight: f64,
     pub include_all_projects: bool,
@@ -740,6 +745,11 @@ pub fn load() -> Result<Config> {
     let jwks_default =
         if issuer.is_empty() { String::new() } else { format!("{issuer}/oidc/jwks") };
 
+    // Parsed once. Two reads of `SEARCH_FUSION` would agree today and drift the first time
+    // somebody edits one of them, and the two things it decides are the ranking and whether the
+    // router's cosine thresholds mean anything at all.
+    let fusion = parse_fusion(&env("SEARCH_FUSION", "linear"))?;
+
     let cfg = Config {
         public_url: public_url.clone(),
         port: env_num("PORT", 8787u16)?,
@@ -799,6 +809,16 @@ pub fn load() -> Result<Config> {
             include_all_projects: env_bool("SEARCH_INCLUDE_ALL_PROJECTS", true),
             other_project_penalty: env_num("SEARCH_OTHER_PROJECT_PENALTY", 0.85f64)?,
             usage_weight: env_num("SEARCH_USAGE_WEIGHT", 0.05f64)?,
+            graph_route: crate::domain::routing::Thresholds {
+                // Follows the blend rather than being set beside it. The thresholds are cosine
+                // values, and under rank fusion they would call every question weak and flat.
+                scale: match parse_fusion(&env("SEARCH_FUSION", "linear"))? {
+                    Fusion::Linear => crate::domain::routing::Scale::Cosine,
+                    Fusion::Rrf => crate::domain::routing::Scale::Ranked,
+                },
+                max_top: env_num("GRAPH_ROUTE_MAX_TOP", 0.65f64)?,
+                max_spread: env_num("GRAPH_ROUTE_MAX_SPREAD", 0.08f64)?,
+            },
             fusion: parse_fusion(&env("SEARCH_FUSION", "linear"))?,
             rrf_k: env_num("SEARCH_RRF_K", DEFAULT_RRF_K)?,
         },
@@ -1012,6 +1032,22 @@ fn validate(cfg: &Config) -> Result<()> {
             "INGEST_EMISSION_SLACK_SECS cannot be negative: it is the clock difference between the \
              server and the laptop, and a negative value reverses the echo test.",
         ));
+    }
+
+    // A NaN threshold parses as a number and then loses every comparison, so `top < max_top` is
+    // false for every question and the router silently never walks: a switched-off feature that
+    // reports itself as switched on. Both are cosine values, so anything outside 0..=1 is a
+    // threshold that can never be crossed in one direction or is always crossed in the other.
+    for (name, value) in [
+        ("GRAPH_ROUTE_MAX_TOP", cfg.search.graph_route.max_top),
+        ("GRAPH_ROUTE_MAX_SPREAD", cfg.search.graph_route.max_spread),
+    ] {
+        if !(value.is_finite() && (0.0..=1.0).contains(&value)) {
+            return Err(DomainError::validation(format!(
+                "{name} must be a finite number between 0 and 1, got {value}. It is compared \
+                 against cosine scores."
+            )));
+        }
     }
 
     // `k` divides every rank-fused score. Zero puts a rank-1 row at infinity, a negative k flips

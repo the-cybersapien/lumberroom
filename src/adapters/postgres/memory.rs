@@ -27,8 +27,8 @@ use crate::domain::errors::{DomainError, Result};
 use crate::domain::policy::{NamespaceCeiling, NamespaceGrant};
 use crate::domain::types::{ConflictCandidate, Memory, SearchHit, Sensitivity};
 use crate::ports::memory::{
-    ChainEdits, ChainLink, ChainNeighbours, DeleteOutcome, DeletePlan, PairCounts, Retired,
-    Superseded, Timeline,
+    ChainEdits, ChainLink, ChainNeighbours, DeleteOutcome, DeletePlan, GraphEdge, PairCounts,
+    Retired, Superseded, Timeline, WalkBounds,
 };
 use crate::ports::{
     ConflictPair, DigestData, DigestQuery, Emission, MemoryRepository, NamespaceSummary,
@@ -398,43 +398,6 @@ const SEARCH_RRF_AS_OF: &str = rrf_search_sql!(
                    AND (m.occurred_until IS NULL OR m.occurred_until >  $15))"#
 );
 
-/// What supersession did to the periods it closed.
-///
-/// The successor is joined and filtered on the same axes as the predecessor, so a pair whose live
-/// half the caller cannot read is not counted. Counting it would report a closed interval the caller
-/// has no way to observe, which makes the measure describe somebody else's store.
-///
-/// `dated_but_open` is the one worth watching. Those rows were replaced and still read as holding at
-/// every instant after their start, so an as-of query returns the fact and its replacement together.
-const PAIR_COUNTS_SQL: &str = r#"
-    WITH granted AS (
-        SELECT prefix, exact, sensitivity_rank(max) AS max_rank
-          FROM unnest($2::text[], $3::bool[], $4::text[]) AS g(prefix, exact, max)
-    )
-    SELECT count(*)                                             AS pairs,
-           count(*) FILTER (WHERE m.occurred_until IS NOT NULL) AS closed,
-           count(*) FILTER (WHERE m.occurred_at IS NOT NULL
-                              AND m.occurred_until IS NULL)     AS dated_but_open,
-           count(*) FILTER (WHERE m.occurred_at IS NOT NULL
-                              AND s.occurred_at IS NOT NULL)    AS both_dated
-      FROM memory m
-      JOIN memory s ON s.id = m.superseded_by AND s.tenant_id = m.tenant_id
-     WHERE m.tenant_id = $1
-       AND m.superseded_by IS NOT NULL
-       AND EXISTS (
-             SELECT 1 FROM granted g
-              WHERE CASE WHEN g.exact THEN m.namespace = g.prefix
-                         ELSE left(m.namespace, length(g.prefix)) = g.prefix END
-                AND sensitivity_rank(m.sensitivity) <= g.max_rank
-           )
-       AND EXISTS (
-             SELECT 1 FROM granted g
-              WHERE CASE WHEN g.exact THEN s.namespace = g.prefix
-                         ELSE left(s.namespace, length(g.prefix)) = g.prefix END
-                AND sensitivity_rank(s.sensitivity) <= g.max_rank
-           )
-"#;
-
 /// One page of facts, newest first, in two compile-time variants.
 ///
 /// The live-rows predicate is a literal rather than a bound boolean, for the reason `search_sql!`
@@ -490,6 +453,177 @@ const RECENT_ALL: &str = recent_sql!("true");
 ///
 /// `end_open` is the same-day case surfacing where somebody will see it: the row was retired and its
 /// period never closed, so every as-of read still reports it as holding.
+/// Edges from structure, in three statements that call no model.
+///
+/// Every one is `ON CONFLICT DO NOTHING`, so the whole rebuild is idempotent and safe hourly.
+///
+/// `shares_tag` excludes the tags every row carries. A tag on almost everything is not a subject,
+/// it is a filing convention, and joining on it would make one hub of the entire store: the degree
+/// cap would then skip it and the walk would answer nothing, which looks identical to a graph with
+/// no edges. Excluding it at build time keeps the table honest about what it holds.
+const SEED_SUPERSEDES_SQL: &str = r#"
+    INSERT INTO memory_edge (tenant_id, src_id, dst_id, relation, produced_by)
+    SELECT m.tenant_id, m.id, m.superseded_by, 'supersedes', 'structure'
+      FROM memory m
+     WHERE m.tenant_id = $1 AND m.superseded_by IS NOT NULL
+    ON CONFLICT DO NOTHING
+"#;
+
+/// Two rows whose text uses two names the alias table says are one subject.
+///
+/// Only aliases that are current: `until IS NULL`. A name that stopped being current is exactly the
+/// rename 0009 exists to record, and joining on it would tie a row to a subject it no longer names.
+///
+/// `least`/`greatest` normalises the stored pair so one row covers both directions. It cannot be
+/// `a.id < b.id` here, which is the trap: that clause dedupes only when both sides are drawn from
+/// the same predicate, and these are asymmetric. `a` must contain the alias and `b` the canonical
+/// name, so an ordering filter would keep the pair only when the alias-mentioning row happened to
+/// have the smaller uuid, dropping about half of all alias edges at random. `shares_tag` below can
+/// use the ordering filter because both of its sides carry the identical predicate.
+///
+/// Both rows must be live and in the alias's own namespace. The content match is a substring, which
+/// is loose; the degree cap is what stops a common word from making a hub, and `produced_by` names
+/// this seeder so a bad pass can be undone by its own name.
+const SEED_ALIAS_SQL: &str = r#"
+    INSERT INTO memory_edge (tenant_id, src_id, dst_id, relation, produced_by)
+    SELECT DISTINCT $1, least(a.id, b.id), greatest(a.id, b.id), 'shares_alias', 'structure'
+      FROM entity_alias ea
+      JOIN memory a ON a.tenant_id = $1 AND a.namespace = ea.namespace
+                   AND a.superseded_by IS NULL
+                   AND position(ea.alias in lower(a.content)) > 0
+      JOIN memory b ON b.tenant_id = $1 AND b.namespace = ea.namespace
+                   AND b.superseded_by IS NULL
+                   AND position(lower(ea.canonical) in lower(b.content)) > 0
+     WHERE ea.tenant_id = $1 AND ea.until IS NULL AND a.id <> b.id
+    ON CONFLICT DO NOTHING
+"#;
+
+/// Pairs sharing a tag, with the ubiquitous tags left out.
+///
+/// `src_id < dst_id` writes one row per pair rather than two. The walk expands from either end, so
+/// storing both directions would double the table to answer the same question.
+const SEED_TAG_SQL: &str = r#"
+    WITH common AS (
+        SELECT t AS tag, count(*) AS n
+          FROM memory m, unnest(m.tags) AS t
+         WHERE m.tenant_id = $1 AND m.superseded_by IS NULL
+         GROUP BY t
+    ),
+    usable AS (
+        SELECT tag FROM common
+         WHERE n >= 2 AND n <= $2
+    )
+    INSERT INTO memory_edge (tenant_id, src_id, dst_id, relation, produced_by)
+    SELECT DISTINCT $1, a.id, b.id, 'shares_tag', 'structure'
+      FROM usable u
+      JOIN memory a ON a.tenant_id = $1 AND u.tag = ANY(a.tags) AND a.superseded_by IS NULL
+      JOIN memory b ON b.tenant_id = $1 AND u.tag = ANY(b.tags) AND b.superseded_by IS NULL
+     WHERE a.id < b.id
+    ON CONFLICT DO NOTHING
+"#;
+
+/// A tag on more rows than this is a filing convention rather than a subject.
+const TAG_HUB_LIMIT: i64 = 40;
+
+/// One hop out, inside the caller's subgraph, with the grant applied to both endpoints.
+///
+/// `readable` is the subgraph: rows this caller may see, at their stored sensitivity, with retired
+/// rows admitted only when the caller holds the history capability. Everything below joins through
+/// it, so an edge touching a row the caller cannot read does not exist for this walk. That is the
+/// severing 0014 mandates, and it is why nothing here reports what was withheld.
+///
+/// `deg` counts edges **within that subgraph**. A global count would answer partly from rows the
+/// caller cannot read, which turns a hub's degree into an oracle on private write volume.
+///
+/// The fan-out cap is a window function outside any recursion, which is the reason this walks one
+/// hop per call rather than recursing: Postgres forbids LIMIT and window functions in a recursive
+/// term, so a per-parent cap cannot be expressed there. Depth two is two calls.
+const GRAPH_NEIGHBOURS_SQL: &str = r#"
+    WITH granted AS (
+        SELECT prefix, exact, sensitivity_rank(max) AS max_rank
+          FROM unnest($3::text[], $4::bool[], $5::text[]) AS g(prefix, exact, max)
+    ),
+    readable AS (
+        SELECT m.id
+          FROM memory m
+         WHERE m.tenant_id = $1
+           AND ($8 OR m.superseded_by IS NULL)
+           AND EXISTS (
+                 SELECT 1 FROM granted g
+                  WHERE CASE WHEN g.exact
+                             THEN m.namespace = g.prefix
+                             ELSE left(m.namespace, length(g.prefix)) = g.prefix
+                        END
+                    AND sensitivity_rank(m.sensitivity) <= g.max_rank
+               )
+    ),
+    sub AS (
+        SELECT e.src_id, e.dst_id, e.relation
+          FROM memory_edge e
+          JOIN readable s ON s.id = e.src_id
+          JOIN readable d ON d.id = e.dst_id
+         WHERE e.tenant_id = $1
+    ),
+    deg AS (
+        SELECT id, count(*) AS d
+          FROM (SELECT src_id AS id FROM sub UNION ALL SELECT dst_id AS id FROM sub) x
+         GROUP BY id
+    ),
+    expanded AS (
+        SELECT s.src_id AS from_id, s.dst_id AS to_id, s.relation
+          FROM sub s JOIN deg ON deg.id = s.src_id
+         WHERE s.src_id = ANY($2) AND deg.d <= $6
+        UNION ALL
+        SELECT s.dst_id AS from_id, s.src_id AS to_id, s.relation
+          FROM sub s JOIN deg ON deg.id = s.dst_id
+         WHERE s.dst_id = ANY($2) AND deg.d <= $6
+    )
+    SELECT from_id, to_id, relation
+      FROM (
+            SELECT from_id, to_id, relation,
+                   row_number() OVER (PARTITION BY from_id ORDER BY relation, to_id) AS rn
+              FROM expanded
+           ) t
+     WHERE rn <= $7
+"#;
+
+/// What supersession did to the periods it closed.
+///
+/// The successor is joined and filtered on the same axes as the predecessor, so a pair whose live
+/// half the caller cannot read is not counted. Counting it would report a closed interval the caller
+/// has no way to observe, which makes the measure describe somebody else's store.
+///
+/// `dated_but_open` is the one worth watching. Those rows were replaced and still read as holding at
+/// every instant after their start, so an as-of query returns the fact and its replacement together.
+const PAIR_COUNTS_SQL: &str = r#"
+    WITH granted AS (
+        SELECT prefix, exact, sensitivity_rank(max) AS max_rank
+          FROM unnest($2::text[], $3::bool[], $4::text[]) AS g(prefix, exact, max)
+    )
+    SELECT count(*)                                             AS pairs,
+           count(*) FILTER (WHERE m.occurred_until IS NOT NULL) AS closed,
+           count(*) FILTER (WHERE m.occurred_at IS NOT NULL
+                              AND m.occurred_until IS NULL)     AS dated_but_open,
+           count(*) FILTER (WHERE m.occurred_at IS NOT NULL
+                              AND s.occurred_at IS NOT NULL)    AS both_dated
+      FROM memory m
+      JOIN memory s ON s.id = m.superseded_by AND s.tenant_id = m.tenant_id
+     WHERE m.tenant_id = $1
+       AND m.superseded_by IS NOT NULL
+       AND EXISTS (
+             SELECT 1 FROM granted g
+              WHERE CASE WHEN g.exact THEN m.namespace = g.prefix
+                         ELSE left(m.namespace, length(g.prefix)) = g.prefix END
+                AND sensitivity_rank(m.sensitivity) <= g.max_rank
+           )
+       AND EXISTS (
+             SELECT 1 FROM granted g
+              WHERE CASE WHEN g.exact THEN s.namespace = g.prefix
+                         ELSE left(s.namespace, length(g.prefix)) = g.prefix END
+                AND sensitivity_rank(s.sensitivity) <= g.max_rank
+           )
+"#;
+
 /// Live rows carrying no start date, for the date review.
 ///
 /// Live only. A retired row's missing start is not worth the owner's attention: nothing reads it as
@@ -1350,6 +1484,20 @@ impl MemoryRepository for PgMemoryRepository {
         Ok(row.as_ref().map(memory_from_row))
     }
 
+    /// Many rows by id, in one query.
+    async fn find_many(&self, tenant: &str, ids: &[uuid::Uuid]) -> Result<Vec<Memory>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let rows =
+            sqlx::query(select_memory!("", "FROM memory WHERE tenant_id = $1 AND id = ANY($2)"))
+                .bind(tenant)
+                .bind(ids)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.iter().map(memory_from_row).collect())
+    }
+
     async fn digest(&self, q: DigestQuery) -> Result<DigestData> {
         let (readable_ns, readable_max) = split_ceilings(&q.readable);
         let payload: serde_json::Value = sqlx::query_scalar(DIGEST_SQL)
@@ -1746,6 +1894,84 @@ impl MemoryRepository for PgMemoryRepository {
         Ok(Superseded { end_left_open: until.is_none() })
     }
 
+    /// Rebuild edges from structure, idempotently.
+    async fn rebuild_edges(&self, tenant: &str) -> Result<i64> {
+        let mut tx = self.pool.begin().await?;
+        // Rebuild means rebuild. Appending alone cannot remove an edge whose reason has gone: an
+        // alias closed with an `until`, a tag taken off a row, or a tag that grew past the hub limit
+        // would all leave their edges traversable forever, and the walk would keep crossing them
+        // while the comments above claimed the opposite. Only this seeder's own rows are cleared,
+        // so anything a future seeder writes under a different `produced_by` survives.
+        sqlx::query("DELETE FROM memory_edge WHERE tenant_id = $1 AND produced_by = 'structure'")
+            .bind(tenant)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(SEED_SUPERSEDES_SQL).bind(tenant).execute(&mut *tx).await?;
+        sqlx::query(SEED_ALIAS_SQL).bind(tenant).execute(&mut *tx).await?;
+        sqlx::query(SEED_TAG_SQL).bind(tenant).bind(TAG_HUB_LIMIT).execute(&mut *tx).await?;
+        let total: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM memory_edge WHERE tenant_id = $1")
+                .bind(tenant)
+                .fetch_one(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        Ok(total)
+    }
+
+    /// One hop out, inside the caller's subgraph.
+    async fn graph_neighbours(
+        &self,
+        tenant: &str,
+        grants: &[NamespaceGrant],
+        from: &[uuid::Uuid],
+        bounds: WalkBounds,
+    ) -> Result<Vec<GraphEdge>> {
+        if from.is_empty() || grants.is_empty() {
+            return Ok(vec![]);
+        }
+        let (prefixes, exact, maxima) = split_grants(grants);
+        let rows = sqlx::query(GRAPH_NEIGHBOURS_SQL)
+            .bind(tenant)
+            .bind(from)
+            .bind(&prefixes)
+            .bind(&exact)
+            .bind(&maxima)
+            .bind(bounds.degree_cap)
+            .bind(bounds.fan_out)
+            .bind(bounds.include_retired)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| GraphEdge {
+                from_id: r.get("from_id"),
+                to_id: r.get("to_id"),
+                relation: r.get("relation"),
+            })
+            .collect())
+    }
+
+    /// Count what supersession did to the periods it closed.
+    async fn pair_counts(&self, tenant: &str, grants: &[NamespaceGrant]) -> Result<PairCounts> {
+        if grants.is_empty() {
+            return Ok(PairCounts::default());
+        }
+        let (prefixes, exact, maxima) = split_grants(grants);
+        let row = sqlx::query(PAIR_COUNTS_SQL)
+            .bind(tenant)
+            .bind(&prefixes)
+            .bind(&exact)
+            .bind(&maxima)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(PairCounts {
+            pairs: row.get("pairs"),
+            closed: row.get("closed"),
+            dated_but_open: row.get("dated_but_open"),
+            both_dated: row.get("both_dated"),
+        })
+    }
+
     /// Live rows with no start date, newest first.
     async fn undated(
         &self,
@@ -1789,27 +2015,6 @@ impl MemoryRepository for PgMemoryRepository {
         .await?
         .rows_affected();
         Ok(done == 1)
-    }
-
-    /// Count what supersession did to the periods it closed.
-    async fn pair_counts(&self, tenant: &str, grants: &[NamespaceGrant]) -> Result<PairCounts> {
-        if grants.is_empty() {
-            return Ok(PairCounts::default());
-        }
-        let (prefixes, exact, maxima) = split_grants(grants);
-        let row = sqlx::query(PAIR_COUNTS_SQL)
-            .bind(tenant)
-            .bind(&prefixes)
-            .bind(&exact)
-            .bind(&maxima)
-            .fetch_one(&self.pool)
-            .await?;
-        Ok(PairCounts {
-            pairs: row.get("pairs"),
-            closed: row.get("closed"),
-            dated_but_open: row.get("dated_but_open"),
-            both_dated: row.get("both_dated"),
-        })
     }
 
     /// The last row on the chain from `id`. Depth-capped like every other walk, so a table that
