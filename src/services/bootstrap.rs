@@ -98,7 +98,7 @@ pub async fn run(ctx: &Ctx, project: Option<&str>) -> Result<Digest> {
         Some(p) if !p.trim().is_empty() => Some(namespaces::project_namespace(p)?),
         _ => None,
     };
-    let asked = namespaces::default_read_namespaces(&ctx.cfg.tenant_id, project)?;
+    let asked = namespaces::default_read_namespaces(project)?;
     let primary = filter_readable(&ctx.principal, &asked);
 
     // Which namespaces exist, and which of them may this client read? Names only: the counts that
@@ -129,7 +129,7 @@ pub async fn run(ctx: &Ctx, project: Option<&str>) -> Result<Digest> {
         .memories
         .digest(DigestQuery {
             tenant_id: ctx.cfg.tenant_id.clone(),
-            user_namespace: namespaces::user_namespace(&ctx.cfg.tenant_id),
+            user_namespace: namespaces::user_namespace(),
             project_namespace: project_ns.clone(),
             readable: readable.clone(),
             profile_limit: b.profile_limit,

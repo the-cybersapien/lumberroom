@@ -2,6 +2,31 @@
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **The personal namespace is always `user:me`, whatever `TENANT_ID` is set to.** It used to be
+  `user:<TENANT_ID>`, while `lumberroom write` printed
+  `--namespace is required (user:me | project:<slug> | global)` to everyone. On a store configured
+  with any other tenant, a person followed that instruction, the write succeeded, and the memory
+  landed in a namespace `default_read_namespaces` never asks for. It was gone with no error.
+
+  At the default `TENANT_ID=me` nothing changes.
+
+  **If you set `TENANT_ID` to anything else, your existing personal memories are stranded.** They are
+  intact and unreadable. Boot now warns once per affected namespace with the row count and the fix:
+
+  ```sql
+  UPDATE memory SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>';
+  ```
+
+  Then update any `AUTH_TOKENS` grant naming `user:<your tenant>`.
+
+  A related gap this does not fix: `sensitivity_default` is seeded for tenant `me` only, so a store
+  on another tenant has an empty rule set, and an empty rule set classifies everything `open` and
+  says nothing about having done so. Seed rows for your tenant, or run at the default.
+
 ## [0.1.0] - 2026-08-24
 
 First tagged release. One Rust binary, a Postgres database with pgvector, and two clients that talk

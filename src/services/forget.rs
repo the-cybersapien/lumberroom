@@ -204,7 +204,7 @@ pub async fn by_query(
             namespaces::dedupe(&mut out);
             out
         }
-        _ => namespaces::default_read_namespaces(&ctx.cfg.tenant_id, None)?,
+        _ => namespaces::default_read_namespaces(None)?,
     };
     let primary = filter_readable(&ctx.principal, &asked);
     if primary.is_empty() {

@@ -115,7 +115,7 @@ pub async fn get(
 
     let order = match namespace {
         Some(ns) => vec![namespaces::normalize(ns)?],
-        None => precedence(&ctx.cfg.tenant_id, project)?,
+        None => precedence(project)?,
     };
     let searched = filter_readable(&ctx.principal, &order);
 
@@ -204,7 +204,7 @@ pub async fn history(
 
     let order = match namespace {
         Some(ns) => vec![namespaces::normalize(ns)?],
-        None => precedence(&ctx.cfg.tenant_id, project)?,
+        None => precedence(project)?,
     };
     let searched = filter_readable(&ctx.principal, &order);
 
@@ -448,8 +448,8 @@ fn names(ceilings: &[crate::domain::policy::NamespaceCeiling]) -> Vec<String> {
 }
 
 /// Most specific first: a project override should beat a global default.
-fn precedence(tenant: &str, project: Option<&str>) -> Result<Vec<String>> {
-    let base = namespaces::default_read_namespaces(tenant, project)?;
+fn precedence(project: Option<&str>) -> Result<Vec<String>> {
+    let base = namespaces::default_read_namespaces(project)?;
     let project_ns = match project {
         Some(p) if !p.trim().is_empty() => Some(namespaces::project_namespace(p)?),
         _ => None,
@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn the_project_namespace_is_walked_before_the_defaults() {
-        let order = precedence("me", Some("lumberroom")).unwrap();
+        let order = precedence(Some("lumberroom")).unwrap();
         assert_eq!(order[0], "project:lumberroom");
         assert_eq!(order.iter().filter(|ns| *ns == "project:lumberroom").count(), 1);
     }

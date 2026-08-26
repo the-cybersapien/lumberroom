@@ -113,13 +113,24 @@ pub fn project_namespace(input: &str) -> Result<String> {
     }
 }
 
-pub fn user_namespace(tenant_id: &str) -> String {
-    format!("user:{tenant_id}")
+/// Always `user:me`, whatever `TENANT_ID` is set to.
+///
+/// This used to interpolate the tenant, which made the personal namespace `user:<tenant_id>` and
+/// left the CLI telling a lie. `lumberroom write` prints
+/// `--namespace is required (user:me | project:<slug> | global)` to everyone, so on a store with
+/// `TENANT_ID` set to anything else a person followed that instruction, wrote to `user:me`, and put
+/// the memory in a namespace `default_read_namespaces` never asks for. The write succeeded and the
+/// fact was gone.
+///
+/// `user:me` reads as "mine" rather than as a tenant, which is what it always meant. At the default
+/// `TENANT_ID=me` this changes nothing at all.
+pub fn user_namespace() -> String {
+    "user:me".to_string()
 }
 
 /// PRD §5: the default set is the user namespace and global, plus the active project.
-pub fn default_read_namespaces(tenant_id: &str, project: Option<&str>) -> Result<Vec<String>> {
-    let mut list = vec![user_namespace(tenant_id), "global".to_string()];
+pub fn default_read_namespaces(project: Option<&str>) -> Result<Vec<String>> {
+    let mut list = vec![user_namespace(), "global".to_string()];
     if let Some(p) = project {
         if !p.trim().is_empty() {
             list.push(project_namespace(p)?);
@@ -248,20 +259,20 @@ mod tests {
 
     #[test]
     fn default_set_is_user_and_global() {
-        assert_eq!(default_read_namespaces("me", None).unwrap(), vec!["user:me", "global"]);
+        assert_eq!(default_read_namespaces(None).unwrap(), vec!["user:me", "global"]);
     }
 
     #[test]
     fn default_set_adds_the_active_project() {
         assert_eq!(
-            default_read_namespaces("me", Some("/tmp/warden")).unwrap(),
+            default_read_namespaces(Some("/tmp/warden")).unwrap(),
             vec!["user:me", "global", "project:warden"]
         );
     }
 
     #[test]
     fn default_set_does_not_duplicate() {
-        assert_eq!(default_read_namespaces("me", Some("project:warden")).unwrap().len(), 3);
+        assert_eq!(default_read_namespaces(Some("project:warden")).unwrap().len(), 3);
     }
 
     #[test]

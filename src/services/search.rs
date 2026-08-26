@@ -162,7 +162,7 @@ pub async fn run(
             namespaces::dedupe(&mut out);
             out
         }
-        _ => namespaces::default_read_namespaces(&ctx.cfg.tenant_id, project)?,
+        _ => namespaces::default_read_namespaces(project)?,
     };
 
     let primary = filter_readable(&ctx.principal, &asked);

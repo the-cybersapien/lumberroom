@@ -119,6 +119,8 @@ async fn run() -> Result<()> {
         Arc::new(pg::PgCleanupRepository::new(pool.clone()));
     let aliases: Arc<dyn lumberroom_server::ports::AliasRepository> =
         Arc::new(pg::PgAliasRepository::new(pool.clone()));
+    warn_on_stranded_user_namespaces(memories.as_ref(), &cfg.tenant_id).await;
+
     let repos = services::Repos {
         aliases: Arc::clone(&aliases),
         memories: memories.clone(),
@@ -167,6 +169,31 @@ async fn run() -> Result<()> {
     tracing::info!("shut down cleanly");
     Ok(())
 }
+
+/// Warn when rows sit in a `user:` namespace this build will never ask for.
+///
+/// The personal namespace used to be `user:<TENANT_ID>` and is now always `user:me`. A store that
+/// ran with any other tenant therefore holds memories nothing reads any more: present, intact, and
+/// invisible to search and to bootstrap. Nothing else notices, because a namespace nobody asks for
+/// produces no error.
+///
+/// A warning rather than a refusal. The rows are safe, the fix is one UPDATE, and refusing to boot
+/// over recoverable data an operator has not noticed yet is the wrong trade.
+async fn warn_on_stranded_user_namespaces(memories: &dyn ports::MemoryRepository, tenant: &str) {
+    let Ok(counts) = memories.namespace_counts(tenant).await else { return };
+    for (ns, rows) in counts.iter().filter(|(ns, n)| {
+        ns.starts_with("user:") && ns.as_str() != "user:me" && **n > 0
+    }) {
+        tracing::warn!(
+            namespace = %ns,
+            rows = %rows,
+            "memories sit in a user namespace this build never reads. The personal namespace is now \
+             always user:me. Move them with UPDATE memory SET namespace = 'user:me' WHERE \
+             namespace = '{ns}', and update any AUTH_TOKENS grant naming it."
+        );
+    }
+}
+
 
 /// Where the KEK comes from. `None` means writes at `private` are refused rather than stored in
 /// plaintext, which is the only safe reading of a missing key.

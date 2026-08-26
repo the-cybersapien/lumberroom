@@ -226,3 +226,18 @@ The embedding weights differ from the pre-rewrite TypeScript build: fastembed pu
 `Qdrant/bge-base-en-v1.5-onnx-Q`, the old build used `Xenova/bge-base-en-v1.5` at q8. Same family,
 same 768 dimensions, not provably the same quantised weights. `memory.embedding_model` records which
 produced each row, so a mixed store is detectable.
+
+
+## The personal namespace is `user:me`, not `user:<TENANT_ID>`
+
+`namespaces::user_namespace()` returns the literal `user:me` and takes no argument. It used to
+interpolate `TENANT_ID`, which put the personal namespace out of step with the CLI: `lumberroom
+write` names `user:me` in its own help text, so on a store configured with any other tenant a write
+to `user:me` succeeded and then never appeared in a search, because `default_read_namespaces` asked
+for `user:<tenant>` instead.
+
+Nothing errors when this happens. A namespace nobody asks for is not a failure, it is silence, which
+is why this survived until someone counted rows.
+
+If you are upgrading a store that ran with a custom `TENANT_ID`, boot warns with the affected
+namespace and its row count. Move the rows, then fix any grant that names the old namespace.
