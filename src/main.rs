@@ -181,9 +181,10 @@ async fn run() -> Result<()> {
 /// over recoverable data an operator has not noticed yet is the wrong trade.
 async fn warn_on_stranded_user_namespaces(memories: &dyn ports::MemoryRepository, tenant: &str) {
     let Ok(counts) = memories.namespace_counts(tenant).await else { return };
-    for (ns, rows) in counts.iter().filter(|(ns, n)| {
-        ns.starts_with("user:") && ns.as_str() != "user:me" && **n > 0
-    }) {
+    for (ns, rows) in counts
+        .iter()
+        .filter(|(ns, n)| ns.starts_with("user:") && ns.as_str() != "user:me" && **n > 0)
+    {
         tracing::warn!(
             namespace = %ns,
             rows = %rows,
@@ -193,7 +194,6 @@ async fn warn_on_stranded_user_namespaces(memories: &dyn ports::MemoryRepository
         );
     }
 }
-
 
 /// Where the KEK comes from. `None` means writes at `private` are refused rather than stored in
 /// plaintext, which is the only safe reading of a missing key.
