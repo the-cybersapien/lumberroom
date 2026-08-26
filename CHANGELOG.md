@@ -25,9 +25,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the ingest queue stay behind:
 
   ```sql
+  -- Stop the server before running this. It moves rows a running server writes to, and nothing
+  -- here holds a concurrent write off; a write that lands mid-block can put a fresh row under the
+  -- old namespace behind an UPDATE that has already passed.
+  --
   -- One run per stranded namespace. A store that used more than one tenant over its life has more
   -- than one, and boot names each.
   BEGIN;
+  -- Drop this line and its partner below if you do not own `registry`. The archive trigger is
+  -- unconditional by design, so moving a registry row files a revision that records a value nothing
+  -- changed. Turning it off for the transaction keeps the archive honest. Without it the block is
+  -- still correct, because `registry_history` moves last and carries those rows along.
+  ALTER TABLE registry DISABLE TRIGGER registry_archive;
   UPDATE memory           SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>';
   UPDATE ingest_proposal  SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>';
   UPDATE cleanup_proposal SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>';
@@ -50,11 +59,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     AND NOT EXISTS (SELECT 1 FROM sealed_item s
                      WHERE s.tenant_id = sealed_item.tenant_id AND s.namespace = 'user:me'
                        AND s.key_hmac = sealed_item.key_hmac);
-  -- Last, and this order is the point. `registry` carries an unconditional AFTER UPDATE trigger
-  -- that archives the pre-update row, so moving a registry row lays down a fresh `registry_history`
-  -- row under the old namespace. Moving the history first leaves that one behind and boot warns
-  -- again about a migration that looked like it worked.
+  -- Last, and this order is the point when the trigger is left on. `registry` carries an
+  -- unconditional AFTER UPDATE trigger that archives the pre-update row, so moving a registry row
+  -- lays down a fresh `registry_history` row under the old namespace. Moving the history first
+  -- leaves that one behind and boot warns again about a migration that looked like it worked.
   UPDATE registry_history SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>';
+  ALTER TABLE registry ENABLE TRIGGER registry_archive;
   COMMIT;
   ```
 
