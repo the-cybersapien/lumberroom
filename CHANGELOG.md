@@ -25,9 +25,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the ingest queue stay behind:
 
   ```sql
+  -- One run per stranded namespace. A store that used more than one tenant over its life has more
+  -- than one, and boot names each.
   BEGIN;
   UPDATE memory           SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>';
-  UPDATE registry_history SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>';
   UPDATE ingest_proposal  SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>';
   UPDATE cleanup_proposal SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>';
   -- These four are keyed on (tenant_id, namespace, ...), so a row that already exists under
@@ -49,6 +50,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     AND NOT EXISTS (SELECT 1 FROM sealed_item s
                      WHERE s.tenant_id = sealed_item.tenant_id AND s.namespace = 'user:me'
                        AND s.key_hmac = sealed_item.key_hmac);
+  -- Last, and this order is the point. `registry` carries an unconditional AFTER UPDATE trigger
+  -- that archives the pre-update row, so moving a registry row lays down a fresh `registry_history`
+  -- row under the old namespace. Moving the history first leaves that one behind and boot warns
+  -- again about a migration that looked like it worked.
+  UPDATE registry_history SET namespace = 'user:me' WHERE namespace = 'user:<your tenant>';
   COMMIT;
   ```
 
