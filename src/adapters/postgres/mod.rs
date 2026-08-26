@@ -224,6 +224,83 @@ pub async fn sensitivity_defaults(
     Ok(out)
 }
 
+/// Re-apply the recall settings, and say so when they had gone missing.
+///
+/// `20260819000003_hnsw_recall.sql` sets `hnsw.iterative_scan` and `hnsw.ef_search` with
+/// `ALTER DATABASE`, which stores them in `pg_db_role_setting`, a cluster catalog. A
+/// single-database `pg_dump` does not carry that catalog, so a restored database comes back with
+/// the migration recorded as applied and the settings gone.
+///
+/// What that costs is in the migration's own comment: with `iterative_scan` off, a query asking for
+/// ten rows against a namespace holding 0.5% of the table returned ZERO, having pulled forty
+/// candidates and filtered all forty away. No error, no warning. For a memory system, silently
+/// answering "nothing is known" about a fact that is present is the worst failure available.
+///
+/// So this re-applies rather than only checking. `ALTER DATABASE ... SET` is idempotent and cheap,
+/// and a restore heals itself on the next boot. Reading `pg_db_role_setting` rather than `SHOW`
+/// is deliberate: pgvector registers its GUCs when the library loads, so `SHOW hnsw.iterative_scan`
+/// raises `unrecognized configuration parameter` in a session that has not touched a vector yet,
+/// which looks exactly like the setting being absent.
+///
+/// A managed Postgres may refuse `ALTER DATABASE` to the application role. That is a warning with
+/// the statement to run by hand, not a refusal to start: the server still answers, and an operator
+/// who cannot yet fix it is better off serving with a warning than not serving at all.
+pub async fn ensure_recall_settings(pool: &PgPool) -> Result<()> {
+    const WANTED: &[(&str, &str)] =
+        &[("hnsw.iterative_scan", "strict_order"), ("hnsw.ef_search", "100")];
+
+    let present: Vec<String> = sqlx::query_scalar(
+        "SELECT coalesce(unnest, '') FROM (
+           SELECT unnest(s.setconfig) FROM pg_db_role_setting s
+             JOIN pg_database d ON d.oid = s.setdatabase
+            WHERE d.datname = current_database() AND s.setrole = 0
+         ) t",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    for (name, value) in WANTED {
+        let wanted = format!("{name}={value}");
+        if present.iter().any(|p| p == &wanted) {
+            continue;
+        }
+
+        tracing::warn!(
+            setting = %name,
+            "recall setting missing from this database, re-applying. A restored database loses \
+             these because pg_dump of one database does not carry pg_db_role_setting, and without \
+             hnsw.iterative_scan a filtered search can return nothing at all rather than fewer rows"
+        );
+
+        // The name and value are compile-time constants from WANTED, and the database name comes
+        // from the server. format! is the only way to write DDL that names a database, and there is
+        // no caller-supplied text anywhere in this statement.
+        let stmt = format!(
+            "ALTER DATABASE {} SET {name} = '{value}'",
+            quote_ident(&current_database(pool).await?)
+        );
+        if let Err(e) = sqlx::raw_sql(sqlx::AssertSqlSafe(stmt.clone())).execute(pool).await {
+            tracing::error!(
+                setting = %name,
+                error = %e,
+                "could not re-apply the recall setting. Run this as a role that owns the database, \
+                 then restart: {stmt}"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn current_database(pool: &PgPool) -> Result<String> {
+    Ok(sqlx::query_scalar("SELECT current_database()").fetch_one(pool).await?)
+}
+
+/// Double any embedded quote, the way `quote_ident` does server side.
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
 /// The embedding column width is fixed in SQL and the embedder is configurable, so a mismatch
 /// would produce a confusing error on every write. Fail loudly at boot instead.
 pub async fn assert_embedding_dim(pool: &PgPool, expected: usize) -> Result<usize> {

@@ -85,6 +85,7 @@ async fn run() -> Result<()> {
         tracing::info!("migrations up to date");
     }
     let dim = pg::assert_embedding_dim(&pool, cfg.embed.dim).await?;
+    pg::ensure_recall_settings(&pool).await?;
     tracing::info!(embedding_dim = dim, "schema checked");
 
     // The classification table, settled once, here. A boot question about what this store already
