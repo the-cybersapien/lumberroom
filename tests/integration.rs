@@ -1641,6 +1641,47 @@ async fn the_export_never_counts_the_rows_a_grant_excludes() {
 /// `ReviewQueue::staleness` counts every row in the tenant and takes no ceilings, so a client shown
 /// two of its own rows was also told how large the store it cannot read is.
 #[tokio::test]
+async fn the_stale_queue_fills_its_limit_with_rows_the_caller_may_see() {
+    // The grant used to be a pass over the results, so `limit` counted rows before filtering and a
+    // restricted caller got a short page with no way to tell it was short. Rows it may not read
+    // reached its process on the way, which src/ports/memory.rs forbids in as many words.
+    let (ctx, pool, _serial) = ctx_or_skip!();
+
+    // Six unreadable, then three readable. Oldest first, so a pre-filter limit of 3 returns the
+    // six it may not see, filters them all away, and answers with nothing.
+    for i in 0..6 {
+        write::run(&ctx, &format!("vault fact {i}"), "project:vault", None, None, None, None)
+            .await
+            .unwrap();
+    }
+    for i in 0..3 {
+        write::run(&ctx, &format!("global fact {i}"), "global", None, None, None, None)
+            .await
+            .unwrap();
+    }
+    // stale() wants rows never accessed and older than the threshold.
+    sqlx::query(
+        "UPDATE memory SET created_at = now() - interval '400 days', last_accessed_at = NULL",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let limited = restricted(&ctx, &["global"], &["global"]);
+    let queue = review::queue(&limited, Some(3)).await.unwrap();
+
+    assert_eq!(
+        queue.stale.len(),
+        3,
+        "asked for 3 and got {}, so the limit counted rows the caller cannot see",
+        queue.stale.len()
+    );
+    for item in &queue.stale {
+        assert_eq!(item.row.namespace, "global", "a row outside the grant reached the caller");
+    }
+}
+
+#[tokio::test]
 async fn the_review_queue_hands_a_narrow_grant_no_tenant_wide_row_counts() {
     let (ctx, _pool, _serial) = ctx_or_skip!();
     write::run(

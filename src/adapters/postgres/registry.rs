@@ -9,7 +9,7 @@ use sqlx::{PgPool, Row};
 
 use crate::domain::canonical;
 use crate::domain::errors::{DomainError, Result};
-use crate::domain::policy::NamespaceCeiling;
+use crate::domain::policy::{NamespaceCeiling, NamespaceGrant};
 use crate::domain::types::{RegistryEntry, Sensitivity};
 use crate::ports::registry::{RegistryUpsert, RegistryVersion};
 use crate::ports::{AliasOrigin, RegistryRepository, RegistryWrite};
@@ -351,16 +351,32 @@ impl RegistryRepository for PgRegistryRepository {
 
     /// Past its review date. Marked for a human, never expired automatically: a host entry ages
     /// slowly and a model route ages fast, and neither becomes false on a schedule.
-    async fn due_for_review(&self, tenant: &str, limit: i64) -> Result<Vec<RegistryEntry>> {
+    async fn due_for_review(
+        &self,
+        tenant: &str,
+        limit: i64,
+        reader: &[NamespaceGrant],
+    ) -> Result<Vec<RegistryEntry>> {
+        let (g_prefix, g_exact, g_max) = crate::adapters::postgres::cleanup::grant_arrays(reader);
         let rows = sqlx::query(
             "SELECT namespace, kind, key, value, provenance, sensitivity, version
                FROM registry
               WHERE tenant_id = $1 AND review_after IS NOT NULL AND review_after < now()
+                AND EXISTS (
+                      SELECT 1
+                        FROM unnest($3::text[], $4::bool[], $5::text[]) AS g(prefix, exact, max)
+                       WHERE CASE WHEN g.exact THEN registry.namespace = g.prefix
+                                  ELSE left(registry.namespace, length(g.prefix)) = g.prefix END
+                         AND sensitivity_rank(g.max) >= sensitivity_rank(registry.sensitivity)
+                    )
               ORDER BY review_after ASC
               LIMIT $2",
         )
         .bind(tenant)
         .bind(limit)
+        .bind(&g_prefix)
+        .bind(&g_exact)
+        .bind(&g_max)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.iter().map(entry_from_row).collect())
