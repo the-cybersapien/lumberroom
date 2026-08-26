@@ -96,7 +96,9 @@ pub async fn migrate(pool: &PgPool) -> Result<()> {
     let mut conn = pool
         .acquire()
         .await
-        .map_err(|e| DomainError::internal("could not acquire a connection to migrate").with_source(e))?
+        .map_err(|e| {
+            DomainError::internal("could not acquire a connection to migrate").with_source(e)
+        })?
         .detach();
 
     let result = sqlx::migrate!("./migrations").run(&mut conn).await;
