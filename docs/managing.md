@@ -182,6 +182,7 @@ lumberroom review [--stale] [--conflicts] [--registry]
 lumberroom stats [--hours 168] [--by-client]
 lumberroom forget <id> [--dry-run]    # needs mayDelete on the credential
 lumberroom seal <key> --namespace credentials:aws
+lumberroom currency [--fixture f]     # does the store report the fact that held
 ```
 
 Changing a static bearer client's grant means editing `AUTH_TOKENS` and restarting. Editing the

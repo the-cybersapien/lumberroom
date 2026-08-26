@@ -27,8 +27,8 @@ use crate::domain::errors::{DomainError, Result};
 use crate::domain::policy::{NamespaceCeiling, NamespaceGrant};
 use crate::domain::types::{ConflictCandidate, Memory, SearchHit, Sensitivity};
 use crate::ports::memory::{
-    ChainEdits, ChainLink, ChainNeighbours, DeleteOutcome, DeletePlan, Retired, Superseded,
-    Timeline,
+    ChainEdits, ChainLink, ChainNeighbours, DeleteOutcome, DeletePlan, PairCounts, Retired,
+    Superseded, Timeline,
 };
 use crate::ports::{
     ConflictPair, DigestData, DigestQuery, Emission, MemoryRepository, NamespaceSummary,
@@ -397,6 +397,43 @@ const SEARCH_RRF_AS_OF: &str = rrf_search_sql!(
     r#"(COALESCE(m.occurred_at, m.created_at) <= $15
                    AND (m.occurred_until IS NULL OR m.occurred_until >  $15))"#
 );
+
+/// What supersession did to the periods it closed.
+///
+/// The successor is joined and filtered on the same axes as the predecessor, so a pair whose live
+/// half the caller cannot read is not counted. Counting it would report a closed interval the caller
+/// has no way to observe, which makes the measure describe somebody else's store.
+///
+/// `dated_but_open` is the one worth watching. Those rows were replaced and still read as holding at
+/// every instant after their start, so an as-of query returns the fact and its replacement together.
+const PAIR_COUNTS_SQL: &str = r#"
+    WITH granted AS (
+        SELECT prefix, exact, sensitivity_rank(max) AS max_rank
+          FROM unnest($2::text[], $3::bool[], $4::text[]) AS g(prefix, exact, max)
+    )
+    SELECT count(*)                                             AS pairs,
+           count(*) FILTER (WHERE m.occurred_until IS NOT NULL) AS closed,
+           count(*) FILTER (WHERE m.occurred_at IS NOT NULL
+                              AND m.occurred_until IS NULL)     AS dated_but_open,
+           count(*) FILTER (WHERE m.occurred_at IS NOT NULL
+                              AND s.occurred_at IS NOT NULL)    AS both_dated
+      FROM memory m
+      JOIN memory s ON s.id = m.superseded_by AND s.tenant_id = m.tenant_id
+     WHERE m.tenant_id = $1
+       AND m.superseded_by IS NOT NULL
+       AND EXISTS (
+             SELECT 1 FROM granted g
+              WHERE CASE WHEN g.exact THEN m.namespace = g.prefix
+                         ELSE left(m.namespace, length(g.prefix)) = g.prefix END
+                AND sensitivity_rank(m.sensitivity) <= g.max_rank
+           )
+       AND EXISTS (
+             SELECT 1 FROM granted g
+              WHERE CASE WHEN g.exact THEN s.namespace = g.prefix
+                         ELSE left(s.namespace, length(g.prefix)) = g.prefix END
+                AND sensitivity_rank(s.sensitivity) <= g.max_rank
+           )
+"#;
 
 /// One page of facts, newest first, in two compile-time variants.
 ///
@@ -1752,6 +1789,27 @@ impl MemoryRepository for PgMemoryRepository {
         .await?
         .rows_affected();
         Ok(done == 1)
+    }
+
+    /// Count what supersession did to the periods it closed.
+    async fn pair_counts(&self, tenant: &str, grants: &[NamespaceGrant]) -> Result<PairCounts> {
+        if grants.is_empty() {
+            return Ok(PairCounts::default());
+        }
+        let (prefixes, exact, maxima) = split_grants(grants);
+        let row = sqlx::query(PAIR_COUNTS_SQL)
+            .bind(tenant)
+            .bind(&prefixes)
+            .bind(&exact)
+            .bind(&maxima)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(PairCounts {
+            pairs: row.get("pairs"),
+            closed: row.get("closed"),
+            dated_but_open: row.get("dated_but_open"),
+            both_dated: row.get("both_dated"),
+        })
     }
 
     /// The last row on the chain from `id`. Depth-capped like every other walk, so a table that

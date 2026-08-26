@@ -97,6 +97,61 @@ pub struct ChainEdits {
     pub relinked: Vec<uuid::Uuid>,
 }
 
+/// What supersession did to the periods it closed, counted over the pairs a caller may read.
+///
+/// The number 0014 says nobody knows. A supersession that leaves `occurred_until` NULL has written
+/// a link and no interval, so an as-of read cannot tell the two versions apart at any instant, and
+/// the store answers a question about the past with both facts. Counting them is the only way to
+/// find out how much of the store is in that state.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct PairCounts {
+    /// Retired rows whose successor the caller may also read.
+    pub pairs: i64,
+    /// Pairs where the retired row carries an end. These are the ones as-of can order.
+    pub closed: i64,
+    /// Pairs where the retired row has a start and no end, so it reads as holding at every instant
+    /// after its start despite having been replaced. The same-day case lands here.
+    pub dated_but_open: i64,
+    /// Pairs where both rows carry a start, which is what a supersession needs to be datable at all.
+    pub both_dated: i64,
+}
+
+impl PairCounts {
+    /// The measure, as a fraction. `None` for an empty store rather than a misleading 1.0.
+    pub fn closed_fraction(&self) -> Option<f64> {
+        (self.pairs > 0).then(|| self.closed as f64 / self.pairs as f64)
+    }
+}
+
+/// One edge, as a walk sees it: where it came from, where it goes, and why it exists.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct GraphEdge {
+    pub from_id: uuid::Uuid,
+    pub to_id: uuid::Uuid,
+    /// One of the closed set the table checks. Never a sentence: a model-written label beside
+    /// encrypted content is the plaintext derivative 0005 refuses.
+    pub relation: String,
+}
+
+/// The bounds a walk runs under. Named rather than passed as three bare integers, because three
+/// integers at a call site is how the fan-out cap ends up in the degree slot.
+#[derive(Debug, Clone, Copy)]
+pub struct WalkBounds {
+    /// Neighbours taken per node, per hop.
+    pub fan_out: i64,
+    /// A node with more readable edges than this is skipped. It connects to everything and
+    /// discriminates nothing, and expanding it is unbounded work.
+    ///
+    /// Counted **inside the caller\'s subgraph**. A global degree would be a function of sealed and
+    /// private writes, so a low-privilege client watching an entity\'s neighbours vanish would learn
+    /// the volume and timing of writes it may not read, with no row ever crossing the boundary.
+    pub degree_cap: i64,
+    /// Retired rows are walkable only for a caller holding `may_read_history`. A supersession edge
+    /// reaches exactly what `memory_history` refuses, and that door has been opened by a second
+    /// spelling once already.
+    pub include_retired: bool,
+}
+
 /// One retired row, with what retired it.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Retired {
@@ -420,6 +475,8 @@ pub trait MemoryRepository: Send + Sync {
     /// makes both rows invisible, which is data loss dressed as a correction.
     async fn supersede(&self, tenant: &str, old: uuid::Uuid, new: uuid::Uuid)
         -> Result<Superseded>;
+
+    async fn pair_counts(&self, tenant: &str, grants: &[NamespaceGrant]) -> Result<PairCounts>;
 
     /// Live rows carrying no start date, newest first, for the date review.
     ///

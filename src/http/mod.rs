@@ -28,7 +28,7 @@ use crate::mcp::{AppState, Lumberroom, SessionId, SERVER_NAME, SERVER_VERSION};
 use crate::ports::ingest::{EmissionProbe, ProposalFilter, ProposalSource, RunTotals};
 use crate::ports::{AliasOrigin, ClientStats, Staleness, ToolCallStats};
 use crate::services::{
-    alias, cleanup, forget, history, ingest, recall, registry, review, sealed, Ctx,
+    alias, cleanup, currency, forget, history, ingest, recall, registry, review, sealed, Ctx,
 };
 
 pub const INVOCATION_HEADER: &str = "x-memory-invocation";
@@ -109,6 +109,7 @@ pub fn router(state: Arc<AppState>, auth: Arc<dyn Authenticator>) -> Router {
         .route("/admin/review/conflicts", get(admin_review_conflicts))
         .route("/admin/review/registry", get(admin_review_registry))
         .route("/admin/review/dates", get(admin_review_dates))
+        .route("/admin/currency", post(admin_currency))
         .route("/admin/export", get(admin_export))
         .route(
             "/admin/sealed",
@@ -928,6 +929,32 @@ async fn admin_memory_fill_date(
         Ok(resolved) => Json(resolved).into_response(),
         Err(e) => domain_error(&e, "fill_date_failed"),
     }
+}
+
+/// The currency measure. Coverage always; accuracy when the caller posts cases.
+///
+/// POST rather than GET because the fixture is the body. A GET with the cases in a query string
+/// would put the owner's own questions in every proxy log between here and the browser.
+async fn admin_currency(
+    State(http): State<Http>,
+    headers: HeaderMap,
+    Json(body): Json<CurrencyBody>,
+) -> Response {
+    let ctx = match authed(&http, &headers).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    match currency::run(&ctx, &body.cases).await {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => domain_error(&e, "currency_failed"),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct CurrencyBody {
+    /// Absent runs coverage alone, which is the number 0014 wants first and needs no fixture.
+    #[serde(default)]
+    cases: Vec<currency::CurrencyCase>,
 }
 
 #[derive(Deserialize)]

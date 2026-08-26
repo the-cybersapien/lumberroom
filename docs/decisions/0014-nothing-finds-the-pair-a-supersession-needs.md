@@ -1,7 +1,7 @@
 # 0014. Nothing finds the pair a supersession needs
 
-25 August 2026. Draft. Parts 1 and 2 are implemented and tested, apart from part 2's currency
-measure. Parts 3 and 4 are not built. The gate that decided whether part 4 was worth building has
+25 August 2026. Draft. Parts 1 and 2 are implemented and tested, the currency measure included.
+Parts 3 and 4 are not built. The gate that decided whether part 4 was worth building has
 been run and part 4 passed it, on the live store and on a replica. Every number here says whether a
 run produced it.
 
@@ -156,9 +156,23 @@ before as-of ships, or widen the predicate to fall back on `created_at`, and say
 which one answered. Returning both facts is the failure this record exists to name, and it would be
 this record's own feature producing it.
 
-**Then the measure.** Given a store holding both facts and a question asked at an instant, does the
-store report the one that held then? Returning both is a failure. It needs pairs where a later fact
-ends an earlier one, both dates, and the expected answer at two instants.
+**Then the measure, which shipped on 25 August 2026.** Given a store holding both facts and a
+question asked at an instant, does the store report the one that held then? Returning both is a
+failure, and `CaseOutcome::passed` cannot score it as anything else: a case passes only when the
+expected row is present *and* the row it replaced is absent.
+
+It reports two numbers, and only the second needs a fixture. **Coverage** counts supersession pairs
+and how many carry a closed interval, which is the number this record said nobody knew. It needs
+nothing but the store. **Accuracy** takes labelled pairs, asks at the stated instant through the
+same `memory_search` a model calls, and scores the answer. A case naming no expectation is refused
+rather than scored, because it would pass and measure nothing.
+
+Coverage alone is not enough and the module says so: a store could close every interval and still
+answer the wrong version if the boundaries are wrong.
+
+**First run, on the dev replica: 5 pairs, all closed, 1 with both halves dated.** That number is not
+worth much yet. The replica was rebuilt through `memory_write` without replaying supersession links,
+so those five are the dev store's own history rather than the imported corpus.
 
 Two honest limits on it. The measure scores parts 2 and 3 and **cannot adjudicate part 4**: the
 graph is argued from a compositional question that carries no dates and names no entity, which a
