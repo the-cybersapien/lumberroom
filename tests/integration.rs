@@ -106,7 +106,7 @@ async fn setup_with(
     let truncated = sqlx::query(
         "TRUNCATE memory, registry, registry_history, entity_alias, sealed_item, tool_calls,
                   registry_alias, kek_state,
-                  cleanup_proposal, cleanup_proposal_member, cleanup_watermark,
+                  cleanup_proposal, cleanup_proposal_member, cleanup_watermark, subject_cardinality,
                   oauth_client, oauth_code, oauth_token, oauth_refresh
          RESTART IDENTITY CASCADE",
     )

@@ -121,7 +121,7 @@ async fn setup() -> Option<Harness> {
                   registry_alias, kek_state,
                   oauth_client, oauth_code, oauth_token, oauth_refresh,
                   ingest_proposal, ingest_proposal_source, ingest_watermark, ingest_run,
-                  cleanup_proposal, cleanup_proposal_member, cleanup_watermark,
+                  cleanup_proposal, cleanup_proposal_member, cleanup_watermark, subject_cardinality,
                   recall_emission
          RESTART IDENTITY CASCADE",
     )

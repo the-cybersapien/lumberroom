@@ -183,7 +183,13 @@ lumberroom stats [--hours 168] [--by-client]
 lumberroom forget <id> [--dry-run]    # needs mayDelete on the credential
 lumberroom seal <key> --namespace credentials:aws
 lumberroom currency [--fixture f]     # does the store report the fact that held
+lumberroom arity preview|declare|forget|run|list
 ```
+
+`arity` decides what the store hides. Declaring a tag `single` lets the cleanup pass propose that
+one dated fact ended another, so `arity preview <tag>` shows what a declaration would end before
+anything is written. Approving those proposals oldest first matters: applying a later pair retires a
+row an earlier pair still names, and the earlier one can then never be applied.
 
 Changing a static bearer client's grant means editing `AUTH_TOKENS` and restarting. Editing the
 seeded namespace defaults in `sensitivity_default` is psql, and a twice-a-year job at most.

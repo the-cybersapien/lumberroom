@@ -31,8 +31,8 @@ use crate::domain::errors::{DomainError, Result};
 use crate::domain::policy::NamespaceGrant;
 use crate::domain::types::Sensitivity;
 use crate::ports::cleanup::{
-    Candidate, CandidatePair, CandidateQuery, CleanupRepository, Member, NewProposal, Proposal,
-    QueueOutcome, Watermark,
+    Arity, Candidate, CandidatePair, CandidateQuery, Cardinality, CleanupRepository, Member,
+    NewProposal, Proposal, QueueOutcome, Watermark,
 };
 
 pub struct PgCleanupRepository {
@@ -333,6 +333,45 @@ pub(crate) fn grant_arrays(grants: &[NamespaceGrant]) -> (Vec<String>, Vec<bool>
     (prefixes, exact, maxima)
 }
 
+/// Live dated rows carrying one tag, oldest first by valid time.
+///
+/// `ORDER BY occurred_at` and never `created_at`. A July fact approved in August is older than an
+/// August fact approved in July, and ordering by the transaction clock would propose the newer fact
+/// as the one that was ended.
+///
+/// **Newest first, then reversed by the caller.** The limit has to bite at the old end. Taking the
+/// oldest N would drop the newest facts, and the newest fact on a single-valued subject is the one
+/// that holds today: it would never be proposed as anything's successor, and the subject's real
+/// current value would be the one row the pass could not see. The caller reverses into
+/// oldest-first order and reports that the window truncated.
+///
+/// Both grant axes, the same shape every other candidate query uses. The pass runs as the whole
+/// tenant and an HTTP caller runs as itself; neither spelling skips the check.
+const TAGGED_DATED_SQL: &str = r#"
+    WITH granted AS (
+        SELECT prefix, exact, sensitivity_rank(max) AS max_rank
+          FROM unnest($2::text[], $3::bool[], $4::text[]) AS g(prefix, exact, max)
+    )
+    SELECT m.id, m.namespace, m.sensitivity, m.content, m.created_at, m.access_count,
+           m.occurred_at
+      FROM memory m
+     WHERE m.tenant_id = $1
+       AND m.superseded_by IS NULL
+       AND m.occurred_at IS NOT NULL
+       AND $5 = ANY(m.tags)
+       AND sensitivity_rank(m.sensitivity) <= sensitivity_rank($6)
+       AND EXISTS (
+             SELECT 1 FROM granted g
+              WHERE CASE WHEN g.exact
+                         THEN m.namespace = g.prefix
+                         ELSE left(m.namespace, length(g.prefix)) = g.prefix
+                    END
+                AND sensitivity_rank(m.sensitivity) <= g.max_rank
+           )
+     ORDER BY m.occurred_at DESC, m.id DESC
+     LIMIT $7
+"#;
+
 fn candidate_from(row: &sqlx::postgres::PgRow, prefix: &str) -> Result<Candidate> {
     let id: Uuid = row.try_get(format!("{prefix}id").as_str()).map_err(map_err)?;
     let sensitivity: String =
@@ -344,6 +383,14 @@ fn candidate_from(row: &sqlx::postgres::PgRow, prefix: &str) -> Result<Candidate
         content: row.try_get(format!("{prefix}content").as_str()).map_err(map_err)?,
         created_at: row.try_get(format!("{prefix}created_at").as_str()).map_err(map_err)?,
         access_count: row.try_get(format!("{prefix}access_count").as_str()).map_err(map_err)?,
+        // Tolerated rather than required. Every other candidate query predates valid time and does
+        // not select this column; only supersession needs it, and making it mandatory would mean
+        // editing five statements that have no use for it.
+        occurred_at: row
+            .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(
+                format!("{prefix}occurred_at").as_str(),
+            )
+            .unwrap_or(None),
     })
 }
 
@@ -362,6 +409,82 @@ fn map_err(e: sqlx::Error) -> DomainError {
 
 #[async_trait]
 impl CleanupRepository for PgCleanupRepository {
+    /// Live dated rows carrying one tag, oldest first by valid time.
+    async fn tagged_dated(
+        &self,
+        tenant: &str,
+        q: &CandidateQuery,
+        tag: &str,
+        limit: i64,
+    ) -> Result<Vec<Candidate>> {
+        let (prefixes, exact, maxima) = grant_arrays(&q.grant);
+        let rows = sqlx::query(TAGGED_DATED_SQL)
+            .bind(tenant)
+            .bind(&prefixes)
+            .bind(&exact)
+            .bind(&maxima)
+            .bind(tag)
+            .bind(q.max_sensitivity.as_str())
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_err)?;
+        rows.iter().map(|r| candidate_from(r, "")).collect()
+    }
+
+    /// Declare a subject's arity, replacing any earlier declaration for the tag.
+    async fn declare_arity(
+        &self,
+        tenant: &str,
+        tag: &str,
+        arity: Arity,
+        note: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO subject_cardinality (tenant_id, tag, arity, note)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (tenant_id, tag)
+             DO UPDATE SET arity = EXCLUDED.arity, note = EXCLUDED.note, created_at = now()",
+        )
+        .bind(tenant)
+        .bind(tag)
+        .bind(arity.as_str())
+        .bind(note)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn arities(&self, tenant: &str) -> Result<Vec<Cardinality>> {
+        let rows = sqlx::query(
+            "SELECT tag, arity, note, created_at FROM subject_cardinality
+              WHERE tenant_id = $1 ORDER BY tag",
+        )
+        .bind(tenant)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| Cardinality {
+                tag: r.get("tag"),
+                // An unrecognised value reads as `many`, which is the silent side: it proposes
+                // nothing. A row the store cannot parse must not become a licence to retire facts.
+                arity: Arity::parse(r.get::<&str, _>("arity")).unwrap_or(Arity::Many),
+                note: r.get("note"),
+                created_at: r.get::<chrono::DateTime<chrono::Utc>, _>("created_at").to_rfc3339(),
+            })
+            .collect())
+    }
+
+    async fn forget_arity(&self, tenant: &str, tag: &str) -> Result<bool> {
+        let n = sqlx::query("DELETE FROM subject_cardinality WHERE tenant_id = $1 AND tag = $2")
+            .bind(tenant)
+            .bind(tag)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        Ok(n == 1)
+    }
     async fn exact_duplicates(
         &self,
         tenant: &str,

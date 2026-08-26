@@ -18,6 +18,7 @@ pub mod recall;
 pub mod registry;
 pub mod review;
 pub mod search;
+pub mod supersession;
 pub mod write;
 
 use async_trait::async_trait;
