@@ -24,7 +24,7 @@ carries a marker pointing here.
 | [0011](0011-cleanup-proposes.md) | A periodic pass proposes cleanups and never acts, and the model half only ever sees rows at open | 21 Aug 2026 | accepted, verified |
 | [0012](0012-cli-distribution.md) | `lumberroom` ships as four raw binaries off a git tag, built from two places | 22 Aug 2026 | accepted, scripted; the darwin leg unverified |
 | [0013](0013-delete-splices-the-chain.md) | A delete splices the supersession chain and revives a predecessor only under the caller's grant | 23 Aug 2026 | accepted, implemented; not run live on this branch |
-| [0014](0014-nothing-finds-the-pair-a-supersession-needs.md) | The store can record a supersession and nothing finds the pair; four parts, three of them held | 25 Aug 2026 | draft; parts 1 and 2 implemented and tested bar the measure, parts 3 and 4 unbuilt, the gating rerun run and passed |
+| [0014](0014-nothing-finds-the-pair-a-supersession-needs.md) | The store can record a supersession and nothing finds the pair; four parts, three of them held | 25 Aug 2026 | draft; parts 1 and 2 implemented and tested including the measure, parts 3 and 4 unbuilt, the gating rerun passed |
 
 **On "verified".** All four gates ran against a live server on 20 August 2026 and passed. An OAuth
 flow completed end to end, a private row was encrypted and read back, and a replayed refresh token

@@ -74,6 +74,42 @@ pub struct Memory {
     pub created_at: String,
 }
 
+/// `POST /admin/currency`.
+#[derive(Debug, Deserialize)]
+pub struct CurrencyReport {
+    pub coverage: PairCounts,
+    #[serde(default)]
+    pub closed_fraction: Option<f64>,
+    #[serde(default)]
+    pub accuracy: Option<f64>,
+    #[serde(default)]
+    pub returned_both: usize,
+    #[serde(default)]
+    pub cases: Vec<CurrencyCaseOutcome>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct PairCounts {
+    #[serde(default)]
+    pub pairs: i64,
+    #[serde(default)]
+    pub closed: i64,
+    #[serde(default)]
+    pub dated_but_open: i64,
+    #[serde(default)]
+    pub both_dated: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CurrencyCaseOutcome {
+    pub question: String,
+    pub as_of: String,
+    pub found: bool,
+    pub also_returned_the_other: bool,
+    #[serde(default)]
+    pub rank: Option<usize>,
+}
+
 /// `GET /admin/review/dates`.
 #[derive(Debug, Deserialize)]
 pub struct DateReview {

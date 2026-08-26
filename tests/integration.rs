@@ -15,7 +15,7 @@ use lumberroom_server::domain::types::{Invocation, Principal, Sensitivity, ToolC
 use lumberroom_server::ports::registry::RegistryUpsert;
 use lumberroom_server::ports::RegistryWrite;
 use lumberroom_server::services::{
-    bootstrap, export, forget, recall, registry, review, search, write, Ctx, Repos,
+    bootstrap, currency, export, forget, recall, registry, review, search, write, Ctx, Repos,
 };
 use sqlx::{PgPool, Row};
 
@@ -2882,6 +2882,113 @@ async fn filling_a_date_takes_only_one_the_fact_itself_names_and_never_moves_an_
     assert!(
         hits.hits.iter().any(|h| h.id == row.id),
         "the filled date should let an as-of read after it return the row"
+    );
+}
+
+#[tokio::test]
+async fn the_currency_measure_counts_closed_intervals_and_catches_a_double_answer() {
+    let (ctx, _pool, _serial) = ctx_or_skip!();
+    let before = currency::run(&ctx, &[]).await.unwrap();
+
+    // A dated pair: the successor starts after the predecessor, so supersession closes the period.
+    let old = write::run(
+        &ctx,
+        "the office coffee machine is a moka pot",
+        "user:me",
+        None,
+        None,
+        None,
+        Some("2026-01-05T00:00:00Z".parse().unwrap()),
+    )
+    .await
+    .unwrap();
+    let new = write::run(
+        &ctx,
+        "the office coffee machine is an espresso lever",
+        "user:me",
+        None,
+        Some(&old.id),
+        None,
+        Some("2026-04-09T00:00:00Z".parse().unwrap()),
+    )
+    .await
+    .unwrap();
+
+    let after = currency::run(&ctx, &[]).await.unwrap();
+    assert_eq!(after.coverage.pairs, before.coverage.pairs + 1);
+    assert_eq!(after.coverage.closed, before.coverage.closed + 1, "a dated pair closes its period");
+    assert_eq!(after.coverage.both_dated, before.coverage.both_dated + 1);
+
+    // February sits inside the first fact's period, so the moka pot held and the lever did not.
+    let case = currency::CurrencyCase {
+        question: "what is the office coffee machine".into(),
+        as_of: "2026-02-01T00:00:00Z".parse().unwrap(),
+        expect_id: old.id.clone(),
+        refuse_id: new.id.clone(),
+    };
+    let report = currency::run(&ctx, std::slice::from_ref(&case)).await.unwrap();
+    assert_eq!(report.accuracy, Some(1.0), "{:?}", report.cases);
+    assert_eq!(report.returned_both, 0);
+
+    // The same question in May wants the other half, and asking for the wrong one has to fail
+    // rather than pass on the strength of the row merely being present.
+    let inverted = currency::CurrencyCase {
+        question: "what is the office coffee machine".into(),
+        as_of: "2026-05-01T00:00:00Z".parse().unwrap(),
+        expect_id: old.id.clone(),
+        refuse_id: new.id.clone(),
+    };
+    let wrong = currency::run(&ctx, &[inverted]).await.unwrap();
+    assert_eq!(wrong.accuracy, Some(0.0), "the retired fact does not hold in May");
+
+    // A case naming no expectation is refused, because it would score as a pass and measure nothing.
+    let empty = currency::CurrencyCase {
+        question: "anything".into(),
+        as_of: chrono::Utc::now(),
+        expect_id: String::new(),
+        refuse_id: new.id.clone(),
+    };
+    assert!(currency::run(&ctx, &[empty]).await.is_err());
+}
+
+#[tokio::test]
+async fn an_undated_pair_is_counted_as_open_which_is_what_the_measure_is_for() {
+    let (ctx, _pool, _serial) = ctx_or_skip!();
+    let before = currency::run(&ctx, &[]).await.unwrap();
+
+    // Both facts dated the same day: the period cannot close, so the pair is a link with no
+    // interval. This is the row shape 0014 was written about.
+    let day = "2026-06-11T00:00:00Z";
+    let old = write::run(
+        &ctx,
+        "the standup is at 9 and moved on 11 June 2026",
+        "user:me",
+        None,
+        None,
+        None,
+        Some(day.parse().unwrap()),
+    )
+    .await
+    .unwrap();
+    write::run(
+        &ctx,
+        "the standup is at 10 as of 11 June 2026",
+        "user:me",
+        None,
+        Some(&old.id),
+        None,
+        Some(day.parse().unwrap()),
+    )
+    .await
+    .unwrap();
+
+    let after = currency::run(&ctx, &[]).await.unwrap();
+    assert_eq!(after.coverage.pairs, before.coverage.pairs + 1);
+    assert_eq!(after.coverage.closed, before.coverage.closed, "an empty period is not written");
+    assert_eq!(
+        after.coverage.dated_but_open,
+        before.coverage.dated_but_open + 1,
+        "the retired fact still reads as holding at every instant after its start"
     );
 }
 

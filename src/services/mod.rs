@@ -8,6 +8,7 @@
 pub mod alias;
 pub mod bootstrap;
 pub mod cleanup;
+pub mod currency;
 pub mod eval;
 pub mod export;
 pub mod forget;

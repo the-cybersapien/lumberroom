@@ -678,6 +678,85 @@ pub async fn supersede(c: &Client, args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// `lumberroom currency [--fixture <path>]`
+///
+/// Coverage always, accuracy only when a fixture is given. Decision 0014 part 2.
+///
+/// The fixture is JSONL, one case per line, and it is the owner's to write: a measure whose cases
+/// were chosen by whoever built the store reports on its author rather than on the store. Each case
+/// names the question, the instant, the id that held then, and the id that must not come back.
+pub async fn currency(c: &Client, args: &Args) -> Result<()> {
+    require_token(c, &c.file.borrow().path.display().to_string())?;
+
+    let mut cases: Vec<serde_json::Value> = Vec::new();
+    if let Some(path) = args.value("fixture") {
+        let text =
+            std::fs::read_to_string(path).map_err(|e| err(format!("cannot read {path}: {e}")))?;
+        for (i, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let case: serde_json::Value = serde_json::from_str(line)
+                .map_err(|e| err(format!("{path} line {}: {e}", i + 1)))?;
+            cases.push(case);
+        }
+        if cases.is_empty() {
+            return Err(err(format!("{path} holds no cases")));
+        }
+    }
+
+    let body = serde_json::json!({ "cases": cases });
+    let (status, raw) =
+        c.http_request(reqwest::Method::POST, "/admin/currency", Some(body)).await?;
+    if status != 200 {
+        return Err(err(format!("currency failed ({status}): {}", compact(&raw))));
+    }
+    if args.present("json") {
+        out_json(&raw);
+        return Ok(());
+    }
+    let report: wire::CurrencyReport = typed(&raw, "currency")?;
+
+    let cov = &report.coverage;
+    out(&format!("{} supersession pairs you can read", cov.pairs));
+    match report.closed_fraction {
+        Some(f) => out(&format!("  {} carry a closed interval, {:.0}%", cov.closed, f * 100.0)),
+        None => out("  no pairs, so nothing to close"),
+    }
+    out(&format!(
+        "  {} were replaced and still read as holding at every instant after their start",
+        cov.dated_but_open
+    ));
+    out(&format!("  {} have a start date on both halves", cov.both_dated));
+
+    match report.accuracy {
+        None => {
+            out("");
+            out("No fixture, so nothing was asked. Pass --fixture <file.jsonl> to score the answers.");
+        }
+        Some(a) => {
+            out("");
+            out(&format!(
+                "{} cases, {:.0}% answered with the fact that held",
+                report.cases.len(),
+                a * 100.0
+            ));
+            if report.returned_both > 0 {
+                out(&format!(
+                    "  {} returned the fact and its replacement together, which is the failure this measures",
+                    report.returned_both
+                ));
+            }
+            for case in report.cases.iter().filter(|c| c.also_returned_the_other || !c.found) {
+                let why = if case.also_returned_the_other { "both versions" } else { "not found" };
+                out(&format!("    [{why}] at {}: {}", case.as_of, case.question));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Fill a start date on one fact that never carried one.
 ///
 /// The server refuses any date the fact's own text does not name, so this cannot invent history. It
