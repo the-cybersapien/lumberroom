@@ -1660,10 +1660,12 @@ async fn the_stale_queue_fills_its_limit_with_rows_the_caller_may_see() {
             .unwrap();
     }
     // stale() wants rows never accessed and older than the threshold.
-    sqlx::query("UPDATE memory SET created_at = now() - interval '400 days', last_accessed_at = NULL")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE memory SET created_at = now() - interval '400 days', last_accessed_at = NULL",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let limited = restricted(&ctx, &["global"], &["global"]);
     let queue = review::queue(&limited, Some(3)).await.unwrap();
