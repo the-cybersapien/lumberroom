@@ -491,7 +491,7 @@ async fn namespace(
             StatusCode::NOT_FOUND,
             pages::notice(
                 "no such namespace",
-                "A namespace is 'global', 'user:<id>', 'project:<slug>', 'personal:<slug>' or \
+                "A namespace is 'global', 'user:me', 'project:<slug>', 'personal:<slug>' or \
                  'credentials:<slug>'. Nothing is stored under the name in that link.",
                 None,
                 None,

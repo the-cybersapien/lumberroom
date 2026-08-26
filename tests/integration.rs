@@ -3269,3 +3269,62 @@ async fn a_registry_value_at_open_goes_through_the_credential_tripwire() {
     .await
     .unwrap();
 }
+
+/// The upgrade guard reads `user_namespace_rows` because `namespace_counts` cannot see the two
+/// shapes that matter most.
+///
+/// `namespace_counts` answers "which namespaces exist, for glob resolution", and it answers it from
+/// live memory rows plus registry names. A namespace holding only retired rows never appears in it,
+/// and a registry-only namespace appears with a count of zero. Both are stranded by the move to
+/// `user:me`, and a guard that filtered that map on `n > 0` warned about neither.
+#[tokio::test]
+async fn the_stranded_namespace_query_sees_what_namespace_counts_misses() {
+    let Some((ctx, pool, _guard, _db)) = setup().await else { return };
+
+    let head = uuid::Uuid::new_v4();
+    let retired = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO memory (id, tenant_id, namespace, content, source_client)
+         VALUES ($1, 'me', 'user:me', 'the live one', 'test')",
+    )
+    .bind(head)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO memory (id, tenant_id, namespace, content, source_client, superseded_by)
+         VALUES ($1, 'me', 'user:alice', 'retired under the old tenant', 'test', $2)",
+    )
+    .bind(retired)
+    .bind(head)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO registry (tenant_id, namespace, kind, key, value, provenance)
+         VALUES ('me', 'user:bob', 'service', 'db.host', '\"box\"'::jsonb, '{}'::jsonb)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let counts = ctx.repos.memories.namespace_counts("me").await.unwrap();
+    assert!(!counts.contains_key("user:alice"), "the premise: retired-only is absent here");
+    assert_eq!(counts.get("user:bob"), Some(&0), "the premise: registry-only counts zero here");
+
+    let rows = ctx.repos.memories.user_namespace_rows("me").await.unwrap();
+    let found: Vec<(String, String, i64)> =
+        rows.iter().map(|r| (r.namespace.clone(), r.table.clone(), r.rows)).collect();
+    assert!(
+        found.contains(&("user:alice".to_string(), "memory".to_string(), 1)),
+        "retired rows are still stranded rows: {found:?}"
+    );
+    assert!(
+        found.contains(&("user:bob".to_string(), "registry".to_string(), 1)),
+        "a registry-only namespace is stranded too: {found:?}"
+    );
+    assert!(
+        found.iter().any(|(ns, t, _)| ns == "user:me" && t == "memory"),
+        "user:me is reported and the caller is what skips it: {found:?}"
+    );
+}

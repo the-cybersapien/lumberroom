@@ -183,7 +183,11 @@ pub async fn post(
         // The grant's bar is read at the level the fact would be written at: a poster that could
         // not see the row it is asking for cannot see the proposal either, and a queue entry its
         // own poster cannot read is one nobody accountable for it can read.
-        let Ok(namespace) = namespaces::normalize(&fact.namespace) else {
+        // Reserved here as well as on the write path. A proposal accepted months later would
+        // otherwise lay down a fresh stranded row long after the boot warning was read once.
+        let Ok(namespace) = namespaces::normalize(&fact.namespace)
+            .and_then(|ns| namespaces::check_writable(&ns).map(|()| ns))
+        else {
             // One bad namespace refuses one fact, not the batch. The write path would refuse it
             // at approval anyway; refusing here keeps it out of the queue.
             report.outcomes.push(FactOutcome::Refused { rule: REFUSAL_INVALID_NAMESPACE });

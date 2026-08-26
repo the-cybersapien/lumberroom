@@ -4,6 +4,10 @@
 //! Grants are namespace globs so a client can be denied a namespace without touching the
 //! authorization path.
 //!
+//! `user:me` is the only user namespace a write may name. Validation still admits the others,
+//! because a store that ran under another tenant holds rows under them; `check_writable` carries
+//! the reservation.
+//!
 //! `personal:*` and `credentials:*` exist here because the classification table classifies them.
 //! A shape the sensitivity table calls private or sealed but that validation refuses is a rule that
 //! can never fire, which leaves every reachable namespace classified open: the exact failure the
@@ -20,7 +24,7 @@ pub fn normalize(input: &str) -> Result<String> {
         Ok(ns)
     } else {
         Err(DomainError::validation(format!(
-            "invalid namespace {input:?}. Use 'global', 'user:<id>', 'project:<slug>', \
+            "invalid namespace {input:?}. Use 'global', 'user:me', 'project:<slug>', \
              'personal:<slug>' or 'credentials:<slug>'."
         )))
     }
@@ -30,6 +34,10 @@ fn is_valid(ns: &str) -> bool {
     if ns == "global" {
         return true;
     }
+    // Still every `user:<id>`, and `check_writable` is what refuses the ones that are not
+    // `user:me`. A store that ran under another tenant holds rows under those names; making them
+    // invalid here would take the console page, the export and the explicit-namespace search away
+    // from the operator who has to move them, and would fail a grant that still names one.
     if let Some(rest) = ns.strip_prefix("user:") {
         return valid_segment(rest, 64, false);
     }
@@ -126,6 +134,23 @@ pub fn project_namespace(input: &str) -> Result<String> {
 /// `TENANT_ID=me` this changes nothing at all.
 pub fn user_namespace() -> String {
     "user:me".to_string()
+}
+
+/// Refuses a write to a `user:` namespace other than `user:me`.
+///
+/// The read side stays permissive on purpose, so this is the only place the reservation bites.
+/// Without it the shape validates, the write succeeds, and nothing in the default read set ever
+/// asks for the name again: the fact is stored and gone, which is the failure this whole change
+/// exists to close. A second person gets their own `TENANT_ID`, never their own `user:<id>`.
+pub fn check_writable(ns: &str) -> Result<()> {
+    if ns.starts_with("user:") && ns != "user:me" {
+        return Err(DomainError::validation(format!(
+            "cannot write to {ns}. The personal namespace is always user:me, whatever TENANT_ID is \
+             set to, and nothing reads any other user namespace by default. Write to 'user:me', or \
+             name a 'project:<slug>'."
+        )));
+    }
+    Ok(())
 }
 
 /// PRD §5: the default set is the user namespace and global, plus the active project.
@@ -231,6 +256,23 @@ mod tests {
         ] {
             assert!(normalize(bad).is_err(), "should have rejected {bad:?}");
         }
+    }
+
+    #[test]
+    fn reserves_the_personal_namespace_on_the_write_path_only() {
+        assert!(check_writable("user:me").is_ok());
+        assert!(check_writable("global").is_ok());
+        assert!(check_writable("project:warden").is_ok());
+        assert!(check_writable("user:aditya").is_err());
+        // Readable, so the operator moving stranded rows can still reach them.
+        assert!(normalize("user:aditya").is_ok());
+    }
+
+    #[test]
+    fn the_refusal_text_names_only_the_personal_namespace_that_works() {
+        let e = normalize("nonsense").unwrap_err().to_string();
+        assert!(e.contains("user:me"), "{e}");
+        assert!(!e.contains("user:<id>"), "{e}");
     }
 
     #[test]
