@@ -124,11 +124,8 @@ pub async fn queue(ctx: &Ctx, limit: Option<i64>) -> Result<ReviewQueue> {
     let mut stale_rows: Vec<Memory> = ctx
         .repos
         .memories
-        .stale(ctx.tenant(), ctx.cfg.quality.stale_days, limit)
-        .await?
-        .into_iter()
-        .filter(|m| can_read(&ctx.principal, &m.namespace, m.sensitivity))
-        .collect();
+        .stale(ctx.tenant(), ctx.cfg.quality.stale_days, limit, &ctx.principal.read)
+        .await?;
     let _ = super::decrypt(ctx, stale_rows.iter_mut().collect()).await;
     let stale: Vec<StaleItem> = stale_rows
         .iter()
@@ -141,10 +138,9 @@ pub async fn queue(ctx: &Ctx, limit: Option<i64>) -> Result<ReviewQueue> {
     let registry_due = ctx
         .repos
         .registry
-        .due_for_review(ctx.tenant(), limit)
+        .due_for_review(ctx.tenant(), limit, &ctx.principal.read)
         .await?
         .into_iter()
-        .filter(|e| can_read(&ctx.principal, &e.namespace, e.sensitivity))
         .map(to_registry_due)
         .collect();
 

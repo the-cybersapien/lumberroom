@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use serde::Serialize;
 
 use crate::domain::errors::Result;
-use crate::domain::policy::NamespaceCeiling;
+use crate::domain::policy::{NamespaceCeiling, NamespaceGrant};
 use crate::domain::types::{Provenance, RegistryEntry, Sensitivity};
 
 #[derive(Debug, Clone)]
@@ -168,7 +168,16 @@ pub trait RegistryRepository: Send + Sync {
     async fn delete(&self, tenant: &str, namespace: &str, kind: &str, key: &str) -> Result<bool>;
 
     /// Past its review_after. Marked for a human to look at, never expired automatically.
-    async fn due_for_review(&self, tenant: &str, limit: i64) -> Result<Vec<RegistryEntry>>;
+    /// Entries whose `review_after` has passed, oldest first.
+    ///
+    /// `reader` is a term of the query rather than a pass over the rows, for the reason
+    /// `MemoryRepository::stale` gives.
+    async fn due_for_review(
+        &self,
+        tenant: &str,
+        limit: i64,
+        reader: &[NamespaceGrant],
+    ) -> Result<Vec<RegistryEntry>>;
 
     /// Free-form keys still in the store, for the one-time hand migration to the canonical scheme.
     async fn non_canonical(&self, tenant: &str) -> Result<Vec<RegistryEntry>>;

@@ -2308,7 +2308,14 @@ impl MemoryRepository for PgMemoryRepository {
     }
 
     /// The review queue, not a reaper. Matches the `memory_never_accessed` partial index.
-    async fn stale(&self, tenant: &str, older_than_days: i32, limit: i64) -> Result<Vec<Memory>> {
+    async fn stale(
+        &self,
+        tenant: &str,
+        older_than_days: i32,
+        limit: i64,
+        reader: &[NamespaceGrant],
+    ) -> Result<Vec<Memory>> {
+        let (g_prefix, g_exact, g_max) = crate::adapters::postgres::cleanup::grant_arrays(reader);
         let rows = sqlx::query(select_memory!(
             "",
             "FROM memory
@@ -2316,12 +2323,22 @@ impl MemoryRepository for PgMemoryRepository {
                 AND superseded_by IS NULL
                 AND last_accessed_at IS NULL
                 AND created_at < now() - ($2 || ' days')::interval
+                AND EXISTS (
+                      SELECT 1
+                        FROM unnest($4::text[], $5::bool[], $6::text[]) AS g(prefix, exact, max)
+                       WHERE CASE WHEN g.exact THEN memory.namespace = g.prefix
+                                  ELSE left(memory.namespace, length(g.prefix)) = g.prefix END
+                         AND sensitivity_rank(g.max) >= sensitivity_rank(memory.sensitivity)
+                    )
               ORDER BY created_at ASC
               LIMIT $3"
         ))
         .bind(tenant)
         .bind(older_than_days.to_string())
         .bind(limit)
+        .bind(&g_prefix)
+        .bind(&g_exact)
+        .bind(&g_max)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.iter().map(memory_from_row).collect())

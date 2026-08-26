@@ -1131,7 +1131,7 @@ async fn admin_review_stale(
     let days = q.days.unwrap_or(ctx.cfg.quality.stale_days).clamp(0, 36_500);
     let limit = q.limit.unwrap_or(25).clamp(1, 500);
 
-    let rows = match ctx.repos.memories.stale(ctx.tenant(), days, limit).await {
+    let rows = match ctx.repos.memories.stale(ctx.tenant(), days, limit, &ctx.principal.read).await {
         Ok(r) => r,
         Err(e) => return domain_error(&e, "review_failed"),
     };
@@ -1204,7 +1204,7 @@ async fn admin_review_registry(
     };
     let limit = q.limit.unwrap_or(25).clamp(1, 500);
 
-    let due = match ctx.repos.registry.due_for_review(ctx.tenant(), limit).await {
+    let due = match ctx.repos.registry.due_for_review(ctx.tenant(), limit, &ctx.principal.read).await {
         Ok(rows) => rows,
         Err(e) => return domain_error(&e, "review_failed"),
     };

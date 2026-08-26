@@ -627,7 +627,18 @@ pub trait MemoryRepository: Send + Sync {
     ) -> Result<DeleteOutcome>;
 
     /// Live rows older than a threshold that were never retrieved. The review queue, not a reaper.
-    async fn stale(&self, tenant: &str, older_than_days: i32, limit: i64) -> Result<Vec<Memory>>;
+    /// Live, never-accessed rows older than `older_than_days`, oldest first.
+    ///
+    /// `reader` is a term of the query rather than a pass over the rows, so `limit` counts only what
+    /// the caller may see. Filtering afterwards returns a short page and calls it full, and it puts
+    /// rows the caller may not read into that caller's process on the way.
+    async fn stale(
+        &self,
+        tenant: &str,
+        older_than_days: i32,
+        limit: i64,
+        reader: &[NamespaceGrant],
+    ) -> Result<Vec<Memory>>;
 
     async fn staleness(&self, tenant: &str) -> Result<Staleness>;
 
