@@ -81,8 +81,8 @@ throwaways, and copying it skips the fresh secret generation the installer does.
 
 ## 3. Install
 
-`docker-compose.yml` pins `server` and `cleanup` to `ghcr.io/the-cybersapien/lumberroom-server:0.1.0`
-and `ghcr.io/the-cybersapien/lumberroom:0.1.0`, the images `.github/workflows/publish-docker.yml`
+`docker-compose.yml` pins `server` and `cleanup` to `ghcr.io/the-cybersapien/lumberroom-server:0.2.0`
+and `ghcr.io/the-cybersapien/lumberroom:0.2.0`, the images `.github/workflows/publish-docker.yml`
 pushes on every `v*` tag. `install.sh` pulls those by default, a few seconds to a minute, and falls
 back to building from this checkout when the pull fails: no network, `ghcr.io` unreachable, no
 manifest for this architecture, or a working tree ahead of the last tagged release. Either path,
@@ -105,7 +105,7 @@ LUMBERROOM_CLIENT_IMAGE=ghcr.io/the-cybersapien/lumberroom:0.2.0 \
   sudo -E ./deploy/install.sh
 ```
 
-Both variables are read by `docker-compose.yml` and default to `0.1.0`. Neither tracks `latest`: a
+Both variables are read by `docker-compose.yml` and default to `0.2.0`. Neither tracks `latest`: a
 memory store should not upgrade itself on a routine restart, so the version in `.env` or the shell
 is the version that runs until you change it by hand.
 
@@ -455,7 +455,7 @@ LUMBERROOM_CLIENT_IMAGE=ghcr.io/the-cybersapien/lumberroom:0.2.0 \
 docker compose up -d
 ```
 
-Pin the new version in `.env` too, or the next `up -d` with no override falls back to `0.1.0`.
+Pin the new version in `.env` too, or the next `up -d` with no override falls back to `0.2.0`.
 Building from source instead is `docker compose build server cleanup && docker compose up -d`, or
 re-run the installer with `--build-local`.
 

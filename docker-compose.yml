@@ -90,7 +90,7 @@ services:
     # --build-local` skips the pull and always uses `build:`. A missing local image with `build:`
     # present is what makes a plain `docker compose up -d` in a development checkout build from
     # source the way it always has, with no flag needed.
-    image: ${LUMBERROOM_SERVER_IMAGE:-ghcr.io/the-cybersapien/lumberroom-server:0.1.0}
+    image: ${LUMBERROOM_SERVER_IMAGE:-ghcr.io/the-cybersapien/lumberroom-server:0.2.0}
     restart: unless-stopped
     depends_on:
       db:
@@ -205,7 +205,7 @@ services:
         LUMBERROOM_BUILT_AT: ${LUMBERROOM_BUILT_AT:-unknown}
     # Same pull-then-build-fallback shape as the server image above, its own variable because the
     # two publish on the same tag but are not the same image.
-    image: ${LUMBERROOM_CLIENT_IMAGE:-ghcr.io/the-cybersapien/lumberroom:0.1.0}
+    image: ${LUMBERROOM_CLIENT_IMAGE:-ghcr.io/the-cybersapien/lumberroom:0.2.0}
     restart: unless-stopped
     depends_on:
       server:
@@ -357,7 +357,7 @@ services:
       # project-prefixed one compose would invent.
       - cargo_registry:/usr/local/cargo/registry
       # Seed once from the image that already carries them, no download:
-      #   docker run --rm --user root -v lumberroom-dev-models:/dst lumberroom-server:0.1.0 cp -a /models/. /dst/
+      #   docker run --rm --user root -v lumberroom-dev-models:/dst lumberroom-server:0.2.0 cp -a /models/. /dst/
       - dev_models:/models
     # --poll is the escape hatch, not the default: file events from a macOS bind mount into a Linux
     # container go missing often enough to be worth naming, and polling costs CPU the whole time it
