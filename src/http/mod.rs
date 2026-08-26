@@ -28,7 +28,8 @@ use crate::mcp::{AppState, Lumberroom, SessionId, SERVER_NAME, SERVER_VERSION};
 use crate::ports::ingest::{EmissionProbe, ProposalFilter, ProposalSource, RunTotals};
 use crate::ports::{AliasOrigin, ClientStats, Staleness, ToolCallStats};
 use crate::services::{
-    alias, cleanup, currency, forget, history, ingest, recall, registry, review, sealed, Ctx,
+    alias, cleanup, currency, forget, history, ingest, recall, registry, review, sealed,
+    supersession, Ctx,
 };
 
 pub const INVOCATION_HEADER: &str = "x-memory-invocation";
@@ -110,6 +111,9 @@ pub fn router(state: Arc<AppState>, auth: Arc<dyn Authenticator>) -> Router {
         .route("/admin/review/registry", get(admin_review_registry))
         .route("/admin/review/dates", get(admin_review_dates))
         .route("/admin/currency", post(admin_currency))
+        .route("/admin/arity", get(admin_arity_list).post(admin_arity_declare))
+        .route("/admin/arity/{tag}", get(admin_arity_preview).delete(admin_arity_forget))
+        .route("/admin/supersession/run", post(admin_supersession_run))
         .route("/admin/export", get(admin_export))
         .route(
             "/admin/sealed",
@@ -955,6 +959,104 @@ struct CurrencyBody {
     /// Absent runs coverage alone, which is the number 0014 wants first and needs no fixture.
     #[serde(default)]
     cases: Vec<currency::CurrencyCase>,
+}
+
+#[derive(Deserialize)]
+struct ArityBody {
+    tag: String,
+    /// 'single' or 'many'. Refused rather than defaulted: a default here decides whether facts get
+    /// hidden, and the owner is the only one who knows.
+    arity: String,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// Declare a subject's arity. The preview is a separate read, so a caller can look first.
+async fn admin_arity_declare(
+    State(http): State<Http>,
+    headers: HeaderMap,
+    Json(body): Json<ArityBody>,
+) -> Response {
+    let ctx = match authed(&http, &headers).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let Some(arity) = crate::ports::cleanup::Arity::parse(&body.arity) else {
+        return domain_error(
+            &DomainError::validation(format!("arity {:?} is not one of single, many", body.arity)),
+            "arity_failed",
+        );
+    };
+    match supersession::declare(
+        &ctx,
+        http.state.cleanup.as_ref(),
+        &body.tag,
+        arity,
+        body.note.as_deref(),
+    )
+    .await
+    {
+        Ok(()) => Json(serde_json::json!({ "tag": body.tag, "arity": body.arity })).into_response(),
+        Err(e) => domain_error(&e, "arity_failed"),
+    }
+}
+
+async fn admin_arity_list(State(http): State<Http>, headers: HeaderMap) -> Response {
+    let ctx = match authed(&http, &headers).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    match supersession::declarations(&ctx, http.state.cleanup.as_ref()).await {
+        Ok(rows) => Json(serde_json::json!({ "rows": rows })).into_response(),
+        Err(e) => domain_error(&e, "arity_failed"),
+    }
+}
+
+/// What declaring this tag `single` would end. Reads only.
+async fn admin_arity_preview(
+    State(http): State<Http>,
+    headers: HeaderMap,
+    Path(tag): Path<String>,
+) -> Response {
+    let ctx = match authed(&http, &headers).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    match supersession::preview(&ctx, http.state.cleanup.as_ref(), &tag).await {
+        Ok(p) => Json(p).into_response(),
+        Err(e) => domain_error(&e, "arity_failed"),
+    }
+}
+
+async fn admin_arity_forget(
+    State(http): State<Http>,
+    headers: HeaderMap,
+    Path(tag): Path<String>,
+) -> Response {
+    let ctx = match authed(&http, &headers).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    match supersession::forget(&ctx, http.state.cleanup.as_ref(), &tag).await {
+        Ok(true) => Json(serde_json::json!({ "forgot": tag })).into_response(),
+        Ok(false) => domain_error(
+            &DomainError::not_found(format!("no declaration for {tag}")),
+            "arity_failed",
+        ),
+        Err(e) => domain_error(&e, "arity_failed"),
+    }
+}
+
+/// Run the supersession pass over declared subjects. Proposes, never applies.
+async fn admin_supersession_run(State(http): State<Http>, headers: HeaderMap) -> Response {
+    let ctx = match authed(&http, &headers).await {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    match supersession::run(&ctx, http.state.cleanup.as_ref()).await {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => domain_error(&e, "supersession_failed"),
+    }
 }
 
 #[derive(Deserialize)]

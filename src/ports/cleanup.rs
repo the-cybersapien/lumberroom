@@ -28,6 +28,10 @@ pub struct Candidate {
     pub content: String,
     pub created_at: DateTime<Utc>,
     pub access_count: i32,
+    /// When the fact held, not when the store learned it. `None` for most rows. Supersession
+    /// ordering reads this and never `created_at`: a July fact approved in August is older than an
+    /// August fact approved in July, and the transaction clock says the opposite.
+    pub occurred_at: Option<DateTime<Utc>>,
 }
 
 /// Two live rows and how close they are.
@@ -76,6 +80,47 @@ pub struct NewProposal {
     /// string the poster chose; this one is what the server knows.
     pub posted_by: Option<String>,
     pub members: Vec<NewMember>,
+}
+
+/// How many values a subject holds at once, as the owner declared it.
+///
+/// Not inferable. A later fact ends an earlier one only when the thing holds one value at a time,
+/// and the sentence never says whether it does: "the limit is 40k now" replaces its predecessor and
+/// "applying for b and c" replaces nothing, and the two are the same shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Arity {
+    /// One value at a time. A later dated fact carrying this tag may end an earlier one.
+    Single,
+    /// A list. Declaring it stops the pass re-offering a subject the owner has already settled.
+    Many,
+}
+
+impl Arity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::Many => "many",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "single" => Some(Self::Single),
+            "many" => Some(Self::Many),
+            _ => None,
+        }
+    }
+}
+
+/// One declaration.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Cardinality {
+    pub tag: String,
+    pub arity: Arity,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -142,6 +187,23 @@ pub struct Watermark {
 
 #[async_trait]
 pub trait CleanupRepository: Send + Sync {
+    /// Declare how many values a tagged subject holds at once. Replaces any earlier declaration for
+    /// the same tag, because a declaration is a statement about the world rather than an append-only
+    /// log, and two contradictory ones would leave the pass to pick.
+    async fn declare_arity(
+        &self,
+        tenant: &str,
+        tag: &str,
+        arity: Arity,
+        note: Option<&str>,
+    ) -> Result<()>;
+
+    /// Every declaration, for the review page and for the pass that reads them.
+    async fn arities(&self, tenant: &str) -> Result<Vec<Cardinality>>;
+
+    /// Forget a declaration. An owner who declared wrong needs the undo before they will trust the
+    /// declaration at all.
+    async fn forget_arity(&self, tenant: &str, tag: &str) -> Result<bool>;
     /// Live rows whose normalised content is byte-identical, grouped.
     ///
     /// Exact duplicates are the one finding that needs no model and no threshold, so they get their
@@ -171,6 +233,22 @@ pub trait CleanupRepository: Send + Sync {
         q: &CandidateQuery,
         min_similarity: f64,
     ) -> Result<Vec<CandidatePair>>;
+
+    /// Live rows carrying `tag` that have a start date, oldest first by valid time.
+    ///
+    /// The candidate source for supersession, and the blast radius a declaration has to show before
+    /// it hides anything. Both questions are the same query: which dated facts share this subject,
+    /// and in what order did they hold.
+    ///
+    /// Dated only. A row with no `occurred_at` cannot be ordered against another without guessing,
+    /// and 0008 refuses the guess.
+    async fn tagged_dated(
+        &self,
+        tenant: &str,
+        q: &CandidateQuery,
+        tag: &str,
+        limit: i64,
+    ) -> Result<Vec<Candidate>>;
 
     /// Live rows nothing has read, older than `days`.
     async fn unread(&self, tenant: &str, q: &CandidateQuery, days: i64) -> Result<Vec<Candidate>>;

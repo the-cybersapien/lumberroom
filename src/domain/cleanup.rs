@@ -24,6 +24,9 @@ pub enum CleanupKind {
     Paraphrase,
     Contradiction,
     Stale,
+    /// One dated fact ended another. Stronger than `Contradiction` and resolved differently: a
+    /// contradiction asks the owner to pick a survivor, a supersession writes an interval.
+    Supersession,
 }
 
 impl CleanupKind {
@@ -33,6 +36,7 @@ impl CleanupKind {
             Self::Paraphrase => "paraphrase",
             Self::Contradiction => "contradiction",
             Self::Stale => "stale",
+            Self::Supersession => "supersession",
         }
     }
 
@@ -42,6 +46,7 @@ impl CleanupKind {
             "paraphrase" => Some(Self::Paraphrase),
             "contradiction" => Some(Self::Contradiction),
             "stale" => Some(Self::Stale),
+            "supersession" => Some(Self::Supersession),
             _ => None,
         }
     }

@@ -36,9 +36,11 @@ use lumberroom_server::crypto::kek::{EnvKeyProvider, KeyProvider};
 use lumberroom_server::domain::policy::NamespaceGrant;
 use lumberroom_server::domain::types::{Invocation, Principal};
 use lumberroom_server::mcp::AppState;
-use lumberroom_server::ports::cleanup::{CandidateQuery, CleanupRepository};
+use lumberroom_server::ports::cleanup::{Arity, CandidateQuery, CleanupRepository};
 use lumberroom_server::ports::OauthStore;
-use lumberroom_server::services::{bootstrap, cleanup, review, search, Ctx, Repos};
+use lumberroom_server::services::{
+    bootstrap, cleanup, review, search, supersession, write, Ctx, Repos,
+};
 use sqlx::PgPool;
 
 mod common;
@@ -168,7 +170,7 @@ async fn setup() -> Option<Harness> {
                   registry_alias, kek_state,
                   oauth_client, oauth_code, oauth_token, oauth_refresh,
                   ingest_proposal, ingest_proposal_source, ingest_watermark, ingest_run,
-                  cleanup_proposal, cleanup_proposal_member, cleanup_watermark,
+                  cleanup_proposal, cleanup_proposal_member, cleanup_watermark, subject_cardinality,
                   recall_emission
          RESTART IDENTITY CASCADE",
     )
@@ -922,4 +924,98 @@ async fn the_scheduled_pass_stays_inside_one_namespace_and_names_no_poster() {
         .await
         .unwrap();
     assert!(posters.iter().all(Option::is_none), "the in-process pass named a poster: {posters:?}");
+}
+
+// ---- decision 0014 part 3: supersession proposals from a declared subject ----
+
+/// The declaration is the whole gate. An undeclared tag proposes nothing however dated its rows
+/// are, because cardinality is not in the text and guessing it hides live facts.
+#[tokio::test]
+async fn an_undeclared_subject_proposes_nothing_however_dated_its_facts_are() {
+    let h = harness_or_skip!();
+    let day =
+        |d: u32| -> chrono::DateTime<Utc> { format!("2026-0{}-01T00:00:00Z", d).parse().unwrap() };
+
+    for (n, text) in [(1u32, "the retainer is 2k a month"), (3, "the retainer is 4k a month")] {
+        write::run(
+            &h.ctx,
+            text,
+            "user:me",
+            Some(vec!["retainer".into()]),
+            None,
+            None,
+            Some(day(n)),
+        )
+        .await
+        .unwrap();
+    }
+
+    let quiet = supersession::run(&h.ctx, h.repo.as_ref()).await.unwrap();
+    assert_eq!(quiet.tags_scanned, 0, "nothing is declared, so nothing is looked at");
+    assert_eq!(quiet.queued, 0);
+
+    // The preview answers before anything is declared, which is the point: the owner sees what a
+    // declaration would end while it is still costless to change their mind.
+    let p = supersession::preview(&h.ctx, h.repo.as_ref(), "retainer").await.unwrap();
+    assert_eq!(p.dated_rows, 2);
+    assert_eq!(p.would_end.len(), 1, "two facts in a row make one ending");
+    assert_eq!(p.same_day_skipped, 0);
+
+    // Declaring it many is a decision too, and it stays quiet.
+    supersession::declare(&h.ctx, h.repo.as_ref(), "retainer", Arity::Many, None).await.unwrap();
+    let still_quiet = supersession::run(&h.ctx, h.repo.as_ref()).await.unwrap();
+    assert_eq!(still_quiet.queued, 0, "a list is not a sequence of replacements");
+
+    // Declaring it single is what produces the pair, and it proposes rather than applies.
+    supersession::declare(&h.ctx, h.repo.as_ref(), "retainer", Arity::Single, Some("one rate"))
+        .await
+        .unwrap();
+    let report = supersession::run(&h.ctx, h.repo.as_ref()).await.unwrap();
+    assert_eq!(report.tags_scanned, 1);
+    assert_eq!(report.queued, 1, "{report:?}");
+
+    // Nothing was retired. The queue holds a proposal and the store is untouched.
+    let live = search::run(&h.ctx, "the retainer", None, Some(10), None, None, None).await.unwrap();
+    assert_eq!(live.hits.len(), 2, "the pass proposes and never applies");
+
+    // Running it again queues nothing, which is what makes an hourly cadence safe.
+    let again = supersession::run(&h.ctx, h.repo.as_ref()).await.unwrap();
+    assert_eq!(again.queued, 0);
+    assert_eq!(again.already_known, 1);
+}
+
+/// A declaration is reversible, and the reversal is what makes declaring safe to try.
+#[tokio::test]
+async fn a_declaration_can_be_withdrawn() {
+    let h = harness_or_skip!();
+    supersession::declare(&h.ctx, h.repo.as_ref(), "rate", Arity::Single, None).await.unwrap();
+    assert_eq!(supersession::declarations(&h.ctx, h.repo.as_ref()).await.unwrap().len(), 1);
+
+    // Re-declaring replaces rather than appends: two contradictory declarations would leave the
+    // pass to pick, which is the guess this whole design refuses.
+    supersession::declare(&h.ctx, h.repo.as_ref(), "rate", Arity::Many, None).await.unwrap();
+    let all = supersession::declarations(&h.ctx, h.repo.as_ref()).await.unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].arity, Arity::Many);
+
+    assert!(supersession::forget(&h.ctx, h.repo.as_ref(), "rate").await.unwrap());
+    assert!(supersession::declarations(&h.ctx, h.repo.as_ref()).await.unwrap().is_empty());
+    assert!(!supersession::forget(&h.ctx, h.repo.as_ref(), "rate").await.unwrap());
+}
+
+/// Same-day facts are the dump's own shape, and closing their period would write "never true".
+#[tokio::test]
+async fn facts_sharing_a_day_are_reported_and_never_proposed() {
+    let h = harness_or_skip!();
+    let day: chrono::DateTime<Utc> = "2026-04-04T00:00:00Z".parse().unwrap();
+    for text in ["the plan is monthly", "the plan is yearly"] {
+        write::run(&h.ctx, text, "user:me", Some(vec!["plan".into()]), None, None, Some(day))
+            .await
+            .unwrap();
+    }
+    supersession::declare(&h.ctx, h.repo.as_ref(), "plan", Arity::Single, None).await.unwrap();
+
+    let report = supersession::run(&h.ctx, h.repo.as_ref()).await.unwrap();
+    assert_eq!(report.queued, 0, "an empty interval is not an ending");
+    assert_eq!(report.same_day_skipped, 1, "and the owner is told it was skipped");
 }

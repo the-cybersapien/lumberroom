@@ -1,7 +1,6 @@
 # 0014. Nothing finds the pair a supersession needs
 
-25 August 2026. Draft. Parts 1 and 2 are implemented and tested, the currency measure included.
-Parts 3 and 4 are not built. The gate that decided whether part 4 was worth building has
+25 August 2026. Draft. Parts 1, 2 and 3 are implemented and tested. Part 4 is not built. The gate that decided whether part 4 was worth building has
 been run and part 4 passed it, on the live store and on a replica. Every number here says whether a
 run produced it.
 
@@ -215,13 +214,26 @@ deleting the successor and rewriting it under a new id, losing `created_at`, the
 every export link that named it. 0011 settled proposing over applying for cleanup and it holds
 harder here.
 
-**Two things this venue costs, both stated because a prompt edit would otherwise delete a policy
-quietly.** The cleanup prompt withholds dates on purpose, guarded by a test asserting the rendered
-prompt carries no namespace and no date. A date-pair clause reverses that, and it widens what leaves
-the machine for every pair rather than only the dated ones. Second, candidates today come from a
-cosine band, and this record's own argument is that similarity cannot supply candidates for this
-shape. Until part 4 lands, part 3 covers the tight pairs, a limit changing or a capacity upgraded,
-and misses the loosely worded ones.
+**Built on 25 August 2026, and one thing the draft expected turned out unnecessary.** The draft
+assumed a judgement pass and therefore a prompt clause carrying dates, which would have reversed the
+policy that the cleanup prompt withholds them, guarded by a test. No model is in this path. A
+declared arity plus two dates decides the pair on its own, so the prompt is untouched and nothing
+extra leaves the machine.
+
+Candidates come from the declaration rather than from a cosine band. A tag the owner declared is a
+better candidate set than either: exact, cheap, and wrong only where the owner was wrong. What that
+costs is coverage, since an undeclared subject is invisible however dated its rows are, which is why
+the preview exists.
+
+Ordering reads valid time and never `created_at`, and the scan window bites at the old end: the
+newest fact on a single-valued subject is the one that holds today, so taking the oldest N would
+leave the subject's real current value invisible to the pass. Both the preview and the pass report
+say when the window truncated.
+
+Chained pairs are order-dependent on apply. Three dated facts queue two proposals, and approving the
+later one retires a row the earlier one still names, leaving it permanently unappliable. The
+rationale the owner reads says so, because enforcing it here would mean this pass reaching into the
+queue's ordering.
 
 **Approval is not one click.** The queue's least dangerous act already sits behind a confirmation
 and its most dangerous would not. A supersession proposal names both rows in full, prints the

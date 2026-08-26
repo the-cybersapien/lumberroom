@@ -757,6 +757,134 @@ pub async fn currency(c: &Client, args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// `lumberroom arity` and its subcommands. Decision 0014 part 3.
+///
+/// Cardinality is the one thing about supersession no model can read off the text: "the limit is 40k
+/// now" replaces its predecessor and "applying for b and c" replaces nothing, and the two sentences
+/// are the same shape. The owner declares it per tag, and an undeclared tag proposes nothing.
+pub async fn arity(c: &Client, args: &Args) -> Result<()> {
+    require_token(c, &c.file.borrow().path.display().to_string())?;
+    let sub = args.positional_at(1).unwrap_or("list");
+    match sub {
+        "list" => {
+            let (status, body) = c.http_get("/admin/arity").await?;
+            if status != 200 {
+                return Err(err(format!("arity list failed ({status}): {}", compact(&body))));
+            }
+            let rows = body.get("rows").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+            if rows.is_empty() {
+                out("no subjects declared");
+                out("");
+                out("Nothing is proposed for an undeclared subject. Look before you declare:");
+                out("  lumberroom arity preview <tag>");
+                return Ok(());
+            }
+            for r in &rows {
+                let tag = r.get("tag").and_then(|v| v.as_str()).unwrap_or("?");
+                let a = r.get("arity").and_then(|v| v.as_str()).unwrap_or("?");
+                let note = r.get("note").and_then(|v| v.as_str()).unwrap_or("");
+                out(&format!("  {tag:<24} {a:<8} {note}"));
+            }
+            Ok(())
+        }
+        "preview" => {
+            let Some(tag) = args.positional_at(2) else {
+                return Err(err("usage: lumberroom arity preview <tag>"));
+            };
+            let (status, body) = c.http_get(&format!("/admin/arity/{}", urlencode(tag))).await?;
+            if status != 200 {
+                return Err(err(format!("preview failed ({status}): {}", compact(&body))));
+            }
+            let dated = body.get("dated_rows").and_then(|v| v.as_u64()).unwrap_or(0);
+            let skipped = body.get("same_day_skipped").and_then(|v| v.as_u64()).unwrap_or(0);
+            let ends =
+                body.get("would_end").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            out(&format!("{dated} dated facts carry `{tag}`"));
+            out(&format!(
+                "declaring it single would end {} of them, and nothing is deleted",
+                ends.len()
+            ));
+            if skipped > 0 {
+                out(&format!(
+                    "  {skipped} pairs share a day and cannot be ordered, so they are skipped"
+                ));
+            }
+            for e in &ends {
+                let ec = e.get("earlier_content").and_then(|v| v.as_str()).unwrap_or("");
+                let ea = e.get("earlier_occurred_at").and_then(|v| v.as_str()).unwrap_or("");
+                let la = e.get("later_occurred_at").and_then(|v| v.as_str()).unwrap_or("");
+                out(&format!("  ends {ea} at {la}"));
+                out(&format!("    {}", ec.chars().take(96).collect::<String>()));
+            }
+            if !ends.is_empty() {
+                out("");
+                out(&format!("  lumberroom arity declare {tag} single"));
+            }
+            Ok(())
+        }
+        "declare" => {
+            let (Some(tag), Some(a)) = (args.positional_at(2), args.positional_at(3)) else {
+                return Err(err(
+                    "usage: lumberroom arity declare <tag> <single|many> [--note ...]",
+                ));
+            };
+            let body = serde_json::json!({ "tag": tag, "arity": a, "note": args.value("note") });
+            let (status, raw) =
+                c.http_request(reqwest::Method::POST, "/admin/arity", Some(body)).await?;
+            if status != 200 {
+                return Err(err(format!("declare failed ({status}): {}", compact(&raw))));
+            }
+            out(&format!("{tag} holds {a}"));
+            Ok(())
+        }
+        "forget" => {
+            let Some(tag) = args.positional_at(2) else {
+                return Err(err("usage: lumberroom arity forget <tag>"));
+            };
+            let (status, raw) = c
+                .http_request(
+                    reqwest::Method::DELETE,
+                    &format!("/admin/arity/{}", urlencode(tag)),
+                    None,
+                )
+                .await?;
+            if status != 200 {
+                return Err(err(format!("forget failed ({status}): {}", compact(&raw))));
+            }
+            out(&format!("{tag} is no longer declared"));
+            Ok(())
+        }
+        "run" => {
+            let (status, raw) =
+                c.http_request(reqwest::Method::POST, "/admin/supersession/run", None).await?;
+            if status != 200 {
+                return Err(err(format!("run failed ({status}): {}", compact(&raw))));
+            }
+            let n = |k: &str| raw.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+            out(&format!(
+                "{} declared subjects, {} pairs, {} queued, {} already known",
+                n("tags_scanned"),
+                n("pairs_found"),
+                n("queued"),
+                n("already_known")
+            ));
+            if n("same_day_skipped") > 0 {
+                out(&format!(
+                    "  {} pairs share a day and were skipped: an empty period reads as never true",
+                    n("same_day_skipped")
+                ));
+            }
+            if n("queued") > 0 {
+                out("Nothing was applied. Review with: lumberroom cleanup list");
+            }
+            Ok(())
+        }
+        other => Err(err(format!(
+            "unknown arity subcommand `{other}`. Available: list, preview, declare, forget, run"
+        ))),
+    }
+}
+
 /// Fill a start date on one fact that never carried one.
 ///
 /// The server refuses any date the fact's own text does not name, so this cannot invent history. It
