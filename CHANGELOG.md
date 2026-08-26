@@ -4,6 +4,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-26
+
+Thirteen changes since 0.1.0. Valid time works, the store can be asked what it believed on a date,
+and four failures that produced silence rather than an error are fixed.
+
+### Added
+
+- **`lumberroom import`**, three subcommands. `import prompt` prints a portable prompt asking an
+  assistant for its memory of you. `import claude` surveys an export directory against its manifest
+  and says what is missing, and it deliberately cannot fetch: a downloads directory holds many
+  archives and importing the wrong one is undone by hand. `import memory-dump` parses a saved dump
+  and fills the proposal queue with `--submit`, with no model in the path and no key configured.
+- **A bounded graph walk**, and a router deciding when it is worth running. It answers a join
+  nearest-neighbour search cannot: a query tying a held position to a named catalyst, where neither
+  phrase appears in the row that answers it. Seeded from structure rather than an extractor, so the
+  free edges went first. On a replica that produced 4,737 structural edges, and decision 0014 says
+  plainly that it answered and not well enough.
+- **Supersession proposals**, from cardinality that is declared and never inferred. A later fact
+  ends an earlier one only when the subject holds one value at a time, and the sentence never says
+  whether it does. "The limit is 40k now" replaces its predecessor, "applying for b and c" replaces
+  nothing, and the two are the same shape, so no model reading the text can separate them.
+- **An as-of read**, with a caller and a coverage number. That number counts supersession pairs
+  carrying a closed interval, because a pair whose retired half has no `occurred_until` has a link
+  and no period, so no instant separates the two versions and an as-of read returns both.
+- **`occurred_at` on a directly written memory**, and a backfill for the rows that lost it. Measured
+  on a live store: 0 of 175 rows written by one client into one namespace carried a date, against
+  100% in the namespaces ingestion fills. Ingestion calls `write::run_observed` and bypasses the
+  near-now fence; `memory_write` did not, so an agent recording an event on the day it happened
+  could never date it.
+
 ### Fixed
 
 - **The personal namespace is always `user:me`, whatever `TENANT_ID` is set to.** It used to be
@@ -85,6 +115,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reach stranded rows while you move them. The validation error and the console's namespace hint no
   longer offer `user:<id>` as a shape, which is what led people into this in the first place.
 
+- **The recall settings are re-applied at boot.** They are set with `ALTER DATABASE`, which stores
+  them in `pg_db_role_setting`, a cluster catalog that a single-database `pg_dump` does not carry. A
+  restored database came back with the migration recorded as applied and the settings gone, and
+  without `hnsw.iterative_scan` a filtered search can return nothing at all rather than fewer rows.
+- **A failed migration no longer wedges the next one.** sqlx holds a session-level advisory lock
+  across `Migrator::run` and seven paths return before releasing it. Run on a pooled connection, a
+  failure returned that connection to the pool still holding the lock, and the next attempt blocked
+  forever instead of reporting the error that caused the first failure.
+- **The review queue applies the reader's grant inside the query.** It filtered afterwards, which
+  `src/ports/memory.rs` and `docs/permissions.md` both forbid, and the limit counted rows before
+  filtering: with six unreadable stale rows older than three readable ones, a restricted caller
+  asking for three got zero while nine stale rows existed.
+- **A revived row is no longer stranded.** Deleting a correction cleared `superseded_by` and
+  `superseded_at` and never cleared `occurred_until`, so the row returned to live search and stayed
+  invisible to every as-of read, with psql the only repair.
+
+### Changed
+
+- **The extraction prompt puts corrections first.** A person states a preference once and corrects a
+  wrong assumption at the moment it costs them something, and that span is the only place the real
+  fact appears. The first live run returned 17 confident wrong facts out of 99, every one inferred
+  from an assistant talking to itself.
+- The README gives the client its own install section, and the Homebrew tap it describes now exists.
+
+### Known limitations
+
+- The graph's free edges are too coarse to carry the compositional query they were built for. The
+  measurement is in decision 0014 and the work is unfinished.
+- `conflicts` still pulls pairs before checking each one's visibility, so its limit counts rows the
+  caller may not see. The per-pair check is correct; the counting is not.
+- Sealed content is neither embedded nor searchable, by design.
+
 ## [0.1.0] - 2026-08-24
 
 First tagged release. One Rust binary, a Postgres database with pgvector, and two clients that talk
@@ -147,4 +209,5 @@ softened for a release note.
 - `submit` collapses exact duplicate proposals on a content hash and misses near-duplicates, so
   overlapping chunks queue the same fact more than once.
 
+[0.2.0]: https://github.com/the-cybersapien/lumberroom/releases/tag/v0.2.0
 [0.1.0]: https://github.com/the-cybersapien/lumberroom/releases/tag/v0.1.0
