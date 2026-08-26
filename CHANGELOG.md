@@ -23,10 +23,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   Then update any `AUTH_TOKENS` grant naming `user:<your tenant>`.
 
-  A related gap this does not fix: `sensitivity_default` is seeded for tenant `me` only, so a store
-  on another tenant has an empty rule set, and an empty rule set classifies everything `open` and
-  says nothing about having done so. Seed rows for your tenant, or run at the default.
-
 ## [0.1.0] - 2026-08-24
 
 First tagged release. One Rust binary, a Postgres database with pgvector, and two clients that talk
