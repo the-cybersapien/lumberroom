@@ -72,11 +72,39 @@ pub fn repositories(pool: &PgPool, search: &crate::config::SearchConfig) -> Repo
     }
 }
 
+/// Migrate on a connection the pool will never see again.
+///
+/// sqlx takes a session-level advisory lock at the top of `Migrator::run`, and there are seven early
+/// returns between that and the unlock: `Dirty`, `VersionMismatch`, the missing-migration check and
+/// four `?` propagations. A failure therefore leaves the lock held.
+///
+/// Run on a pooled connection, that connection then returns to the pool still holding it, and the
+/// next attempt takes a different one and blocks on `pg_advisory_lock` forever instead of reporting
+/// the error that caused the first failure. Two processes starting against a database whose
+/// migrations fail will hang rather than say why.
+///
+/// Measured on sqlx 0.9 against Postgres 16: one advisory lock still held after a failed migrate
+/// returned its connection to the pool.
+///
+/// `detach` takes the connection out of the pool for good, so closing it releases the lock whatever
+/// happened. `DISCARD ALL` on release would also release it and would break sqlx's prepared
+/// statement cache with `26000 prepared statement does not exist`, so detaching is both cheaper and
+/// local to the one place that needs it.
 pub async fn migrate(pool: &PgPool) -> Result<()> {
-    sqlx::migrate!("./migrations")
-        .run(pool)
+    use sqlx::Connection;
+
+    let mut conn = pool
+        .acquire()
         .await
-        .map_err(|e| DomainError::internal("migration failed").with_source(e))?;
+        .map_err(|e| DomainError::internal("could not acquire a connection to migrate").with_source(e))?
+        .detach();
+
+    let result = sqlx::migrate!("./migrations").run(&mut conn).await;
+
+    // Before the `?`, always. This is the line that stops a failed migration wedging the next one.
+    let _ = conn.close().await;
+
+    result.map_err(|e| DomainError::internal("migration failed").with_source(e))?;
     Ok(())
 }
 
