@@ -161,6 +161,26 @@ impl SealedRepository for PgSealedRepository {
         .await?;
         Ok(rows.iter().map(|r| r.get("namespace")).collect())
     }
+
+    /// The one statement in this file that returns rows without an exact key, and the gate is above
+    /// it rather than in it. `services::archive::build` refuses a caller who cannot read the whole
+    /// store before it gets here, so a namespace filter would produce a partial archive that reads
+    /// as a complete one. The sealed enumeration decision record carries the argument.
+    ///
+    /// Ordered by `(namespace, key_hmac)` so two archives of an unchanged store are byte-identical
+    /// after the header. An operator comparing two exports should be comparing the store.
+    async fn list_for_archive(&self, tenant: &str) -> Result<Vec<SealedItem>> {
+        let rows = sqlx::query(
+            "SELECT namespace, key_hmac, ciphertext, alg, source_client, created_at
+               FROM sealed_item
+              WHERE tenant_id = $1
+              ORDER BY namespace, key_hmac",
+        )
+        .bind(tenant)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(item_from_row).collect())
+    }
 }
 
 #[cfg(test)]

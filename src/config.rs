@@ -394,6 +394,11 @@ pub struct QualityConfig {
     /// Highest sensitivity the Obsidian export may include. Private content in a vault synced to a
     /// third party defeats the encryption it was given.
     pub export_max_sensitivity: Sensitivity,
+    /// What one uploaded archive may decompress to before the reader gives up.
+    ///
+    /// A bomb reaches this process before any parsing does, so the ceiling belongs to the
+    /// deployment rather than to the crate that enforces it.
+    pub archive_max_decompressed_bytes: u64,
 }
 
 /// Transcript ingestion. Both numbers belong to the anti-loop check and to nothing else.
@@ -856,6 +861,10 @@ pub fn load() -> Result<Config> {
             conflict_limit: env_num("CONFLICT_LIMIT", 3i64)?,
             stale_days: env_num("STALE_DAYS", 365i32)?,
             export_max_sensitivity: env_sensitivity("EXPORT_MAX_SENSITIVITY", Sensitivity::Open)?,
+            archive_max_decompressed_bytes: env_num(
+                "ARCHIVE_MAX_DECOMPRESSED_BYTES",
+                2u64 * 1024 * 1024 * 1024,
+            )?,
         },
         ingest: IngestConfig {
             emission_window_days: env_num("INGEST_EMISSION_WINDOW_DAYS", 90i64)?,
@@ -1015,6 +1024,16 @@ fn validate(cfg: &Config) -> Result<()> {
             "CONFLICT_THRESHOLD must be at or below DEDUPE_THRESHOLD, otherwise the band that \
              produces conflict candidates is empty and corrections silently collapse into the row \
              they were correcting.",
+        ));
+    }
+
+    // Zero here reads as "no limit" to somebody skimming and means "refuse every archive" to the
+    // reader, which turns a bomb defence into an outage of its own.
+    if cfg.quality.archive_max_decompressed_bytes == 0 {
+        return Err(DomainError::validation(
+            "ARCHIVE_MAX_DECOMPRESSED_BYTES must be above zero. It is the ceiling an uploaded \
+             archive may decompress to, and zero refuses every import rather than lifting the \
+             limit.",
         ));
     }
 

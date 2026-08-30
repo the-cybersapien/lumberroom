@@ -200,6 +200,13 @@ lumberroom seal <key> --namespace credentials:aws
 lumberroom tools
 ```
 
+The `lumberroom` Rust CLI (`crates/lumberroom`) carries the archive commands:
+
+```bash
+lumberroom archive export ~/store.lumber --passphrase-stdin
+lumberroom archive import ~/store.lumber --passphrase-stdin --dry-run
+```
+
 The console at `/console` carries the decisions a person has to make: what each client may reach, the
 ingest queue, the cleanup queue, aliases, and writing or correcting a fact by hand. It runs only in
 oauth mode, because it checks the owner password. [docs/managing.md](docs/managing.md) is the guide.

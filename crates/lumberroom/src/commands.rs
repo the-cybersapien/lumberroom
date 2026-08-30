@@ -4,12 +4,14 @@
 //! so a difference in either is a bug rather than a style choice. Where this client diverges the
 //! divergence is named in a comment.
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::{json, Value};
 
 use crate::args::Args;
 use crate::client::{err, err_code, Client, Result};
-use crate::{format, out, out_json, wire};
+use crate::{format, out, out_json, read_line, wire};
 
 fn require_token(c: &Client, config_path: &str) -> Result<()> {
     if c.has_token() {
@@ -1960,5 +1962,142 @@ pub fn hash_password() -> Result<()> {
     out("");
     out("It reads the password from stdin and prints an argon2 PHC string. Put that in .env as");
     out("OWNER_PASSWORD_HASH and restart the server before switching AUTH_MODE=oauth.");
+    Ok(())
+}
+
+/// `lumberroom archive export|import`, a new top-level group.
+///
+/// Not a mode under `export`, which already means `--obsidian`, and not a subcommand of `import`,
+/// whose subcommand list is `prompt, claude, memory-dump` and whose documented promise is that
+/// nothing reaches the store without review. An archive import writes directly, so it cannot live
+/// under a word that promises otherwise.
+pub async fn archive(c: &Client, args: &Args) -> Result<()> {
+    match args.positional_at(1) {
+        Some("export") => archive_export(c, args).await,
+        Some("import") => archive_import(c, args).await,
+        Some(other) => {
+            Err(err(format!("unknown archive subcommand `{other}`. Available: export, import")))
+        }
+        None => Err(err("archive needs a subcommand. Available: export, import")),
+    }
+}
+
+/// One line off stdin, trimmed of the newline a shell or a piped `echo` leaves on it. Never from
+/// argv: `ps` shows every argument on the box to every user on it, and a passphrase is the one
+/// flag value that must not appear there.
+fn read_stdin_passphrase() -> Result<String> {
+    let line =
+        read_line().map_err(|e| err(format!("cannot read the passphrase from stdin: {e}")))?;
+    let phrase = line.trim_end_matches(['\n', '\r']).to_string();
+    if phrase.is_empty() {
+        return Err(err("--passphrase-stdin was set but stdin carried no passphrase"));
+    }
+    Ok(phrase)
+}
+
+/// Either a passphrase or an explicit opt into plaintext, never both and never neither. Mirrors
+/// the refusal `crates/ops/src/backup.rs:26` already gives a plaintext database dump behind the
+/// same `--allow-plaintext` flag: an archive holds every private fact in the store, so leaving
+/// both flags off is refused rather than read as a default.
+fn resolve_passphrase(args: &Args, verb: &str) -> Result<Option<String>> {
+    let plaintext = args.present("allow-plaintext");
+    let requested = args.present("passphrase-stdin");
+    match (requested, plaintext) {
+        (true, true) => Err(err("pass --passphrase-stdin or --allow-plaintext, not both")),
+        (false, false) => {
+            Err(err(format!("archive {verb} needs --passphrase-stdin or --allow-plaintext")))
+        }
+        (true, false) => read_stdin_passphrase().map(Some),
+        (false, true) => Ok(None),
+    }
+}
+
+/// `lumberroom archive export <path> (--passphrase-stdin | --allow-plaintext)`
+///
+/// The server does the sealing: it holds the age implementation already and the alternative is a
+/// second one in this crate agreeing with it byte for byte. The passphrase goes in the request
+/// body, so this posts rather than gets: an intermediary is free to drop a body on a GET, and the
+/// route answers both verbs for exactly that reason.
+///
+/// `--allow-plaintext` travels as its own field. A missing passphrase alone is not consent, and
+/// the server refuses that request rather than writing a file anyone holding it can read.
+pub async fn archive_export(c: &Client, args: &Args) -> Result<()> {
+    require_token(c, &c.file.borrow().path.display().to_string())?;
+    let Some(target) = args.positional_at(2) else {
+        return Err(err(
+            "usage: lumberroom archive export <path> (--passphrase-stdin | --allow-plaintext)",
+        ));
+    };
+    let passphrase = resolve_passphrase(args, "export")?;
+    // Consent is derived from the passphrase that actually travels, so no request can ask for a
+    // plaintext archive while carrying a passphrase.
+    let req = wire::ArchiveExportRequest { allow_plaintext: passphrase.is_none(), passphrase };
+    let body = serde_json::to_value(&req)
+        .map_err(|e| err(format!("cannot encode the archive request: {e}")))?;
+    let (status, bytes) =
+        c.http_send_bytes(reqwest::Method::POST, "/admin/archive/export", Some(body)).await?;
+    if status != 200 {
+        let detail = String::from_utf8_lossy(&bytes);
+        return Err(err(format!(
+            "archive export failed ({status}): {}",
+            crate::client::truncate(&detail, 300)
+        )));
+    }
+    std::fs::write(target, &bytes).map_err(|e| err(format!("cannot write {target}: {e}")))?;
+    out(&format!("wrote {} bytes to {target}", bytes.len()));
+    Ok(())
+}
+
+/// `lumberroom archive import <path> (--passphrase-stdin | --allow-plaintext) [--restore] [--dry-run]`
+///
+/// Merge is the default and the only mode the hosted console offers; `--restore` is a CLI-only
+/// capability that reproduces a store exactly rather than folding it into one. `--dry-run` asks
+/// for the report without writing anything, which is the one safety net an archive import gets in
+/// place of the review queue every other import command holds facts in first.
+pub async fn archive_import(c: &Client, args: &Args) -> Result<()> {
+    require_token(c, &c.file.borrow().path.display().to_string())?;
+    let Some(source) = args.positional_at(2) else {
+        return Err(err(
+            "usage: lumberroom archive import <path> (--passphrase-stdin | --allow-plaintext) \
+             [--restore] [--dry-run]",
+        ));
+    };
+    let passphrase = resolve_passphrase(args, "import")?;
+    let bytes = std::fs::read(source).map_err(|e| err(format!("cannot read {source}: {e}")))?;
+    let restore = args.present("restore");
+    let dry_run = args.present("dry-run");
+    // Both flags are derived from what actually travels rather than read off argv a second time,
+    // so no request can claim a plaintext archive while carrying a passphrase.
+    let req = wire::ArchiveImportRequest {
+        archive_base64: B64.encode(&bytes),
+        allow_plaintext: passphrase.is_none(),
+        passphrase,
+        restore,
+        dry_run,
+    };
+    let body = serde_json::to_value(&req)
+        .map_err(|e| err(format!("cannot encode the archive request: {e}")))?;
+    let (status, resp) =
+        c.http_request(reqwest::Method::POST, "/admin/archive/import", Some(body)).await?;
+    if status != 200 {
+        return Err(err(format!("archive import failed ({status}): {}", compact(&resp))));
+    }
+    if args.present("json") {
+        out_json(&resp);
+        return Ok(());
+    }
+    let report: wire::ApplyReport = typed(&resp, "archive import")?;
+    let mode_word = if restore { "restored" } else { "merged" };
+    let verb = if dry_run { format!("would have {mode_word}") } else { mode_word.to_string() };
+    out(&format!(
+        "{verb} {} rows, skipped {} already applied, collapsed {} duplicates, refused {}",
+        report.applied,
+        report.skipped_already_applied,
+        report.collapsed,
+        report.refused.len()
+    ));
+    for (id, reason) in &report.refused {
+        out(&format!("  refused {id}: {reason}"));
+    }
     Ok(())
 }

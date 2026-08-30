@@ -247,3 +247,86 @@ fn bootstrap_arguments_are_a_project_or_an_empty_object() {
     let v = serde_json::to_value(BootstrapArgsRequest { project: Some("/repo".into()) }).unwrap();
     assert_eq!(keys(&v), set(&["project"]));
 }
+
+/// `ExportBody` in `src/http/archive.rs`. Plaintext is a field the caller sets, so a request that
+/// carries no passphrase and no consent has to reach the server as a refusal rather than as a
+/// file.
+#[test]
+fn an_archive_export_names_plaintext_when_it_sends_no_passphrase() {
+    let v = serde_json::to_value(ArchiveExportRequest { passphrase: None, allow_plaintext: true })
+        .unwrap();
+    assert_eq!(keys(&v), set(&["allow_plaintext"]));
+    assert_eq!(v["allow_plaintext"], true);
+
+    let v = serde_json::to_value(ArchiveExportRequest {
+        passphrase: Some("correct horse battery staple".into()),
+        allow_plaintext: false,
+    })
+    .unwrap();
+    assert_eq!(keys(&v), set(&["passphrase", "allow_plaintext"]));
+}
+
+/// `ImportBody` in `src/http/archive.rs`. A missing key here fails at the server's `Deserialize`
+/// at runtime rather than at this client's compile time, which is what this pin exists to catch.
+/// `restore` is the one worth naming: serde drops a key it does not recognise in silence, so a
+/// wrong name here merges an archive the owner asked to restore and says nothing about it.
+#[test]
+fn an_archive_import_sends_the_bytes_the_restore_flag_and_the_dry_run_flag() {
+    let v = serde_json::to_value(ArchiveImportRequest {
+        archive_base64: "aGVsbG8=".into(),
+        passphrase: None,
+        allow_plaintext: true,
+        restore: false,
+        dry_run: false,
+    })
+    .unwrap();
+    assert_eq!(keys(&v), set(&["archive_base64", "allow_plaintext", "restore", "dry_run"]));
+    assert_eq!(v["restore"], false);
+}
+
+/// The passphrase travels only when one was read from stdin. `--allow-plaintext` sends the
+/// request with the key absent rather than sending `null`, matching every other optional here.
+#[test]
+fn an_archive_import_carries_the_passphrase_only_when_one_was_given() {
+    let v = serde_json::to_value(ArchiveImportRequest {
+        archive_base64: "aGVsbG8=".into(),
+        passphrase: Some("correct horse battery staple".into()),
+        allow_plaintext: false,
+        restore: true,
+        dry_run: true,
+    })
+    .unwrap();
+    assert_eq!(
+        keys(&v),
+        set(&["archive_base64", "passphrase", "allow_plaintext", "restore", "dry_run"])
+    );
+    assert_eq!(v["restore"], true);
+    assert_eq!(v["dry_run"], true);
+}
+
+/// `services::archive::ApplyReport`, transcribed from the plan rather than from server code this
+/// task does not own; see `wire_in` for the fixture this client's build still needs.
+#[test]
+fn an_apply_report_pairs_a_refusal_with_its_reason() {
+    let raw = serde_json::json!({
+        "applied": 40,
+        "skipped_already_applied": 2,
+        "collapsed": 3,
+        "refused": [["archive-id-9", "sensitivity_ceiling"]],
+    });
+    let r: ApplyReport = serde_json::from_value(raw).unwrap();
+    assert_eq!(r.applied, 40);
+    assert_eq!(r.skipped_already_applied, 2);
+    assert_eq!(r.collapsed, 3);
+    assert_eq!(r.refused, vec![("archive-id-9".to_string(), "sensitivity_ceiling".to_string())]);
+}
+
+/// A response missing every optional counter still parses: a dry run against an empty store is a
+/// legitimate report, not a malformed one.
+#[test]
+fn an_apply_report_parses_with_only_the_required_field() {
+    let raw = serde_json::json!({ "applied": 0 });
+    let r: ApplyReport = serde_json::from_value(raw).unwrap();
+    assert_eq!(r.skipped_already_applied, 0);
+    assert!(r.refused.is_empty());
+}

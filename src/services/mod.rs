@@ -6,6 +6,7 @@
 //! makes a second storage implementation a matter of construction rather than a rewrite.
 
 pub mod alias;
+pub mod archive;
 pub mod bootstrap;
 pub mod cleanup;
 pub mod currency;

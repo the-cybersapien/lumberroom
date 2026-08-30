@@ -315,6 +315,22 @@ pub struct AliasForgetResponse {
     pub forgotten: bool,
 }
 
+/// `POST /admin/archive/import`'s response, mirroring `services::archive::ApplyReport`.
+///
+/// `id_map` is left out: a single CLI request has nothing to resume between runs, so nothing this
+/// client does reads it. `refused` keeps the reason beside the id, because that pairing is the one
+/// thing an owner reading a report acts on.
+#[derive(Debug, Deserialize)]
+pub struct ApplyReport {
+    pub applied: usize,
+    #[serde(default)]
+    pub skipped_already_applied: usize,
+    #[serde(default)]
+    pub collapsed: usize,
+    #[serde(default)]
+    pub refused: Vec<(String, String)>,
+}
+
 // ---- requests ----
 
 /// `RegistryWrite` in `src/http/mod.rs`. `sensitivity` is optional there and this client does not
@@ -402,4 +418,39 @@ pub struct RegistryArgsRequest {
 pub struct BootstrapArgsRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+}
+
+/// `ExportBody` in `src/http/archive.rs`. The passphrase travels in the body on this route too,
+/// including on the GET the server also accepts: a query string reaches the access log of every
+/// proxy in front of the server and a header reaches most of them, and this one value opens every
+/// private fact in the store.
+///
+/// No `Debug`, here or on `ArchiveImportRequest`, matching the server structs these mirror. Both
+/// hold the passphrase, and a derived formatter is how one reaches a log line somebody adds later.
+#[derive(Serialize)]
+pub struct ArchiveExportRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub passphrase: Option<String>,
+    /// The caller saying out loud that it wants a file anyone holding it can read. Absent it, the
+    /// server refuses rather than writing plaintext.
+    pub allow_plaintext: bool,
+}
+
+/// `ImportBody` in `src/http/archive.rs`. The bytes travel base64-encoded inside JSON rather than
+/// as a raw body, because the passphrase has to reach the same handler that opens them and a
+/// second transport for one string invites a disagreement with the route.
+///
+/// `restore` and `allow_plaintext` ride on every request rather than resting on the server's
+/// default. Serde drops a key it does not recognise without a word, so a client that gets either
+/// name wrong merges when the owner asked for an exact reproduction, and that failure is silent.
+///
+/// `prior_id_map` is left out: one CLI run has nothing to resume from a previous one.
+#[derive(Serialize)]
+pub struct ArchiveImportRequest {
+    pub archive_base64: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub passphrase: Option<String>,
+    pub allow_plaintext: bool,
+    pub restore: bool,
+    pub dry_run: bool,
 }

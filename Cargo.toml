@@ -3,7 +3,7 @@
 # untouched. lumberroom is a second member rather than a cargo feature because features are
 # crate-wide: a client living in this crate would link fastembed and carry 209MB of model weights
 # into a tool that embeds nothing.
-members = ["crates/lumberroom"]
+members = ["crates/archive", "crates/lumberroom"]
 resolver = "2"
 
 [package]
@@ -60,6 +60,13 @@ hmac = "0.13"
 base64 = "0.22"
 # Redirect URIs are compared exactly, but they are validated structurally before registration.
 url = "2"
+
+# The archive format. Its own crate because the CLI and the server both read it, and neither should
+# carry the other's dependency tree to do so.
+lumberroom-archive = { path = "crates/archive" }
+# The passphrase type age takes, pinned to the major `crates/archive` pins. Two majors here and
+# `Sealing::Passphrase` becomes unconstructible from this crate.
+secrecy = "0.10"
 
 # Crypto for the private sensitivity level (Phase 3). getrandom rather than rand: the only
 # randomness this service needs is CSPRNG bytes, and it avoids the rand_core version split

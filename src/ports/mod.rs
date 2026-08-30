@@ -32,7 +32,7 @@ pub use ingest::{
 pub use memory::{
     ChainEdits, ChainLink, ChainNeighbours, ConflictPair, DeleteOutcome, DeletePlan, DigestData,
     DigestQuery, Emission, MemoryRepository, NamespaceRows, NamespaceSummary, NeighbourQuery,
-    NewMemory, RecentQuery, RegistrySummary, SearchQuery, Staleness, Timeline, Weights,
+    NewMemory, RecentQuery, RegistrySummary, RestoreRow, SearchQuery, Staleness, Timeline, Weights,
 };
 pub use oauth::{
     AccessTokenRecord, ClientGrantUpdate, CodeOutcome, NewAccessToken, NewAuthCode, NewOauthClient,

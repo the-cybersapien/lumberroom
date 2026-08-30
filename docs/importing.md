@@ -1,5 +1,42 @@
 # Importing a memory out of somebody else's product
 
+This document covers one import: a conversation export or a memory dump from another product,
+arriving as text a model has to sort into facts. `lumberroom archive import` is a different command
+for a different job, and the difference matters enough to state before anything else here.
+
+## Archive import is not this document
+
+`lumberroom archive export <path>` writes your whole store, every table, to one file: `.lumber` is
+an alias for `.jsonl.gz.age`, and a passphrase is the only thing standing between that file and
+whoever holds it. Open one without the CLI at all:
+
+```
+age -d store.lumber | gunzip | jq .
+```
+
+`lumberroom archive import <path>` reads that file back and writes straight to the store. It does not
+queue, and it does not wait for you to approve each row. That is the opposite of every promise the
+rest of this document makes, and it is deliberate: an archive is a backup or a migration between two
+installs you already trust, not a fact arriving from somewhere else that has to earn its place. Use
+`--dry-run` to see the row counts before anything lands.
+
+**The credential tripwire covers open rows alone.** It runs during `services::write` at
+`Sensitivity::Open` and nowhere else, so a `private` or `sealed` row in an archive passes through
+unscanned in both directions. That is correct for a `private` row, encrypted before it ever reaches
+the tripwire's view, and it is why an archive import refuses to start at all when `SENSITIVITY_TRIPWIRE`
+is off: the one check that exists for the rows it can see has to actually be on.
+
+**Restore is exact for memories, near-exact for aliases, and silent on registry history.** A
+restored memory or sealed item keeps its original `created_at`. A restored alias replays through the
+same call the console uses to create one, which has no field for the original `created_at` and
+stamps a fresh one on insert. Registry history has no write path at all, so an import never replays
+it: the values an archived registry key passed through stay out of reach after a restore, even though
+the archive file lists them.
+
+Everything below this point is the other import, the one that goes through the review queue.
+
+## The queue import
+
 Two halves arrive by different routes, and the difference decides what an import costs.
 
 **Conversations** come in an export archive. ChatGPT puts one behind Settings, Data controls, Export

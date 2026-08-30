@@ -199,6 +199,7 @@ mod tests {
                 conflict_limit: 3,
                 stale_days: 365,
                 export_max_sensitivity: crate::domain::types::Sensitivity::Open,
+                archive_max_decompressed_bytes: 2 * 1024 * 1024 * 1024,
             },
             ingest: IngestConfig { emission_window_days: 90, emission_slack_secs: 300.0 },
         }

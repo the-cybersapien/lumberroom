@@ -1,4 +1,4 @@
-//! Embedders. Three implementations behind one trait, chosen by configuration — the same shape
+//! Embedders. Three implementations behind one trait, chosen by configuration. The same shape
 //! the TypeScript service used, and the reason a provider swap has never needed a code change.
 
 mod hash;
