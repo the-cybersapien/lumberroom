@@ -242,12 +242,7 @@ pub async fn build(ctx: &Ctx, sealing: &Sealing) -> Result<Vec<u8>> {
 
     let total: u64 = excluded.values().sum();
     let reasons = excluded.iter().map(|(reason, n)| format!("{n} rows: {reason}")).collect();
-    Ok(w.finish(
-        Utc::now().to_rfc3339(),
-        true,
-        Excluded { total, reasons },
-        sealing,
-    )?)
+    Ok(w.finish(Utc::now().to_rfc3339(), true, Excluded { total, reasons }, sealing)?)
 }
 
 /// Read an archive under this deployment's decompression ceiling.
@@ -955,14 +950,12 @@ mod tests {
 
     #[test]
     fn an_archive_error_about_the_file_reaches_the_caller_and_an_io_error_does_not() {
-        let short =
-            ArchiveError::Short { section: "memory", expected: 2, found: 1 };
+        let short = ArchiveError::Short { section: "memory", expected: 2, found: 1 };
         let mapped: DomainError = short.into();
         assert_eq!(mapped.kind, Kind::Validation);
         assert!(mapped.client_message().contains("memory"));
 
-        let io: DomainError =
-            ArchiveError::Io(std::io::Error::other("disk went away")).into();
+        let io: DomainError = ArchiveError::Io(std::io::Error::other("disk went away")).into();
         assert_eq!(io.kind, Kind::Internal);
         assert!(!io.client_message().contains("disk"));
     }

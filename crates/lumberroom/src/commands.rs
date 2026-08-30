@@ -1986,7 +1986,8 @@ pub async fn archive(c: &Client, args: &Args) -> Result<()> {
 /// argv: `ps` shows every argument on the box to every user on it, and a passphrase is the one
 /// flag value that must not appear there.
 fn read_stdin_passphrase() -> Result<String> {
-    let line = read_line().map_err(|e| err(format!("cannot read the passphrase from stdin: {e}")))?;
+    let line =
+        read_line().map_err(|e| err(format!("cannot read the passphrase from stdin: {e}")))?;
     let phrase = line.trim_end_matches(['\n', '\r']).to_string();
     if phrase.is_empty() {
         return Err(err("--passphrase-stdin was set but stdin carried no passphrase"));
@@ -2003,9 +2004,9 @@ fn resolve_passphrase(args: &Args, verb: &str) -> Result<Option<String>> {
     let requested = args.present("passphrase-stdin");
     match (requested, plaintext) {
         (true, true) => Err(err("pass --passphrase-stdin or --allow-plaintext, not both")),
-        (false, false) => Err(err(format!(
-            "archive {verb} needs --passphrase-stdin or --allow-plaintext"
-        ))),
+        (false, false) => {
+            Err(err(format!("archive {verb} needs --passphrase-stdin or --allow-plaintext")))
+        }
         (true, false) => read_stdin_passphrase().map(Some),
         (false, true) => Ok(None),
     }

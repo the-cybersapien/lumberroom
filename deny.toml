@@ -55,6 +55,11 @@ name = "option-ext"
 # silenced, in case a future edit can collapse one.
 multiple-versions = "warn"
 wildcards = "deny"
+# A path dependency on a crate in this workspace carries no version, and the check reads that as a
+# wildcard. The risk it guards against is a `"*"` against crates.io resolving to something nobody
+# chose, and a sibling directory that is never published cannot do that. Scoped to private crates by
+# the setting itself, so a real wildcard on a registry dependency still fails.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"
