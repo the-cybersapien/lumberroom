@@ -43,4 +43,16 @@ pub trait SealedRepository: Send + Sync {
     /// sealed ceiling before showing any of them: a client that cannot reach a namespace must not
     /// learn it exists.
     async fn namespaces(&self, tenant: &str) -> Result<Vec<String>>;
+
+    /// Every sealed item this tenant holds, for an archive.
+    ///
+    /// The module header above says this server cannot enumerate sealed items, and this method
+    /// narrows that. What it does not do is give anything away: it returns `key_hmac` values and
+    /// opaque ciphertext, the server still holds no key, and no caller reaches it without passing
+    /// `services::reads_whole_store` first. A store the owner cannot take with them was the worse
+    /// answer, and the sealed enumeration record in `docs/decisions/` carries the reasoning.
+    ///
+    /// Not for search, the console, or the digest inventory. `counts` and `namespaces` remain the
+    /// honest answers there.
+    async fn list_for_archive(&self, tenant: &str) -> Result<Vec<SealedItem>>;
 }

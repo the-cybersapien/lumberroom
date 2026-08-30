@@ -217,6 +217,29 @@ impl Client {
         self.http_request(reqwest::Method::GET, path, None).await
     }
 
+    /// A route whose response is a file rather than JSON. Same auth, same refresh, raw bytes.
+    ///
+    /// `http_request` reads the body with `res.text()`, which substitutes U+FFFD for every byte
+    /// sequence that is not valid UTF-8. An archive is gzip inside age, so that path hands back a
+    /// file that is corrupt and the corruption surfaces at restore time. The caller decodes the
+    /// body itself when the status says the bytes are an error message.
+    pub async fn http_send_bytes(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<(u16, Vec<u8>)> {
+        let url = format!("{}{}", self.cfg.http_base, path);
+        let payload = match body {
+            Some(v) => Payload::Json(v),
+            None => Payload::None,
+        };
+        let res = self.send(method, &url, payload).await?;
+        let status = res.status().as_u16();
+        let bytes = res.bytes().await.map_err(|e| self.net_err(e))?;
+        Ok((status, bytes.to_vec()))
+    }
+
     /// One JSON-RPC call over the MCP transport.
     pub async fn rpc(&self, method: &str, params: Value) -> Result<Value> {
         self.request_id.set(self.request_id.get() + 1);

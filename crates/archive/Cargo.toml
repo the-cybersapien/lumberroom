@@ -1,0 +1,37 @@
+[package]
+name = "lumberroom-archive"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+description = "The lumberroom archive format: records, framing, and the age container."
+license = "Apache-2.0"
+repository = "https://github.com/the-cybersapien/lumberroom"
+homepage = "https://lumberroom.cloud"
+# The format is consumed by the server and the CLI in this workspace. Publishing it would promise a
+# stable format to strangers before the first import has run against a store somebody cares about.
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# gzip under the age layer, in that order, so `age -d store.lumber | gunzip | jq` reads an archive
+# without this crate.
+flate2 = "1"
+
+# age 0.11 rather than 0.12. Both expose the same three call shapes this crate needs
+# (`Encryptor::with_user_passphrase`, `Decryptor::new_buffered`, `scrypt::Identity::set_max_work_factor`),
+# and 0.12 adds post-quantum recipient stanzas and an hpke dependency that nothing here asks for.
+# The scrypt work-factor ceiling is the reason the version is pinned at all: `scrypt::Identity`
+# refuses an inflated work factor before it stretches the key, and that check is what stands
+# between one uploaded file and a pinned core.
+age = "0.11"
+# The passphrase type age's own API takes. It must stay semver-compatible with the `secrecy` that
+# `age::secrecy` re-exports (age-core depends on ^0.10), or the two SecretStrings are unrelated
+# types and nothing type-checks.
+secrecy = "0.10"
+
+# No chrono and no base64. Timestamps travel as RFC 3339 strings for the reason `record::Timestamp`
+# gives, and the base64 for `sealed_item.ciphertext` is encoded in the server crate, which is where
+# the bytes come from. Add either here when a file in this crate needs it, not before.

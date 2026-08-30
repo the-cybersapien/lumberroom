@@ -270,6 +270,42 @@ pub struct NewMemory {
     pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// A row reproduced exactly, for restore alone.
+///
+/// `NewMemory` cannot carry this. `INSERT INTO memory` binds a fixed column list with no
+/// `created_at`, `occurred_until`, `access_count`, `last_accessed_at`, `last_confirmed_at` or
+/// `superseded_by`, so a restore through the ordinary write path restamps a two-year-old store as
+/// learned today.
+#[derive(Debug, Clone)]
+pub struct RestoreRow {
+    pub tenant_id: String,
+    /// Always present. A restore that let the database mint an id would break every supersession
+    /// link in the archive it is reproducing.
+    pub id: uuid::Uuid,
+    pub namespace: String,
+    /// Plaintext. Ignored, and never stored, when `sealed` is present, which is the contract
+    /// `NewMemory` already holds to.
+    pub content: String,
+    pub embedding: Vec<f32>,
+    pub tags: Vec<String>,
+    pub source_client: String,
+    pub embedding_model: String,
+    pub sensitivity: Sensitivity,
+    /// Present when the service sealed the content under THIS install's key. Never bytes copied
+    /// out of an archive: `envelope::seal` authenticates the row id, so copied ciphertext fails its
+    /// tag check even when the id is preserved and the key happens to match.
+    pub sealed: Option<crate::crypto::envelope::SealedContent>,
+    pub supersedes: Option<uuid::Uuid>,
+    pub superseded_by: Option<uuid::Uuid>,
+    pub superseded_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub occurred_until: Option<chrono::DateTime<chrono::Utc>>,
+    pub access_count: i32,
+    pub last_accessed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_confirmed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// Live rows in one namespace near a candidate embedding. Feeds both duplicate collapse and the
 /// conflict candidates a write hands back.
 #[derive(Debug, Clone)]
@@ -705,4 +741,45 @@ pub trait MemoryRepository: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Memory>>;
+
+    /// Every row this tenant holds, live and retired, keyset paged by id.
+    ///
+    /// Carries no grant and no ceiling, and that is the design rather than an omission.
+    /// `services::archive::build` refuses a caller who does not pass `reads_whole_store` before it
+    /// reaches this method, so filtering here would turn a refusal into a partial archive that
+    /// looks like a whole one. `list_for_export` is the other shape and stays: it is bounded by
+    /// `EXPORT_MAX_SENSITIVITY`, which defaults to open, and an archive built through it would
+    /// carry no private rows while claiming to be a copy of the store.
+    async fn list_whole_store(
+        &self,
+        tenant: &str,
+        limit: i64,
+        after: Option<uuid::Uuid>,
+    ) -> Result<Vec<Memory>>;
+
+    /// Insert a row as recorded, timestamps and counters included.
+    ///
+    /// The only insert path besides `insert`, and the last one this codebase should gain.
+    /// `services::archive::apply` in
+    /// restore mode is its sole caller, it refuses a target holding any memory row, and the checks
+    /// it keeps from the write path are enumerated in the archive spec. Adding a caller means
+    /// re-reading that table.
+    async fn restore_row(&self, row: RestoreRow) -> Result<()>;
+
+    /// Point one restored row at its neighbours on the supersession chain, once every row has
+    /// landed.
+    ///
+    /// `supersedes` and `superseded_by` are both foreign keys into this table and neither is
+    /// deferrable, so a restore that binds them on the insert can only succeed when every target
+    /// already exists. `superseded_by` names a newer row, and a restore walking the archive in id
+    /// order reaches the newer row second, so that direction fails on any store holding a single
+    /// correction. Restore therefore inserts with both links empty and writes them here on a second
+    /// pass. Two `None`s do nothing, so a caller can hand over every row without sorting them first.
+    async fn relink_restored(
+        &self,
+        tenant: &str,
+        id: uuid::Uuid,
+        supersedes: Option<uuid::Uuid>,
+        superseded_by: Option<uuid::Uuid>,
+    ) -> Result<()>;
 }

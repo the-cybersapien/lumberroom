@@ -28,7 +28,7 @@ use crate::domain::policy::{NamespaceCeiling, NamespaceGrant};
 use crate::domain::types::{ConflictCandidate, Memory, SearchHit, Sensitivity};
 use crate::ports::memory::{
     ChainEdits, ChainLink, ChainNeighbours, DeleteOutcome, DeletePlan, GraphEdge, PairCounts,
-    Retired, Superseded, Timeline, WalkBounds,
+    RestoreRow, Retired, Superseded, Timeline, WalkBounds,
 };
 use crate::ports::{
     ConflictPair, DigestData, DigestQuery, Emission, MemoryRepository, NamespaceRows,
@@ -988,6 +988,58 @@ const RETIRE_PREDECESSOR_SQL: &str = r#"
            superseded_at  = now(),
            occurred_until = COALESCE(occurred_until, $4::timestamptz)
      WHERE tenant_id = $1 AND id = $2 AND superseded_by IS NULL
+"#;
+
+/// Everything one tenant holds, live and retired, ordered by id so the keyset cursor is total.
+///
+/// Keyset rather than `LIMIT`/`OFFSET`: an archive of a large store takes many pages, and a write
+/// landing mid-read shifts every later offset by one, so the archive gains a duplicate row or drops
+/// one. Ordering by the primary key also gives two archives of an unchanged store the same row
+/// order, which is what makes them comparable.
+///
+/// `$2::uuid IS NULL` rather than two statements. The cast is load-bearing: without it Postgres
+/// cannot infer a type for the first page's NULL cursor.
+const LIST_WHOLE_STORE_SQL: &str = select_memory!(
+    "",
+    "FROM memory
+      WHERE tenant_id = $1
+        AND ($2::uuid IS NULL OR id > $2)
+      ORDER BY id
+      LIMIT $3"
+);
+
+/// A row put back exactly as it was recorded, for restore alone.
+///
+/// The only INSERT in this file besides `insert`, and the difference is the tail of the column
+/// list: `created_at`, `access_count`, `last_accessed_at`, `last_confirmed_at`, `occurred_until`
+/// and `superseded_at` are all bound rather than defaulted. A restore that let those default would
+/// hand back a store whose every row was learned the day it was imported.
+///
+/// `kek_id` is bound from this install's `kek_state` and never from the caller. No archive carries
+/// one, and a row wrapped by a key named in an archive would be a row this deployment can never
+/// open.
+///
+/// `supersedes` and `superseded_by` are both foreign keys into this table. Bind them here only when
+/// the target row already exists; `relink_restored` is the second pass for the general case.
+const RESTORE_ROW_SQL: &str = r#"
+    INSERT INTO memory (id, tenant_id, namespace, content, embedding, tags, supersedes,
+                        source_client, embedding_model, sensitivity,
+                        content_ct, content_nonce, dek_wrapped, dek_nonce, enc_alg, kek_id,
+                        occurred_at, occurred_until, superseded_by, superseded_at,
+                        access_count, last_accessed_at, last_confirmed_at, created_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+            $17, $18, $19, $20, $21, $22, $23, $24)
+"#;
+
+/// The second pass of a restore: the chain links, once every row they point at is in the table.
+///
+/// It writes both columns unconditionally rather than coalescing. A restored row starts with two
+/// NULLs and this is the only statement that fills them, so there is nothing to preserve, and a
+/// COALESCE would make an archive that genuinely records "no predecessor" unrepresentable.
+const RELINK_RESTORED_SQL: &str = r#"
+    UPDATE memory
+       SET supersedes = $3, superseded_by = $4
+     WHERE tenant_id = $1 AND id = $2
 "#;
 
 /// What a supersession writes into the predecessor's `occurred_until`, and when it refuses.
@@ -2525,6 +2577,141 @@ impl MemoryRepository for PgMemoryRepository {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.iter().map(memory_from_row).collect())
+    }
+
+    /// Live and retired alike, with no grant and no ceiling anywhere in the statement.
+    ///
+    /// The one read here that filters on tenant alone, and the gate sits above it: the archive
+    /// service refuses a caller who cannot read the whole store before it reaches this method. A
+    /// ceiling applied here would turn that refusal into a partial archive nobody could tell from a
+    /// complete one, which is the failure the whole feature exists to avoid.
+    ///
+    /// Private rows arrive with an empty `content`, as they do from every other read in this file.
+    /// The service opens them through the same helper the export uses.
+    async fn list_whole_store(
+        &self,
+        tenant: &str,
+        limit: i64,
+        after: Option<uuid::Uuid>,
+    ) -> Result<Vec<Memory>> {
+        let rows = sqlx::query(LIST_WHOLE_STORE_SQL)
+            .bind(tenant)
+            .bind(after)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.iter().map(memory_from_row).collect())
+    }
+
+    /// One row back, as recorded.
+    ///
+    /// Which KEK wrapped this row is read from `kek_state`, for the reason `insert` gives at
+    /// length: `kek_state` holds a key the boot check has already unwrapped and matched, so a row
+    /// written against it can be rewrapped later. An archive names no key and could not be trusted
+    /// about one if it did.
+    ///
+    /// Nothing here decides whether a row should be encrypted. The service resolved the level,
+    /// sealed the content under this install's key, and this statement stores what it was handed.
+    async fn restore_row(&self, row: RestoreRow) -> Result<()> {
+        let kek_id: Option<String> = match &row.sealed {
+            None => None,
+            Some(_) => Some(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT kek_id FROM kek_state WHERE tenant_id = $1",
+                )
+                .bind(&row.tenant_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| {
+                    DomainError::unavailable(
+                        "no verified encryption key is recorded, so an encrypted row cannot be \
+                         restored: it could not be rewrapped or read after a rotation",
+                    )
+                })?,
+            ),
+        };
+
+        let embedding = pgvector::Vector::from(row.embedding);
+        let sealed = row.sealed.as_ref();
+        // The same single line `insert` relies on: a sealed row has no plaintext column to write,
+        // and there is no branch below that could give it one.
+        let content = sealed.is_none().then_some(row.content.as_str());
+
+        sqlx::query(RESTORE_ROW_SQL)
+            .bind(row.id)
+            .bind(&row.tenant_id)
+            .bind(&row.namespace)
+            .bind(content)
+            .bind(&embedding)
+            .bind(&row.tags)
+            .bind(row.supersedes)
+            .bind(&row.source_client)
+            .bind(&row.embedding_model)
+            .bind(row.sensitivity.as_str())
+            .bind(sealed.map(|s| s.content_ct.as_slice()))
+            .bind(sealed.map(|s| s.content_nonce.as_slice()))
+            .bind(sealed.map(|s| s.dek_wrapped.as_slice()))
+            .bind(sealed.map(|s| s.dek_nonce.as_slice()))
+            .bind(sealed.map(|s| s.enc_alg))
+            .bind(kek_id.as_deref())
+            .bind(row.occurred_at)
+            .bind(row.occurred_until)
+            .bind(row.superseded_by)
+            .bind(row.superseded_at)
+            .bind(row.access_count)
+            .bind(row.last_accessed_at)
+            .bind(row.last_confirmed_at)
+            .bind(row.created_at)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| match e.as_database_error().and_then(|d| d.code()) {
+                // A chain link whose target has not landed yet. The caller reaches this by binding
+                // the links on the insert instead of leaving them for `relink_restored`, and the
+                // message says so rather than reading as an internal error.
+                Some(code) if code == "23503" => DomainError::validation(
+                    "a row this restore links to is not in the store yet: write the chain links \
+                     after every row has landed",
+                ),
+                Some(code) if code == "23505" => DomainError::validation(
+                    "this row id is already in the store, so the restore would overwrite what is \
+                     here",
+                ),
+                _ => DomainError::from(e),
+            })?;
+        Ok(())
+    }
+
+    /// The chain links, written after every restored row exists.
+    ///
+    /// Separate from `restore_row` because both columns are foreign keys into this table and
+    /// neither is deferrable: `superseded_by` names a newer row, so a restore walking rows in id
+    /// order always reaches the target second. One statement per row rather than one per store,
+    /// because the caller already holds the archive's records and a batch would mean two arrays
+    /// that have to stay aligned.
+    async fn relink_restored(
+        &self,
+        tenant: &str,
+        id: uuid::Uuid,
+        supersedes: Option<uuid::Uuid>,
+        superseded_by: Option<uuid::Uuid>,
+    ) -> Result<()> {
+        if supersedes.is_none() && superseded_by.is_none() {
+            return Ok(());
+        }
+        sqlx::query(RELINK_RESTORED_SQL)
+            .bind(tenant)
+            .bind(id)
+            .bind(supersedes)
+            .bind(superseded_by)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| match e.as_database_error().and_then(|d| d.code()) {
+                Some(code) if code == "23503" => DomainError::validation(
+                    "this row's supersession chain names a memory the archive did not carry",
+                ),
+                _ => DomainError::from(e),
+            })?;
+        Ok(())
     }
 }
 

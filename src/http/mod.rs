@@ -32,6 +32,10 @@ use crate::services::{
     supersession, Ctx,
 };
 
+// The whole store out as one file, and back in. Its own module because both handlers carry a
+// passphrase and the import needs a body limit no other route here wants.
+mod archive;
+
 pub const INVOCATION_HEADER: &str = "x-memory-invocation";
 
 /// Per-client session correlation, recorded on every tool call.
@@ -161,7 +165,9 @@ pub fn router(state: Arc<AppState>, auth: Arc<dyn Authenticator>) -> Router {
             .route("/.well-known/oauth-protected-resource/mcp", get(resource_metadata));
     }
 
-    let mut root = app.with_state(http.clone()).merge(mcp_routes);
+    // Merged before `with_state`, because `archive::routes()` is a `Router<Http>` and still wants
+    // the state this line applies. Its body-limit layer stays scoped to those two paths.
+    let mut root = app.merge(archive::routes()).with_state(http.clone()).merge(mcp_routes);
 
     // The built-in authorization server, at the root rather than under a prefix: the login and
     // consent forms post to the absolute paths /oauth/login and /oauth/consent.

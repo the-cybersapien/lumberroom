@@ -48,7 +48,7 @@ pub fn prompt(text: &str) {
 
 const COMMANDS: &str =
     "doctor, whoami, login, clients, bootstrap, search, write, forget, review, supersede, fill-date, \
-registry, stats, export, ingest, import, cleanup, history, alias, seal, unseal, recall, tools, \
+registry, stats, export, archive, ingest, import, cleanup, history, alias, seal, unseal, recall, tools, \
 currency, arity, graph, \
 hash-password, eval-longmemeval, version, help";
 
@@ -110,6 +110,7 @@ async fn dispatch(client: &Client, args: &Args, command: &str) -> Result<()> {
         "registry" => commands::registry(client, args).await,
         "stats" => commands::stats(client, args).await,
         "export" => commands::export(client, args).await,
+        "archive" => commands::archive(client, args).await,
         "history" => commands::history(client, args).await,
         "alias" => commands::alias(client, args).await,
         "eval" => commands::eval(client, args).await,
