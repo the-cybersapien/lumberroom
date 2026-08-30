@@ -60,7 +60,7 @@ jobs:
             target: aarch64-unknown-linux-musl
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: musl toolchain
         run: |
@@ -106,7 +106,7 @@ jobs:
     # builder image, so a darwin binary needs a darwin runner.
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: rustup targets
         run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
@@ -139,7 +139,7 @@ jobs:
     needs: [linux, darwin]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: actions/download-artifact@v4
         with:
