@@ -315,7 +315,7 @@ pub async fn assert_embedding_dim(pool: &PgPool, expected: usize) -> Result<usiz
 
     let ty: String = row
         .ok_or_else(|| {
-            DomainError::internal("memory.embedding column not found — did migrations run?")
+            DomainError::internal("memory.embedding column not found. Did migrations run?")
         })?
         .get("type");
 
