@@ -25,7 +25,7 @@ class Lumberroom < Formula
     end
     on_intel do
       url "https://github.com/the-cybersapien/lumberroom/releases/download/v0.3.0/lumberroom-0.3.0-x86_64-unknown-linux-musl.tar.gz"
-      sha256 "a51dc9e9b6abc5683e6ded5137849a842997fa9b6e268853bb6a60e7e27c2566"
+      sha256 "ef69ccabb457fa7ff35d3de15ccfbe3e394761713330ffd38468a96df55ff803"
     end
   end
 
