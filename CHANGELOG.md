@@ -4,6 +4,72 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-31
+
+One change since 0.2.0. A whole store leaves as one file and goes into another install.
+
+### Added
+
+- **`lumberroom archive export <path>` and `lumberroom archive import <path>`**, every memory,
+  registry entry, alias and sealed item in one file. A `.lumber` file is `.jsonl.gz.age` under an
+  alias, so anyone holding the passphrase reads one without this binary:
+
+  ```bash
+  age -d store.lumber | gunzip | jq .
+  ```
+
+  The extension is an alias rather than a container of its own, because an export of a person's
+  memory should never need our binary to open it.
+
+- **Two import modes over one service.** Merge is the default and runs every row through
+  `services::write::run`, so the credential tripwire, the classification floor, the sensitivity
+  ceilings, the grant check and the dedupe bands all still decide. `--restore` reproduces a store
+  exactly, keeps ids and timestamps, and refuses a target holding any row. `--dry-run` prints the
+  counts and writes nothing, which is the safety net an archive import gets in place of the review
+  queue the other import commands hold facts in.
+- **A replay lands nothing twice.** Idempotence comes from the job's archive-id map rather than the
+  dedupe bands: both bands sit inside `if supersedes_id.is_none()`, the exact-match path also
+  requires `open`, and `collapse_target` declines a row that is not live. A second run leaning on
+  them would duplicate every superseded row, every private row, and every row the first pass
+  retired.
+- **`ARCHIVE_MAX_DECOMPRESSED_BYTES`**, 2 GiB by default. An uploaded file inflates in this process
+  before anything parses it, so the reader caps what it will inflate rather than measuring the result
+  afterwards. It also refuses an inflated scrypt work factor before the key stretching runs.
+- **Two admin routes**, `/admin/archive/export` and `/admin/archive/import`, behind the grant that
+  already means the whole store: `*` at `sealed`. No new grant flag, so no deployment edits
+  `AUTH_TOKENS` for this.
+
+### Changed
+
+- **No archive carries envelope ciphertext.** `seal` authenticates the row id as associated data, so
+  a copied `content_ct` fails its tag check at every destination and under every key. Private
+  content travels as plaintext inside the age layer and is resealed on arrival, which makes the
+  passphrase the only thing between that file and whoever holds it. `sealed_item.ciphertext` is the
+  one blob a copy preserves, because the client holds that key and nothing binds associated data
+  to it.
+- **Embeddings do not travel.** A vector from one model against documents from another returns
+  confident nonsense rather than an error, so the destination embeds what it accepts and the file
+  records which model wrote the original.
+- **An archive import refuses to start while `SENSITIVITY_TRIPWIRE` is off.** The tripwire runs at
+  `Sensitivity::Open` and nowhere else, so `private` and `sealed` rows pass through unscanned in
+  both directions and the one check that covers the rest has to be on.
+- **`SealedRepository` gains `list_for_archive`**, which narrows the non-enumerability the port and
+  the encryption migration both state. One caller reaches it, and only after the whole-store grant
+  check has passed. Decision 0015 records the cost and the condition for reversing it.
+
+### Known limitations
+
+- An import does not replay registry history. Registry history has no write path, so the values an
+  archived key passed through stay out of reach after a restore, even though the file lists them.
+- A restored alias carries a fresh `created_at`. It replays through the same call the console uses
+  to create one, and that call has no field for the original. Restore is exact for memories and
+  sealed items, near-exact for aliases.
+- The graph's free edges are too coarse to carry the compositional query they were built for. The
+  measurement is in decision 0014 and the work is unfinished.
+- `conflicts` still pulls pairs before checking each one's visibility, so its limit counts rows the
+  caller may not see. The per-pair check is correct; the counting is not.
+- Sealed content is neither embedded nor searchable, by design.
+
 ## [0.2.0] - 2026-08-26
 
 Thirteen changes since 0.1.0. Valid time works, the store can be asked what it believed on a date,
@@ -209,5 +275,6 @@ softened for a release note.
 - `submit` collapses exact duplicate proposals on a content hash and misses near-duplicates, so
   overlapping chunks queue the same fact more than once.
 
+[0.3.0]: https://github.com/the-cybersapien/lumberroom/releases/tag/v0.3.0
 [0.2.0]: https://github.com/the-cybersapien/lumberroom/releases/tag/v0.2.0
 [0.1.0]: https://github.com/the-cybersapien/lumberroom/releases/tag/v0.1.0
