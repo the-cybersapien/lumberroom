@@ -122,6 +122,34 @@ fn required(metadata: &Value, field: &str, discovery_url: &str) -> Result<String
 ///
 /// Plain http is refused outright, including on loopback. This function only ever sees URLs out of
 /// a hosted document, and the hosted deployment does not serve loopback.
+/// Whether a URL may carry this client's bearer token or refresh token.
+///
+/// https anywhere, and plain http on loopback alone. A token sent to `http://a-remote-host` is a
+/// credential on the wire in the clear, and this client has always been willing to do that: the
+/// base URL is whatever the operator configured and nothing checked its scheme. Routing every
+/// endpoint through one function is what made the path visible, and the check belongs with it.
+///
+/// Loopback stays allowed because it is the default (`http://127.0.0.1:8787`) and the whole
+/// self-hosted development story, and a token that never leaves the machine leaks to nobody.
+pub fn may_carry_credential(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else { return false };
+    match parsed.scheme() {
+        "https" => true,
+        "http" => parsed.host_str().is_some_and(is_loopback_host),
+        _ => false,
+    }
+}
+
+/// Whether a host is this machine.
+fn is_loopback_host(host: &str) -> bool {
+    // `Url::host_str` hands back an IPv6 literal still wrapped in its brackets.
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
 pub fn is_trustworthy_endpoint(url: &str) -> bool {
     let Ok(parsed) = reqwest::Url::parse(url) else { return false };
     if parsed.scheme() != "https" {
@@ -575,6 +603,26 @@ mod tests {
         assert!(!is_trustworthy_endpoint("http://lumberroom.cloud/oauth/token"));
         assert!(!is_trustworthy_endpoint("http://127.0.0.1:8080/oauth/token"));
         assert!(!is_trustworthy_endpoint("http://localhost:8080/oauth/token"));
+    }
+
+    #[test]
+    fn a_credential_travels_over_https_or_loopback_and_nowhere_else() {
+        // The base URL is whatever the operator configured and nothing checked its scheme, so a
+        // base of http://a-remote-host used to put a bearer token in the clear on every request.
+        assert!(may_carry_credential("https://memory.example/admin/whoami"));
+        assert!(may_carry_credential("https://lumberroom.cloud/oauth/token"));
+
+        // The default base, and the whole self-hosted development story.
+        assert!(may_carry_credential("http://127.0.0.1:8787/admin/whoami"));
+        assert!(may_carry_credential("http://localhost:8787/admin/whoami"));
+        assert!(may_carry_credential("http://[::1]:8787/admin/whoami"));
+
+        assert!(!may_carry_credential("http://memory.example/admin/whoami"));
+        assert!(!may_carry_credential("http://192.168.1.10:8787/admin/whoami"));
+        // Not loopback, whatever it looks like.
+        assert!(!may_carry_credential("http://localhost.evil.example/admin/whoami"));
+        assert!(!may_carry_credential("ftp://memory.example/"));
+        assert!(!may_carry_credential("not a url"));
     }
 
     #[test]

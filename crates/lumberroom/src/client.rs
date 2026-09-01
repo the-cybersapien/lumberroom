@@ -150,8 +150,13 @@ impl Client {
             .header("accept", "application/json, text/event-stream")
             // How the instrumentation tells "the hook asked" apart from "the model chose to".
             .header("x-memory-invocation", self.cfg.invocation.as_str());
+        // The credential goes only where it cannot be read off the wire. Every URL this client
+        // reaches now comes from `oauth_endpoints`, and one of its two paths builds from an
+        // operator-supplied base whose scheme nothing checked, so a base of `http://a-remote-host`
+        // used to put a bearer token in the clear on every request. Dropping the header rather than
+        // failing keeps the refusal at the server, which answers 401 and says so.
         let token = self.token.borrow().clone();
-        if !token.is_empty() {
+        if !token.is_empty() && crate::oauth::may_carry_credential(url) {
             req = req.header("authorization", format!("Bearer {token}"));
         }
         match payload {
@@ -221,6 +226,15 @@ impl Client {
                 return false;
             }
         };
+        // The refresh token is the longest-lived credential this client holds, so the same rule
+        // applies and this one refuses outright rather than continuing without it.
+        if !crate::oauth::may_carry_credential(&url) {
+            eprintln!(
+                "refusing to send a refresh token to {url}: plain http off loopback would put it \
+on the wire in the clear"
+            );
+            return false;
+        }
         let Ok(res) = self.http.post(&url).form(&form).send().await else { return false };
         if !res.status().is_success() {
             return false;
