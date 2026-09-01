@@ -229,9 +229,13 @@ impl Client {
         // The refresh token is the longest-lived credential this client holds, so the same rule
         // applies and this one refuses outright rather than continuing without it.
         if !crate::oauth::may_carry_credential(&url) {
+            // The endpoint is deliberately not printed. It carries no credential, but it is derived
+            // from the same value the token travels to, and a refusal message is not worth teaching
+            // the next reader that anything off that path is safe to log. The operator configured
+            // the URL and can read it back from their own config.
             eprintln!(
-                "refusing to send a refresh token to {url}: plain http off loopback would put it \
-on the wire in the clear"
+                "refusing to send a refresh token over plain http to a host that is not loopback: \
+it would go on the wire in the clear. Point the CLI at https, or at 127.0.0.1."
             );
             return false;
         }
