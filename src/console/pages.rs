@@ -775,21 +775,29 @@ or a cleanup ran. Seven days, newest first.</p></div>"
             .map(|r| {
                 let successor = match &r.successor_id {
                     Some(id) => format!(
-                        "<a href=\"/console/fact/{id}\">what replaced it</a>",
+                        "<a class=\"go\" href=\"/console/fact/{id}\">what replaced it</a>",
                         id = escape(&id.to_string())
                     ),
                     // The chain was spliced past a deleted successor, so nothing here names it.
-                    None => "replaced by a row that has since been deleted".to_string(),
+                    None => {
+                        "<span class=\"who\">replaced by a row that has since been deleted</span>"
+                            .to_string()
+                    }
                 };
-                let open = if r.end_open {
-                    "<span class=\"warn\">end date unknown, still reads as current at every \
-                     instant</span>"
+                let unclosed = if r.end_open {
+                    "<div class=\"warn\">end date unknown, still reads as current at every \
+                     instant</div>"
                 } else {
                     ""
                 };
+                // An arrivals row, minus the anchor around it. Wrapping the memory in one underlined
+                // every character, and `.e` only escaped that because it sets text-decoration
+                // itself. The way into the fact moves to the last column beside its successor.
                 format!(
-                    "<li><div class=\"row\"><a href=\"/console/fact/{id}\">{content}</a></div>\
-<div class=\"when\">{ns}, retired {at}, {successor} {open}</div></li>",
+                    "<li class=\"e past\"><div class=\"dl\">{at}</div>\
+<div class=\"tx\">{content}</div>{unclosed}\
+<div class=\"pv\"><span class=\"who\">{ns}</span>{successor}\
+<a class=\"go\" href=\"/console/fact/{id}\">open</a></div></li>",
                     id = escape(&r.id.to_string()),
                     content = escape(&r.content),
                     ns = escape(&r.namespace),
@@ -1484,6 +1492,22 @@ mod tests {
         assert!(html.contains("has since been deleted"), "{html}");
         // One link, to the retired row itself. A missing successor must not render a dead href.
         assert_eq!(html.matches("/console/fact/").count(), 1, "{html}");
+    }
+
+    #[test]
+    fn the_retired_body_is_prose_and_the_way_in_sits_in_the_last_column() {
+        let html = retired(&[retired_row(false, true)], &contents(), &health());
+        // The anchor that used to wrap the body underlined the whole paragraph. One link per row
+        // into the fact, and it carries a short word rather than the memory.
+        assert!(html.contains("<div class=\"tx\">the deploy target is fly.io</div>"), "{html}");
+        // The row reuses the arrivals grid rather than inventing one, which is what kept the
+        // underline off arrivals in the first place.
+        assert!(html.contains("<li class=\"e past\">"), "{html}");
+        let id = uuid::Uuid::nil();
+        assert!(
+            html.contains(&format!("<a class=\"go\" href=\"/console/fact/{id}\">open</a>")),
+            "{html}"
+        );
     }
 
     #[test]
