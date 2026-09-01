@@ -779,8 +779,10 @@ or a cleanup ran. Seven days, newest first.</p></div>"
                         id = escape(&id.to_string())
                     ),
                     // The chain was spliced past a deleted successor, so nothing here names it.
-                    None => "<span class=\"who\">replaced by a row that has since been deleted</span>"
-                        .to_string(),
+                    None => {
+                        "<span class=\"who\">replaced by a row that has since been deleted</span>"
+                            .to_string()
+                    }
                 };
                 let unclosed = if r.end_open {
                     "<div class=\"warn\">end date unknown, still reads as current at every \
@@ -1497,10 +1499,7 @@ mod tests {
         let html = retired(&[retired_row(false, true)], &contents(), &health());
         // The anchor that used to wrap the body underlined the whole paragraph. One link per row
         // into the fact, and it carries a short word rather than the memory.
-        assert!(
-            html.contains("<div class=\"tx\">the deploy target is fly.io</div>"),
-            "{html}"
-        );
+        assert!(html.contains("<div class=\"tx\">the deploy target is fly.io</div>"), "{html}");
         // The row reuses the arrivals grid rather than inventing one, which is what kept the
         // underline off arrivals in the first place.
         assert!(html.contains("<li class=\"e past\">"), "{html}");
