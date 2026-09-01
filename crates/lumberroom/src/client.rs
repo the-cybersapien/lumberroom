@@ -6,8 +6,10 @@
 
 use serde_json::{json, Map, Value};
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use crate::config::{FileConfig, Resolved};
+use crate::oauth::{Endpoints, METADATA_PATH};
 
 /// A failure with the exit code the owner and the acceptance scripts read.
 ///
@@ -49,6 +51,7 @@ pub struct Client {
     pub file: RefCell<FileConfig>,
     token: RefCell<String>,
     request_id: Cell<i64>,
+    endpoints: RefCell<Option<Rc<Endpoints>>>,
 }
 
 impl Client {
@@ -61,7 +64,56 @@ impl Client {
             .build()
             .map_err(|e| err(format!("cannot build the HTTP client: {e}")))?;
         let token = RefCell::new(cfg.token.clone());
-        Ok(Self { http, cfg, file: RefCell::new(file), token, request_id: Cell::new(0) })
+        Ok(Self {
+            http,
+            cfg,
+            file: RefCell::new(file),
+            token,
+            request_id: Cell::new(0),
+            endpoints: RefCell::new(None),
+        })
+    }
+
+    /// Where the OAuth flow goes, resolved once per run and reused.
+    ///
+    /// Against the hosted deployment this reads the RFC 8414 document, because its issuer and its
+    /// API base are different hosts. Against anything else it builds the endpoints off the base
+    /// exactly as this client always has, and makes no request at all: the deployments that were
+    /// never broken get no new latency and no new way to fail.
+    ///
+    /// The discovery request carries no credential and skips `send`. Discovery is public, and a 401
+    /// there must not start the refresh this call may itself be serving.
+    pub async fn oauth_endpoints(&self) -> Result<Rc<Endpoints>> {
+        let cached = self.endpoints.borrow().clone();
+        if let Some(endpoints) = cached {
+            return Ok(endpoints);
+        }
+
+        let endpoints = if crate::oauth::is_hosted(&self.cfg.http_base) {
+            let url = format!("{}{}", self.cfg.http_base, METADATA_PATH);
+            let res =
+                self.http.get(&url).header("accept", "application/json").send().await.map_err(
+                    |e| {
+                        err(format!("cannot reach the authorization server metadata at {url}: {e}"))
+                    },
+                )?;
+            let status = res.status().as_u16();
+            if status >= 300 {
+                return Err(err(format!(
+                    "the authorization server metadata at {url} answered {status}"
+                )));
+            }
+            let document = res.json::<Value>().await.map_err(|e| {
+                err(format!("the authorization server metadata at {url} is not JSON: {e}"))
+            })?;
+            Endpoints::from_metadata(&document, &url)?
+        } else {
+            Endpoints::base_relative(&self.cfg.http_base)
+        };
+
+        let endpoints = Rc::new(endpoints);
+        *self.endpoints.borrow_mut() = Some(endpoints.clone());
+        Ok(endpoints)
     }
 
     pub fn token(&self) -> String {
@@ -162,7 +214,13 @@ impl Client {
             form.push(("client_secret".to_string(), secret));
         }
 
-        let url = format!("{}/oauth/token", self.cfg.http_base);
+        let url = match self.oauth_endpoints().await {
+            Ok(endpoints) => endpoints.token.clone(),
+            Err(e) => {
+                eprintln!("{}", e.message);
+                return false;
+            }
+        };
         let Ok(res) = self.http.post(&url).form(&form).send().await else { return false };
         if !res.status().is_success() {
             return false;
@@ -201,11 +259,22 @@ impl Client {
         body: Option<Value>,
     ) -> Result<(u16, Value)> {
         let url = format!("{}{}", self.cfg.http_base, path);
+        self.http_request_url(method, &url, body).await
+    }
+
+    /// The same call against an absolute URL, for the endpoints discovery names. Those can sit on
+    /// a different host from `http_base`, so a path is not enough to address them.
+    pub async fn http_request_url(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        body: Option<Value>,
+    ) -> Result<(u16, Value)> {
         let payload = match body {
             Some(v) => Payload::Json(v),
             None => Payload::None,
         };
-        let res = self.send(method, &url, payload).await?;
+        let res = self.send(method, url, payload).await?;
         let status = res.status().as_u16();
         let text = res.text().await.map_err(|e| self.net_err(e))?;
         let json = serde_json::from_str::<Value>(&text)

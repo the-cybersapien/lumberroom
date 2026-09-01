@@ -22,6 +22,116 @@ pub const DEFAULT_LOOPBACK_PORT: u16 = 8976;
 
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// The RFC 8414 document, relative to the API base the owner configured.
+pub const METADATA_PATH: &str = "/.well-known/oauth-authorization-server";
+
+/// The hosted deployment's hosts, listed literally rather than derived from a pattern.
+///
+/// Two paths through this file, and the host of the configured base picks one. The hosted API base
+/// and the hosted issuer are different hosts: the MCP endpoint answers on `mcp.lumberroom.cloud`
+/// while the document served there names `lumberroom.cloud` as the authorization server, so
+/// `{base}/oauth/authorize` addresses a host that is not the issuer. Only the hosted path reads the
+/// metadata document. Every other host is somebody's self-hosted deployment and keeps the
+/// base-relative construction it has always had, with no discovery fetch and no new failure mode.
+/// A second hosted region gets added here and nowhere else.
+pub const HOSTED_HOSTS: [&str; 2] = ["lumberroom.cloud", "mcp.lumberroom.cloud"];
+
+/// Whether a base URL belongs to the hosted deployment.
+///
+/// The comparison is exact and case-insensitive. A suffix match would hand the whole OAuth flow to
+/// `evil-lumberroom.cloud`, and a prefix match would hand it to `lumberroom.cloud.attacker.tld`.
+///
+/// The scheme is part of the test. This document decides where the browser is sent and where the
+/// code verifier is posted, so fetching it over plain http lets anyone on the path answer it and
+/// name their own endpoints. A base of `http://lumberroom.cloud` therefore takes the self-hosted
+/// path, where nothing is fetched, rather than the hosted one.
+pub fn is_hosted(base_url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(base_url) else { return false };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else { return false };
+    HOSTED_HOSTS.iter().any(|hosted| host.eq_ignore_ascii_case(hosted))
+}
+
+/// Where this client sends each half of the OAuth flow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Endpoints {
+    pub authorize: String,
+    pub token: String,
+    pub register: String,
+    /// Nothing in this client revokes yet. It is carried because the document names it and the
+    /// first caller should not have to plumb discovery a second time.
+    pub revoke: Option<String>,
+}
+
+impl Endpoints {
+    /// The self-hosted path, unchanged since the first release. A deployment on any host other
+    /// than the hosted ones must not be able to tell this build apart from the last one.
+    pub fn base_relative(http_base: &str) -> Self {
+        Self {
+            authorize: format!("{http_base}/oauth/authorize"),
+            token: format!("{http_base}/oauth/token"),
+            register: format!("{http_base}/oauth/register"),
+            revoke: Some(format!("{http_base}/oauth/revoke")),
+        }
+    }
+
+    /// The hosted path. Every endpoint this client calls has to be present and has to survive
+    /// `is_trustworthy_endpoint`, and a document that misses one fails the command.
+    ///
+    /// Falling back to base-relative construction here would put back the exact bug this replaces,
+    /// and it would do it silently. An error naming the discovery URL costs a confused minute; a
+    /// browser sent to the wrong host costs an afternoon.
+    pub fn from_metadata(metadata: &Value, discovery_url: &str) -> Result<Self> {
+        Ok(Self {
+            authorize: required(metadata, "authorization_endpoint", discovery_url)?,
+            token: required(metadata, "token_endpoint", discovery_url)?,
+            register: required(metadata, "registration_endpoint", discovery_url)?,
+            revoke: metadata
+                .get("revocation_endpoint")
+                .and_then(Value::as_str)
+                .filter(|url| is_trustworthy_endpoint(url))
+                .map(str::to_string),
+        })
+    }
+}
+
+fn required(metadata: &Value, field: &str, discovery_url: &str) -> Result<String> {
+    let advertised = metadata.get(field).and_then(Value::as_str).unwrap_or_default();
+    if !is_trustworthy_endpoint(advertised) {
+        return Err(err(format!(
+            "the authorization server metadata at {discovery_url} advertises no usable {field} \
+(got {advertised:?}). An endpoint has to be an https URL on a host this client knows."
+        )));
+    }
+    Ok(advertised.to_string())
+}
+
+/// Whether a URL out of a discovery document may be sent a credential.
+///
+/// These endpoints receive the code verifier, the client secret and the browser itself, so the
+/// document decides where a credential goes. "Any https URL" is not a check: a document that named
+/// `https://attacker.example/oauth/token` would pass it, and this client would post the code and
+/// verifier there itself.
+///
+/// So the host has to be one of `HOSTED_HOSTS`. Only the hosted path reads a document at all, and
+/// the hosted issuer is a host this client already knows, so an endpoint anywhere else is a
+/// document saying something it has no business saying. That keeps the blast radius of a bad or
+/// tampered document to the hosts the credential was configured for.
+///
+/// Plain http is refused outright, including on loopback. This function only ever sees URLs out of
+/// a hosted document, and the hosted deployment does not serve loopback.
+pub fn is_trustworthy_endpoint(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else { return false };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    parsed
+        .host_str()
+        .is_some_and(|host| HOSTED_HOSTS.iter().any(|hosted| host.eq_ignore_ascii_case(hosted)))
+}
+
 pub fn base64url(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
@@ -207,11 +317,14 @@ run with --reregister --port <n> to register a fresh client on a different one."
     let mut client_id = saved_client_id.clone().unwrap_or_default();
     let mut client_secret = client.file.borrow().oauth("client_secret").map(str::to_string);
 
+    // Resolved once for the whole login. Every endpoint below comes out of it.
+    let endpoints = client.oauth_endpoints().await?;
+
     if reregistering {
         let (status, body) = client
-            .http_request(
+            .http_request_url(
                 reqwest::Method::POST,
-                "/oauth/register",
+                &endpoints.register,
                 Some(json!({
                     "client_name": "lumberroom",
                     "redirect_uris": [redirect_uri],
@@ -223,9 +336,11 @@ run with --reregister --port <n> to register a fresh client on a different one."
             )
             .await?;
         if status == 404 {
-            return Err(err(
-                "server has no /oauth/register: it is not running in oauth or oidc mode",
-            ));
+            return Err(err(format!(
+                "nothing answers registration at {}: the server is not running in oauth or oidc \
+mode",
+                endpoints.register
+            )));
         }
         if status >= 300 {
             return Err(err(format!("client registration failed ({status}): {body}")));
@@ -243,7 +358,7 @@ run with --reregister --port <n> to register a fresh client on a different one."
         ));
     }
 
-    let mut authorize = reqwest::Url::parse(&format!("{}/oauth/authorize", client.cfg.http_base))
+    let mut authorize = reqwest::Url::parse(&endpoints.authorize)
         .map_err(|e| err(format!("cannot build the authorize URL: {e}")))?;
     {
         let mut q = authorize.query_pairs_mut();
@@ -279,8 +394,7 @@ run with --reregister --port <n> to register a fresh client on a different one."
         form.push(("client_secret".to_string(), secret));
     }
 
-    let token_url = format!("{}/oauth/token", client.cfg.http_base);
-    let res = client.send(reqwest::Method::POST, &token_url, Payload::Form(form)).await?;
+    let res = client.send(reqwest::Method::POST, &endpoints.token, Payload::Form(form)).await?;
     let status = res.status().as_u16();
     let body: Value = res.json().await.unwrap_or_else(|_| json!({}));
     let token: crate::wire::TokenResponse = match serde_json::from_value(body.clone()) {
@@ -354,6 +468,122 @@ mod tests {
         let parsed = chrono::DateTime::parse_from_rfc3339(&s).unwrap();
         let delta = parsed.timestamp() - Utc::now().timestamp();
         assert!((3595..=3605).contains(&delta), "{delta}");
+    }
+
+    fn hosted_document() -> Value {
+        json!({
+            "issuer": "https://lumberroom.cloud",
+            "authorization_endpoint": "https://lumberroom.cloud/oauth/authorize",
+            "token_endpoint": "https://lumberroom.cloud/oauth/token",
+            "registration_endpoint": "https://lumberroom.cloud/oauth/register",
+            "revocation_endpoint": "https://lumberroom.cloud/oauth/revoke",
+        })
+    }
+
+    #[test]
+    fn only_the_two_hosted_hosts_take_the_discovery_path() {
+        assert!(is_hosted("https://lumberroom.cloud"));
+        assert!(is_hosted("https://mcp.lumberroom.cloud"));
+        assert!(is_hosted("https://MCP.Lumberroom.Cloud"));
+
+        assert!(!is_hosted("https://evil-lumberroom.cloud"));
+        assert!(!is_hosted("https://lumberroom.cloud.attacker.tld"));
+        assert!(!is_hosted("https://memory.example"));
+        assert!(!is_hosted("http://127.0.0.1:8787"));
+        assert!(!is_hosted("not a url"));
+    }
+
+    #[test]
+    fn the_hosted_issuer_wins_over_the_configured_base() {
+        let e = Endpoints::from_metadata(
+            &hosted_document(),
+            "https://mcp.lumberroom.cloud/.well-known/oauth-authorization-server",
+        )
+        .unwrap();
+        assert_eq!(e.authorize, "https://lumberroom.cloud/oauth/authorize");
+        assert_eq!(e.token, "https://lumberroom.cloud/oauth/token");
+        assert_eq!(e.register, "https://lumberroom.cloud/oauth/register");
+        assert_eq!(e.revoke.as_deref(), Some("https://lumberroom.cloud/oauth/revoke"));
+    }
+
+    #[test]
+    fn a_self_hosted_deployment_gets_the_urls_it_always_got() {
+        let e = Endpoints::base_relative("https://memory.example");
+        assert_eq!(e.authorize, "https://memory.example/oauth/authorize");
+        assert_eq!(e.token, "https://memory.example/oauth/token");
+        assert_eq!(e.register, "https://memory.example/oauth/register");
+        assert_eq!(e.revoke.as_deref(), Some("https://memory.example/oauth/revoke"));
+    }
+
+    #[test]
+    fn a_document_missing_an_endpoint_fails_and_names_where_it_came_from() {
+        let mut doc = hosted_document();
+        doc.as_object_mut().unwrap().remove("token_endpoint");
+        let e = Endpoints::from_metadata(&doc, "https://mcp.lumberroom.cloud/.well-known/x")
+            .unwrap_err();
+        assert!(e.message.contains("token_endpoint"), "{}", e.message);
+        assert!(e.message.contains("https://mcp.lumberroom.cloud/.well-known/x"), "{}", e.message);
+    }
+
+    #[test]
+    fn an_endpoint_this_client_does_not_trust_fails_rather_than_being_used() {
+        for advertised in [
+            json!("http://evil.example/oauth/token"),
+            json!("/oauth/token"),
+            json!("ftp://memory.example/oauth/token"),
+            json!("javascript:alert(1)"),
+            json!(""),
+            json!(42),
+            json!(null),
+        ] {
+            let mut doc = hosted_document();
+            doc.as_object_mut().unwrap().insert("token_endpoint".into(), advertised.clone());
+            let e = Endpoints::from_metadata(&doc, "https://mcp.lumberroom.cloud/.well-known/x");
+            assert!(e.is_err(), "{advertised} was accepted");
+        }
+    }
+
+    #[test]
+    fn a_revocation_endpoint_nobody_can_trust_is_dropped_rather_than_failing_the_login() {
+        let mut doc = hosted_document();
+        doc.as_object_mut()
+            .unwrap()
+            .insert("revocation_endpoint".into(), json!("http://evil.example/revoke"));
+        let e =
+            Endpoints::from_metadata(&doc, "https://mcp.lumberroom.cloud/.well-known/x").unwrap();
+        assert_eq!(e.revoke, None);
+    }
+
+    #[test]
+    fn an_endpoint_on_a_host_this_client_does_not_know_is_refused() {
+        // The finding this pins: "any https URL" was the old rule, and a document naming
+        // https://attacker.example would have passed it. This client posts the code and the
+        // verifier to whatever it accepts here, so the accepting is the whole control.
+        assert!(!is_trustworthy_endpoint("https://attacker.example/oauth/token"));
+        assert!(!is_trustworthy_endpoint("https://evil-lumberroom.cloud/oauth/token"));
+        assert!(!is_trustworthy_endpoint("https://lumberroom.cloud.attacker.tld/oauth/token"));
+        assert!(!is_trustworthy_endpoint("https://memory.example/oauth/token"));
+
+        assert!(is_trustworthy_endpoint("https://lumberroom.cloud/oauth/token"));
+        assert!(is_trustworthy_endpoint("https://mcp.lumberroom.cloud/oauth/token"));
+        assert!(is_trustworthy_endpoint("https://LUMBERROOM.CLOUD/oauth/token"));
+    }
+
+    #[test]
+    fn plain_http_is_refused_everywhere_including_loopback() {
+        // Only a hosted document reaches this check, and the hosted deployment serves no loopback.
+        assert!(!is_trustworthy_endpoint("http://lumberroom.cloud/oauth/token"));
+        assert!(!is_trustworthy_endpoint("http://127.0.0.1:8080/oauth/token"));
+        assert!(!is_trustworthy_endpoint("http://localhost:8080/oauth/token"));
+    }
+
+    #[test]
+    fn a_hosted_host_over_plain_http_takes_the_self_hosted_path() {
+        // Fetching this document in the clear lets anyone on the path name the endpoints. A base
+        // that cannot protect the fetch does not get to use it.
+        assert!(!is_hosted("http://lumberroom.cloud"));
+        assert!(!is_hosted("http://mcp.lumberroom.cloud:8787"));
+        assert!(is_hosted("https://lumberroom.cloud"));
     }
 
     /// A real listener, a real browser-shaped preconnect, a real callback.
