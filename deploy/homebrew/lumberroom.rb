@@ -9,23 +9,23 @@ class Lumberroom < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/the-cybersapien/lumberroom/releases/download/v0.3.0/lumberroom-0.3.0-aarch64-apple-darwin.tar.gz"
-      sha256 "ae7d406fc6f217473ce223860708a1b9ee15e48be67da1f7bbe2ac31873e0d8e"
+      url "https://github.com/the-cybersapien/lumberroom/releases/download/v0.3.1/lumberroom-0.3.1-aarch64-apple-darwin.tar.gz"
+      sha256 "e8d046127b879623c47b7f4d2565b05a617416212848ed546b299503bd4688b3"
     end
     on_intel do
-      url "https://github.com/the-cybersapien/lumberroom/releases/download/v0.3.0/lumberroom-0.3.0-x86_64-apple-darwin.tar.gz"
-      sha256 "5ee1ff03f9a6147f90ec66a451344d3d2bb70e10c63d71810330c0230e0ce6dc"
+      url "https://github.com/the-cybersapien/lumberroom/releases/download/v0.3.1/lumberroom-0.3.1-x86_64-apple-darwin.tar.gz"
+      sha256 "db86e0db0e079dee77fc20b2ae2e029d135e3c0cc26cb19db91f4b541dcd8010"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/the-cybersapien/lumberroom/releases/download/v0.3.0/lumberroom-0.3.0-aarch64-unknown-linux-musl.tar.gz"
-      sha256 "ae9b42a2c21cfdaa5f723073c640144353b5b98f1d30b75caa2a3785506d6f5a"
+      url "https://github.com/the-cybersapien/lumberroom/releases/download/v0.3.1/lumberroom-0.3.1-aarch64-unknown-linux-musl.tar.gz"
+      sha256 "7595da2f8193258910635f5942116089437f3e4c5c9d900625bda8068aef5035"
     end
     on_intel do
-      url "https://github.com/the-cybersapien/lumberroom/releases/download/v0.3.0/lumberroom-0.3.0-x86_64-unknown-linux-musl.tar.gz"
-      sha256 "a51dc9e9b6abc5683e6ded5137849a842997fa9b6e268853bb6a60e7e27c2566"
+      url "https://github.com/the-cybersapien/lumberroom/releases/download/v0.3.1/lumberroom-0.3.1-x86_64-unknown-linux-musl.tar.gz"
+      sha256 "7fefceb23117742cf9d37400619c59dd825f0063b84c11bb8547d232a8bc0ecc"
     end
   end
 
