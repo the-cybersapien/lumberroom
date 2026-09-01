@@ -4,6 +4,67 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-01
+
+One change since 0.3.0, in the CLI. It finds the authorization server where the server says it is,
+instead of where the client guessed.
+
+### Fixed
+
+- **`lumberroom login` reads the OAuth endpoints from the RFC 8414 metadata document** rather than
+  appending a path to the configured base URL. A server is allowed to answer its API on one host and
+  name a different one as its authorization server, which is the case RFC 8414 exists for. Against
+  such a server the old client sent the browser to a host that is not the issuer, and the flow could
+  not complete. `authorization_endpoint`, `token_endpoint`, `registration_endpoint` and
+  `revocation_endpoint` all come from the document now, fetched once per run.
+
+  This applies to the hosted deployment's two hostnames and to nothing else. Every other host keeps
+  the base-relative construction it has always had, byte for byte, with no metadata request, no new
+  latency and no new failure mode. A self-hosted deployment cannot tell this release from the last
+  one on that path.
+
+  The hosted hostnames are a literal list compared exactly and case-insensitively, because a suffix
+  match would hand the whole flow to `evil-lumberroom.cloud` and a prefix match to
+  `lumberroom.cloud.attacker.tld`. An endpoint read out of a document must be an https URL on one of
+  those same hosts: "any https URL" is not a check, since a document naming
+  `https://attacker.example/oauth/token` would pass it and this client would post the code and the
+  verifier there itself.
+
+### Changed
+
+- **This client no longer sends a credential over plain http to a host that is not loopback.**
+  `config::resolve` takes the base URL from a flag, an environment variable or a config file and has
+  never validated its scheme, so a base of `http://a-remote-host` put a bearer token in the clear on
+  every request and the refresh token on every refresh. The property is older than this release;
+  routing every endpoint through one function is what made it visible.
+
+  https is allowed on any host and plain http on loopback alone, which keeps the default
+  `http://127.0.0.1:8787` and the whole self-hosted development story working. A request that fails
+  the check goes out without the header and the server answers 401; a refresh refuses outright and
+  says why.
+
+  **This changes behaviour for one configuration:** plain http to a host that is not loopback. That
+  deployment was leaking its token on every request and now gets a 401 it can act on. If you run one,
+  point the CLI at https, or at `127.0.0.1`, before upgrading.
+
+### Known limitations
+
+- `bin/lumberroom.mjs` still builds every OAuth URL base-relative and cannot complete a login against
+  a server whose issuer differs from its API base. It is the dependency-free JavaScript client that
+  `CONTRIBUTING.md` calls out as having caught protocol bugs the Rust tests could not, so the two are
+  meant to stay interchangeable, and today they are not.
+- The metadata document is fetched once per process and never revalidated. Every CLI invocation is
+  short, so this matters only if the client ever becomes long-lived.
+- `revocation_endpoint` is parsed and carried but nothing revokes yet, so it is plumbing for a first
+  caller rather than a live path.
+- The hosted hostname list lives in the binary. An installed CLI cannot learn about a new hosted
+  region without an upgrade, which is the deliberate cost of not making every self-hosted deployment
+  pay for a discovery request.
+- Redirects are not followed on the metadata fetch. If a hosted deployment ever answers that path
+  with a 301, login stops with an error naming the URL rather than following it. Both hosted
+  hostnames answer 200 directly today.
+- Every limitation listed under 0.3.0 still stands.
+
 ## [0.3.0] - 2026-08-31
 
 One change since 0.2.0. A whole store leaves as one file and goes into another install.
@@ -275,6 +336,7 @@ softened for a release note.
 - `submit` collapses exact duplicate proposals on a content hash and misses near-duplicates, so
   overlapping chunks queue the same fact more than once.
 
+[0.3.1]: https://github.com/the-cybersapien/lumberroom/releases/tag/v0.3.1
 [0.3.0]: https://github.com/the-cybersapien/lumberroom/releases/tag/v0.3.0
 [0.2.0]: https://github.com/the-cybersapien/lumberroom/releases/tag/v0.2.0
 [0.1.0]: https://github.com/the-cybersapien/lumberroom/releases/tag/v0.1.0
