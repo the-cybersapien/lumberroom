@@ -6,7 +6,7 @@ deciding what ingestion proposed, correcting a fact, revoking a credential.
 Most of it happens in the console at `/console`. The console exists only when `AUTH_MODE=oauth`,
 because it checks the owner password against `OWNER_PASSWORD_HASH` and a console that cannot check a
 password has no door. In token mode every console route answers with a page saying so, and the work
-below happens through `bin/lumberroom.mjs` and psql instead. [DEPLOY.md](../DEPLOY.md) covers
+below happens through `lumberroom` and psql instead. [DEPLOY.md](../DEPLOY.md) covers
 switching modes.
 
 ## Signing in

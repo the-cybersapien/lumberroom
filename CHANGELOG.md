@@ -4,6 +4,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- **`bin/lumberroom.mjs`**, the dependency-free JavaScript client, and its redirect test. One client
+  now, the Rust one, which is what a release ships and what the Homebrew tap installs.
+
+  It was kept for a real reason: it shared no types with the server, so the server could not
+  accidentally accommodate it, and it caught protocol bugs the Rust tests could not. It also fell
+  behind. It never learned to read an authorization server's metadata document, so as of 0.3.1 it
+  could not complete a login against a deployment whose issuer differs from its API base, and a gate
+  driving a client that cannot log in proves less than it looks like it does.
+
+  `scripts/policy-test.sh`, `scripts/done-when-test.sh` and `scripts/correction-test.sh` drove it and
+  now drive `lumberroom` from PATH, so each gate exercises the binary a customer installs. They
+  require that binary rather than node: `brew install the-cybersapien/lumberroom/lumberroom`, or a
+  release binary on PATH.
+
+  **What this gives up, stated plainly:** the client and the server now share types, so a change made
+  to both at once can look correct from inside and be wrong on the wire. That is the class of bug the
+  second implementation existed to catch, and nothing catches it today.
+
 ## [0.3.1] - 2026-09-01
 
 One change since 0.3.0, in the CLI. It finds the authorization server where the server says it is,
@@ -49,10 +69,6 @@ instead of where the client guessed.
 
 ### Known limitations
 
-- `bin/lumberroom.mjs` still builds every OAuth URL base-relative and cannot complete a login against
-  a server whose issuer differs from its API base. It is the dependency-free JavaScript client that
-  `CONTRIBUTING.md` calls out as having caught protocol bugs the Rust tests could not, so the two are
-  meant to stay interchangeable, and today they are not.
 - The metadata document is fetched once per process and never revalidated. Every CLI invocation is
   short, so this matters only if the client ever becomes long-lived.
 - `revocation_endpoint` is parsed and carried but nothing revokes yet, so it is plumbing for a first

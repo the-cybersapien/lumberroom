@@ -59,7 +59,7 @@ export SCRATCH_DB SCRATCH_NAME SCRATCH_TOKENS SCRATCH_PORT SCRATCH_KEEP
 . "$REPO_DIR/scripts/lib/scratch-server.sh"
 
 # A fresh owner password every run, hashed inside the already-built image rather than here: argon2
-# is not in Node's built-ins, which is the whole reason `lumberroom hash-password` exists (bin/lumberroom.mjs's
+# is not in Node's built-ins, which is the whole reason `lumberroom hash-password` exists (the old JS client's
 # own hash-password command just prints this same docker command instead of computing a weaker hash
 # itself). Held only in $PASSWORD and the container's own environment, never written to disk.
 PASSWORD="$(openssl rand -hex 20)"

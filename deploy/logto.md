@@ -81,7 +81,7 @@ claude mcp add --transport http memory https://memory.example.com/mcp \
 ```
 
 Claude Code runs the OAuth flow in a browser and stores the token. Check with `/mcp` in a
-session, then `node bin/lumberroom.mjs doctor` still works if you keep one token client configured
+session, then `lumberroom doctor` still works if you keep one token client configured
 for operations.
 
 ## Rolling back
