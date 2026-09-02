@@ -136,7 +136,7 @@ if [ "$MODE" = "token" ]; then
 JSON
 else
   # No token field: an oauth block goes here once `lumberroom login` runs, and a stray "token" would
-  # win over it silently (bin/lumberroom.mjs prefers a static token over oauth on purpose).
+  # win over it silently (the client prefers a static token over oauth on purpose).
   write_file "$CONFIG_DIR/config.json" 600 <<JSON
 {
   "url": "$MCP_URL"
@@ -148,16 +148,13 @@ fi
 # Two ways to get a `lumberroom` binary onto this Mac: one already on PATH from Homebrew or a
 # manual install, or the released binary for this Mac's architecture.
 #
-# `bin/lumberroom.mjs` is not one of them. It was the prototype, it answers to the same command
-# name, and installing it as a fallback is how a machine ends up running something that looks like
-# lumberroom and is missing half of it. It stays in the repository because it is a client the
-# server cannot accidentally accommodate, and it has caught protocol bugs the Rust tests could not.
-# Nothing installs it.
+# There is no third way. A JavaScript client used to live at bin/lumberroom.mjs and answered to the
+# same command name; it was removed in 0.3.2 and nothing here falls back to it.
 install_lumberroom_binary() {
-  # An earlier run of this script installed bin/lumberroom.mjs to exactly this name, so on any
-  # machine already wired, `command -v lumberroom` finds the prototype. Accepting it would leave
-  # every existing user on the client this change exists to retire, and the upgrade would report
-  # success. A node script announces itself in its first line; a Rust binary does not.
+  # An earlier run of this script installed the old JavaScript client to exactly this name, so on a
+  # machine wired before 0.3.2, `command -v lumberroom` finds that instead. Accepting it would leave
+  # the machine on a client that was retired, and the upgrade would report success. A node script
+  # announces itself in its first line; a Rust binary does not.
   if command -v lumberroom >/dev/null 2>&1; then
     local existing
     existing="$(command -v lumberroom)"

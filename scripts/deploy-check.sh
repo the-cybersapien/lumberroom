@@ -174,7 +174,7 @@ if [ -z "$TOKEN" ]; then
   warn "no LUMBERROOM_TOKEN, so the MCP endpoint went unchecked. This is the step that catches a \
 deployment answering every health check and refusing every tool call."
 else
-  # Copied from bin/lumberroom.mjs, which works against this server, rather than assembled from the
+  # Copied from lumberroom, which works against this server, rather than assembled from the
   # spec. An earlier version of this check invented the request and got two different 400s: rmcp
   # reads mcp-protocol-version as a stricter mode and then wants per-request _meta nobody sends.
   # Sessions left the protocol in the 2026-07-28 revision, so initialize-then-call on separate

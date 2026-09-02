@@ -44,7 +44,7 @@ as long as either persists. Leave `LUMBERROOM_TOKEN` unset in a terminal and `wi
 the token with echo off instead.
 
 1. writes `~/.config/lumberroom/config.json` at mode 600, carrying the endpoint and the token
-2. installs `bin/lumberroom.mjs` to `~/.local/bin/lumberroom` and `client/lumberroom-bootstrap-hook.sh` to
+2. installs `lumberroom` to `~/.local/bin/lumberroom` and `client/lumberroom-bootstrap-hook.sh` to
    `~/.claude/hooks/lumberroom-bootstrap.sh`
 3. registers the MCP server with Claude Code and adds the SessionStart hook to
    `~/.claude/settings.json`
@@ -98,7 +98,7 @@ live server, and `scripts/oauth-flow-test.sh` is the gate that would settle it. 
 today is what login says when the server is not in oauth mode:
 
 ```
-$ node bin/lumberroom.mjs login
+$ lumberroom login
 lumberroom: server has no /oauth/register: it is not running in oauth or oidc mode
 ```
 
@@ -187,7 +187,7 @@ In this order. Each step assumes the one above it passed.
 ### lumberroom doctor
 
 ```bash
-node bin/lumberroom.mjs doctor
+lumberroom doctor
 ```
 
 Against the stack on `127.0.0.1:8787` in token mode, 19 August 2026:
@@ -213,7 +213,7 @@ must say `embedder_degraded: false` or every write lands as a hash vector that r
 ### lumberroom bootstrap
 
 ```bash
-node bin/lumberroom.mjs bootstrap
+lumberroom bootstrap
 ```
 
 The same digest the hook injects, as markdown. From the same run:
@@ -299,7 +299,7 @@ with the same for `write`. The model reaches every namespace and stops at `open`
 namespace that classifies higher is refused:
 
 ```
-$ node bin/lumberroom.mjs write "..." --namespace personal:finance
+$ lumberroom write "..." --namespace personal:finance
 lumberroom: memory_write failed: client claude-code-mac may write to personal:finance only up to open, not private
 ```
 
@@ -430,7 +430,7 @@ LUMBERROOM_TOKEN=<second> ./client/wire-mac.sh --url https://memory.example.com
 Then check the server can tell them apart:
 
 ```bash
-node bin/lumberroom.mjs stats --by-client
+lumberroom stats --by-client
 ```
 
 With one client on this stack today:
@@ -453,7 +453,7 @@ change is an `.env` edit and a restart.
 
 ## One CLI note
 
-`lumberroom --help` is not implemented. `bin/lumberroom.mjs` reads the first positional argument as the command
+`lumberroom --help` is not implemented. `lumberroom` reads the first positional argument as the command
 and defaults to `doctor`, and `--help` parses as a flag, so `lumberroom --help` runs `doctor` against
-whatever endpoint your config points at. The usage block at the top of `bin/lumberroom.mjs` is the
+whatever endpoint your config points at. The usage block at the top of `lumberroom` is the
 authoritative list, and an unknown command prints a short version of it.
