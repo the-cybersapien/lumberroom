@@ -5,7 +5,8 @@
 //! can tell the difference.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
+use std::sync::{Arc, Barrier, Mutex};
 
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -164,6 +165,169 @@ async fn without_a_refresh_token_the_401_is_returned_as_it_stands() {
     assert_eq!(log.whoami_tokens, vec!["static-and-wrong".to_string()], "no retry");
     assert!(log.token_grants.is_empty(), "no token call without a refresh token");
     std::fs::remove_dir_all(path.parent().unwrap()).ok();
+}
+
+/// Single-use rotation with replay revocation, the contract the real authorization server
+/// enforces in `rotate()` (`src/authserver/routes.rs`): the current refresh token exchanges for
+/// the next pair, anything already spent is a replay and revokes the family, and no later grant
+/// succeeds against it.
+#[derive(Default)]
+struct Rotation {
+    current: Option<String>,
+    presented: Vec<String>,
+    /// What the stub answered for each presentation, in order, for a failing test to show.
+    answered: Vec<(String, u16)>,
+}
+
+async fn rotating_stub(listener: TcpListener, rotation: Arc<Mutex<Rotation>>) {
+    loop {
+        let Ok((mut socket, _)) = listener.accept().await else { return };
+        let mut buf = vec![0u8; 8192];
+        let Ok(n) = socket.read(&mut buf).await else { continue };
+        if n == 0 {
+            continue;
+        }
+        let request = String::from_utf8_lossy(&buf[..n]).to_string();
+        let first = request.lines().next().unwrap_or_default().to_string();
+        let path = first.split_whitespace().nth(1).unwrap_or("/").to_string();
+        let body = request.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+
+        if !path.starts_with("/oauth/token") {
+            let response = "HTTP/1.1 404 X\r\ncontent-type: application/json\r\ncontent-length: 24\r\nconnection: close\r\n\r\n{\"error\":\"not_found\"}\r\n";
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.flush().await;
+            continue;
+        }
+
+        let token = body
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("refresh_token="))
+            .unwrap_or_default()
+            .to_string();
+        // The guard lives in its own block so no await in this loop can hold it: a
+        // MutexGuard across an await makes the whole stub future !Send and tokio::spawn
+        // refuses it.
+        let (status, payload) = {
+            let mut state = rotation.lock().unwrap();
+            state.presented.push(token.clone());
+            if state.current.as_deref() == Some(token.as_str()) {
+                // The first exchange issues rt-2: a rotation that handed back the token it was
+                // just presented would make a replay of that token indistinguishable from a
+                // legitimate refresh, and the whole test would prove nothing.
+                let generation = state.presented.len() + 1;
+                let next = format!("rt-{generation}");
+                state.current = Some(next.clone());
+                state.answered.push((token.clone(), 200));
+                (
+                    200,
+                    json!({
+                        "access_token": format!("at-{generation}"),
+                        "refresh_token": next,
+                        "token_type": "Bearer",
+                        "expires_in": 60
+                    }),
+                )
+            } else {
+                state.current = None;
+                state.answered.push((token.clone(), 400));
+                (
+                    400,
+                    json!({
+                        "error": "invalid_grant",
+                        "error_description": "refresh token unknown or already spent; token family revoked"
+                    }),
+                )
+            }
+        };
+
+        let text = payload.to_string();
+        let response = format!(
+            "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}",
+            text.len()
+        );
+        let _ = socket.write_all(response.as_bytes()).await;
+        let _ = socket.flush().await;
+    }
+}
+
+/// One CLI process: its own runtime, its own client, its own in-memory view of the config file.
+/// A thread with a runtime of its own is the closest a test gets to a second `lumberroom`
+/// invocation on one machine.
+fn refresh_as_a_process(path: PathBuf, base: String, barrier: Arc<Barrier>) -> bool {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    rt.block_on(async move {
+        let file = FileConfig::load(path);
+        let env: HashMap<String, String> = HashMap::new();
+        let resolved = config::resolve(&env, &file, Some(&base), None, None, false, Some("4000"));
+        let client = Client::new(resolved, file).unwrap();
+        // Both processes hold the same pre-refresh view of the file before either exchanges,
+        // which is the state two invocations that started earlier are in.
+        barrier.wait();
+        client.refresh().await
+    })
+}
+
+/// The lockout bug, end to end. Two processes refresh off one config file at the same time; both
+/// loaded `rt-1` before either moved. The server rotates on first presentation and revokes the
+/// family on the second, so if both send `rt-1` the disk ends up holding a dead token and every
+/// later refresh is an `invalid_grant`. When the exchange serialises under the config lock, the
+/// second process reads the rotated token before it sends anything, and the third refresh, the
+/// one that stands for every future run on that machine, still works.
+#[tokio::test]
+async fn two_processes_refreshing_at_once_never_replay_a_spent_token() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let rotation =
+        Arc::new(Mutex::new(Rotation { current: Some("rt-1".to_string()), ..Default::default() }));
+    tokio::spawn(rotating_stub(listener, rotation.clone()));
+
+    let file = temp_config(
+        "double-refresh",
+        json!({
+            "url": base,
+            "oauth": { "client_id": "c1", "access_token": "stale", "refresh_token": "rt-1" }
+        }),
+    );
+    let path = file.path.clone();
+    let barrier = Arc::new(Barrier::new(2));
+
+    let p = path.clone();
+    let b = base.clone();
+    let start = barrier.clone();
+    let first = std::thread::spawn(move || refresh_as_a_process(p, b, start));
+    let base_for_second = base.clone();
+    let second =
+        std::thread::spawn(move || refresh_as_a_process(path.clone(), base_for_second, barrier));
+    // join on the blocking pool so the stub on this runtime keeps answering while both run.
+    let (r1, r2) =
+        tokio::task::spawn_blocking(move || (first.join().unwrap(), second.join().unwrap()))
+            .await
+            .unwrap();
+    assert!(r1, "the process that won the race still reported failure");
+    assert!(r2, "the process that lost the race replayed a spent token and got invalid_grant");
+
+    // The family must still be alive: a third run reads whatever is on disk and refreshes.
+    let third = {
+        let file = FileConfig::load(file.path.clone());
+        client_for(file, &base)
+    };
+    assert!(
+        third.refresh().await,
+        "the refresh token left on disk was already spent or revoked; every later run is locked out"
+    );
+
+    let log = rotation.lock().unwrap();
+    assert_eq!(
+        log.presented,
+        vec!["rt-1".to_string(), "rt-2".to_string(), "rt-3".to_string()],
+        "each refresh token went to the server exactly once; answered: {:?}",
+        log.answered
+    );
+
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file.path).unwrap()).unwrap();
+    assert_eq!(saved["oauth"]["refresh_token"], json!("rt-4"));
+    std::fs::remove_dir_all(file.path.parent().unwrap()).ok();
 }
 
 #[tokio::test]
