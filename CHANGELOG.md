@@ -4,6 +4,43 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-07
+
+Two changes since 0.3.1, both in the client. A renewal that crashes or races another one leaves a
+credential you can still spend, and the second client is gone.
+
+### Fixed
+
+- **A refresh no longer strands a spent token on disk.** The client rotates its refresh token on
+  every renewal: it sends the one in `config.json`, the server issues a replacement and retires
+  what it was given. Writing that replacement used to be a plain overwrite with no lock around the
+  exchange, so two windows cost you the credential. Lose power between the request and the write,
+  and the server has retired a token the file still holds. Run two lumberroom processes that renew
+  at the same moment, and both present the same token; the server rotates on the first and refuses
+  the second, which retires the whole family. Either way the machine stayed locked out until
+  someone ran `lumberroom login` again, and the session hook fires on every session start, so a
+  second process is the normal case rather than the odd one.
+
+  The lock now spans the whole exchange, from the read of the token through the request to the save
+  of its replacement, so a second process re-reads the rotated token before it sends anything. The
+  save writes a sibling file born at 0600, fsyncs it, renames it over the live path and fsyncs the
+  directory. A crash costs the whole write or none of it, and no reader opens half a credential
+  file. The save also re-reads under the lock before it merges, so a patch from one process no
+  longer erases a key another wrote while it was working.
+
+  A waiter that cannot take the lock gets an error naming the lock file and the process holding it.
+  That message used to suggest deleting the lock file, which is the one action that reproduces the
+  bug: unlink it while a refresh is in flight and the next process opens a fresh inode, locks that,
+  and replays the pre-rotation token.
+
+- **A refresh that fails says which thing failed.** Eight of the nine paths out of `refresh`
+  returned without printing anything, so a config file with no `client_id`, an unreachable token
+  endpoint, a server answering something that is not JSON, and a token the server had already
+  retired all reached you as the same bare 401. Each names itself now. The `invalid_grant` case
+  says the token is spent, expired or revoked and tells you to sign in again, and a save that fails
+  after the server has rotated says the tokens on disk are stale rather than leaving the next run
+  to discover it.
+
 ### Removed
 
 - **`bin/lumberroom.mjs`**, the dependency-free JavaScript client, and its redirect test. One client
@@ -23,6 +60,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   **What this gives up, stated plainly:** the client and the server now share types, so a change made
   to both at once can look correct from inside and be wrong on the wire. That is the class of bug the
   second implementation existed to catch, and nothing catches it today.
+
+### Changed
+
+- **The token request takes a checked URL rather than a string.** `may_carry_credential` already
+  refused to put a refresh token on plain http to a host that is not loopback, and it still does,
+  so no configuration behaves differently here. The check and the send used to be two statements a
+  reader had to hold together. `CredentialUrl::checked` is now the only way to build what the send
+  accepts, so an edit that reorders those lines, or adds a second send below them, cannot skip the
+  check by accident.
+- **Dependency bumps.** `rmcp` 3.1.4 to 3.2.0, `uuid` 1.24.1 to 1.26.0, `fastembed` 6.0.0 to 6.0.2,
+  `aes-gcm` 0.11.0 to 0.11.1, `flate2` 1.1.9 to 1.1.10, and `age` 0.11.5 to 0.12.1 in
+  `crates/archive`. None of them needed a source change.
+- **`actions/checkout` 5 to 7** in the CLI release and Docker publish workflows.
+- **`tempfile` joins the client's dependencies**, as the atomic replacement maintained by somebody
+  else. It was already in the workspace lockfile, so nothing new resolves.
+
+### Known limitations
+
+- The lock is an `flock` on `<config>.lock`, which covers processes on one machine. A config
+  directory shared over NFS, or on any filesystem that does not honour `flock`, gets no protection,
+  and two machines refreshing against it still race.
+- A waiter gives up. `save` waits 30 seconds and `refresh` waits its own request timeout plus five,
+  then returns an error naming the holder. A token endpoint slow enough to outlast that turns one
+  command into a failure rather than a queue.
+- The lock file is created once and never removed, so a config directory keeps one after the first
+  run. Removing it is what the old message advised and what causes the bug.
+- The directory fsync is best effort. A filesystem that refuses to fsync a directory keeps the
+  file-contents guarantee and loses the rename-durability one, so a power cut in that window can
+  still cost the replacement.
+- Nothing checks the wire against a second implementation any more. The Removed entry states what
+  that costs.
+- No gate opens a `.lumber` file that 0.3.x wrote against this build. The age file format is
+  versioned apart from the crate and nothing under `crates/archive` changed, which is the argument
+  that the bump carries no format risk rather than the evidence.
+- Every limitation listed under 0.3.1 and 0.3.0 still stands.
 
 ## [0.3.1] - 2026-09-01
 
@@ -352,6 +424,7 @@ softened for a release note.
 - `submit` collapses exact duplicate proposals on a content hash and misses near-duplicates, so
   overlapping chunks queue the same fact more than once.
 
+[0.4.0]: https://github.com/the-cybersapien/lumberroom/releases/tag/v0.4.0
 [0.3.1]: https://github.com/the-cybersapien/lumberroom/releases/tag/v0.3.1
 [0.3.0]: https://github.com/the-cybersapien/lumberroom/releases/tag/v0.3.0
 [0.2.0]: https://github.com/the-cybersapien/lumberroom/releases/tag/v0.2.0
