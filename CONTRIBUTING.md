@@ -61,7 +61,7 @@ It was kept because it shared no types with the server and so could not be accid
 by it, and it did earn that place: it caught protocol bugs the Rust tests could not. It also fell
 behind. It never learned to read an authorization server's metadata document, so it could not log in
 against a deployment whose issuer differs from its API base, and a gate running a client that cannot
-complete a login proves less than it looks like it does. Removed in 0.3.2.
+complete a login proves less than it looks like it does. Removed in 0.4.0.
 
 What it was protecting against is real and is now unprotected: the client and the server share
 types, so a change to both at once can look correct from inside. A second implementation would
