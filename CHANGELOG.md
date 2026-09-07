@@ -6,8 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.4.0] - 2026-09-07
 
-Two changes since 0.3.1, both in the client. A renewal that crashes or races another one leaves a
-credential you can still spend, and the second client is gone.
+Three changes since 0.3.1, all in the client. A renewal that crashes or races another one leaves a
+credential you can still spend, renewals stop piling onto each other, and the second client is gone.
 
 ### Fixed
 
@@ -32,6 +32,28 @@ credential you can still spend, and the second client is gone.
   That message used to suggest deleting the lock file, which is the one action that reproduces the
   bug: unlink it while a refresh is in flight and the next process opens a fresh inode, locks that,
   and replays the pre-rotation token.
+
+- **Two processes starting together now cost one renewal, not two.** The lock above made the
+  second process safe: it re-reads the file before it sends, so it presents the rotated token and
+  not the spent one. It still sent something. Five sessions opening at once spent five rotations,
+  and each rotation is another window in which a crash between the request and the write leaves a
+  spent token on disk.
+
+  A renewal now reads the file it has just re-read under the lock. When the access token there is
+  not the one this process holds and it has more than a minute of life left, the renewal adopts
+  that token and returns without sending. Comparing against the token in hand is what keeps this
+  honest: a process gets here because the server refused what it was holding, so a file claiming
+  the credential is good is only believable when the file holds a different one. The same token
+  with a future expiry means the server and the clock disagree, and the server wins. An expiry
+  that is missing or unreadable means renew.
+
+- **A renewal happens before the token expires rather than after the failure it would cause.** The
+  only thing that used to trigger one was a 401, so every process paid a guaranteed wasted round
+  trip after expiry, and they all paid it in the same second because they held tokens that expire
+  together. A request now renews first once the token is inside the last quarter of its life,
+  scaled by a factor each process draws once, so two processes that started together cross the line
+  up to seven minutes apart on an hour-long token. The 401 path stays as the fallback it has always
+  been.
 
 - **A refresh that fails says which thing failed.** Eight of the nine paths out of `refresh`
   returned without printing anything, so a config file with no `client_id`, an unreachable token
@@ -89,6 +111,11 @@ credential you can still spend, and the second client is gone.
 - The directory fsync is best effort. A filesystem that refuses to fsync a directory keeps the
   file-contents guarantee and loses the rename-durability one, so a power cut in that window can
   still cost the replacement.
+- A process killed between the token request returning and the write landing still strands a spent
+  token on disk. The kernel drops the lock when the process dies, so nothing in this client covers
+  that case, and the next run presents a token the server has already retired. Closing it needs the
+  server to accept a token it has just rotated, for a few seconds, rather than treating the second
+  presentation as a theft.
 - Nothing checks the wire against a second implementation any more. The Removed entry states what
   that costs.
 - No gate opens a `.lumber` file that 0.3.x wrote against this build. Upstream states the 0.12
