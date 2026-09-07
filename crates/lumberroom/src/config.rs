@@ -155,7 +155,12 @@ impl FileConfig {
         replacement.as_file().sync_all()?;
         replacement.persist(&self.path).map_err(|e| e.error)?;
         sync_dir(parent)?;
-        restrict(&self.path)
+        // No chmod after the rename. The replacement was born 0600 and rename carries the mode
+        // with the inode, so there is nothing to repair; a chmod that failed here would return
+        // an error from a save that had already landed, and refresh would tell the owner the
+        // tokens were not saved while the file on disk held the new pair. The next refresh
+        // would then present a token the server had rotated.
+        Ok(())
     }
 
     /// The exclusive lock on `<config>.lock`, held for the life of the guard.
