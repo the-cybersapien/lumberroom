@@ -39,7 +39,7 @@ two assertions in [`tests/integration.rs:1247`](../../tests/integration.rs), so 
 exercised and unreachable at once, which strengthens §6.2 item 11.
 What the owner can run today is `lumberroom export --obsidian <path>`, which pages `GET /admin/export`
 and writes its own
-note in `writeObsidianNote` ([`bin/lumberroom.mjs:392`](../../bin/lumberroom.mjs)). That note carries `id`,
+note in `writeObsidianNote` ([`lumberroom:392`](../../lumberroom)). That note carries `id`,
 `namespace`, `sensitivity`, `source_client`, `created_at` and `tags`. It carries no confirmation
 flag, no access count, no `supersedes` or `superseded_by`, no registry entry, no index, and no
 tombstone. Every file is named after a uuid, so a vault listing is a wall of hex. A fact deleted
@@ -472,7 +472,7 @@ estimate of effort.
 | Effective grant for the presented credential | `GET /admin/whoami` | Answers from the enforcing path |
 
 **On the missing search route.** There is no HTTP search endpoint, and that does not block anything.
-A console backend calls `POST /mcp` with its own bearer token, which is what `bin/lumberroom.mjs`
+A console backend calls `POST /mcp` with its own bearer token, which is what `lumberroom`
 does through `callTool`. `allowed_hosts` already admits loopback and `PUBLIC_URL`
 ([`src/http/mod.rs:146`](../../src/http/mod.rs)), so a console on the same box works. The real gap
 is impersonation, not reachability.

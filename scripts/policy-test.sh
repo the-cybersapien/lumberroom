@@ -77,6 +77,11 @@ done
 
 command -v curl >/dev/null 2>&1 || { echo "curl is required" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "node is required" >&2; exit 1; }
+command -v lumberroom >/dev/null 2>&1 || {
+  echo "lumberroom is not on PATH. This gate drives the shipped client." >&2
+  echo "  brew install the-cybersapien/lumberroom/lumberroom" >&2
+  exit 1
+}
 
 WORK="$(mktemp -d)"
 WROTE="$WORK/wrote.txt"
@@ -153,7 +158,14 @@ JSON
 fi
 
 NONCE="$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-MEMCTL="node $REPO_DIR/bin/lumberroom.mjs"
+# The client under test is the shipped binary, taken from PATH.
+#
+# This used to be `node bin/lumberroom.mjs`, a second client written against node built-ins alone.
+# It shared no types with the server and so could not be accidentally accommodated by it, which
+# earned it a place here. It also fell behind: it never learned to read an authorization server's
+# metadata document, so it could not log in against a deployment whose issuer differs from its API
+# base, and a gate driving a client that cannot log in proves less than it looks like it does.
+MEMCTL="lumberroom"
 
 FAILED=0
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }

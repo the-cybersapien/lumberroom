@@ -185,7 +185,8 @@ search. Evidence:
 
 ## Operating it
 
-`bin/lumberroom.mjs` is dependency-free Node and its usage block is the authoritative list.
+`lumberroom help` is the authoritative list. One client, the Rust one, shipped as a release
+binary and on the Homebrew tap.
 
 ```bash
 lumberroom doctor                       # connectivity, auth, readiness, tool list
@@ -276,8 +277,7 @@ src/http/           axum routes, the admin surface, the well-known documents; MC
 src/console/        the console at /console: reading, write, registry, aliases, queues, clients
 migrations/         SQL, applied at boot by sqlx
 tests/              integration suite, against a real database
-crates/lumberroom/    the Rust client: transcript ingestion and the cleanup daemon
-bin/lumberroom.mjs        dependency-free CLI and hook client
+crates/lumberroom/    the client: the CLI, the session hook, transcript ingestion, the cleanup daemon
 client/             wire-mac.sh, the SessionStart hook, the OpenWebUI filter, the eval fixture
 deploy/             install.sh, Caddyfile, backup.sh, oauth.md, Oracle and Logto notes
 scripts/            cargo.sh, lumberroom.sh, the acceptance gates and the eval harness

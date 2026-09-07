@@ -38,7 +38,14 @@ command -v claude >/dev/null 2>&1 || { echo "the claude CLI is required" >&2; ex
 
 MCP_URL="$URL"; case "$MCP_URL" in */mcp) ;; *) MCP_URL="$URL/mcp" ;; esac
 export LUMBERROOM_URL="$MCP_URL" LUMBERROOM_TOKEN="$TOKEN"
-MEMCTL="node $REPO_DIR/bin/lumberroom.mjs"
+# The client under test is the shipped binary, taken from PATH.
+#
+# This used to be `node bin/lumberroom.mjs`, a second client written against node built-ins alone.
+# It shared no types with the server and so could not be accidentally accommodated by it, which
+# earned it a place here. It also fell behind: it never learned to read an authorization server's
+# metadata document, so it could not log in against a deployment whose issuer differs from its API
+# base, and a gate driving a client that cannot log in proves less than it looks like it does.
+MEMCTL="lumberroom"
 
 # A nonsense token makes retrieval provable: no model can produce this from prior knowledge or
 # by reading the repo, so answering the question is evidence of memory, not of guessing.
@@ -81,7 +88,7 @@ cat > "$WORK/settings.json" <<JSON
         "hooks": [
           {
             "type": "command",
-            "command": "LUMBERROOM_BIN=$REPO_DIR/bin/lumberroom.mjs LUMBERROOM_URL=$MCP_URL LUMBERROOM_TOKEN=$TOKEN bash $REPO_DIR/client/lumberroom-bootstrap-hook.sh",
+            "command": "LUMBERROOM_BIN=$(command -v lumberroom) LUMBERROOM_URL=$MCP_URL LUMBERROOM_TOKEN=$TOKEN bash $REPO_DIR/client/lumberroom-bootstrap-hook.sh",
             "timeout": 15
           }
         ]

@@ -238,9 +238,9 @@ dispatched agents, deterministic work again on the way back.
 
 | Stage | Kind | Where |
 |---|---|---|
-| `lumberroom ingest plan` | deterministic | `bin/lumberroom.mjs`: the local filesystem and `/admin/ingest/scan` (§9.1), nothing else |
+| `lumberroom ingest plan` | deterministic | `lumberroom`: the local filesystem and `/admin/ingest/scan` (§9.1), nothing else |
 | extraction | judgment | Mode A, subagents inside the host agent (§8); Mode B, a provider the CLI calls (§10); Mode C, a batch job the CLI submits (§10.11, built 21 August 2026, never submitted) |
-| `lumberroom ingest submit` | deterministic | `bin/lumberroom.mjs` plus the admin routes |
+| `lumberroom ingest submit` | deterministic | `lumberroom` plus the admin routes |
 
 **Mode A and Mode B are co-equal and the owner picks one per run.** Mode A uses the agent the
 run was started from, which needs no key and hands the extractor project context it already has.
@@ -343,7 +343,7 @@ duplicate of a row that exists.
 digest preamble the SessionStart hook emits is dropped and counted. E1 should have caught all of
 these. A backstop that never fires is the evidence that E1 works, and its counter is reported.
 
-`<lumberroom-context>` does not exist yet. The SessionStart preamble in `bin/lumberroom.mjs` around line 614
+`<lumberroom-context>` does not exist yet. The SessionStart preamble in `lumberroom` around line 614
 emits four lines of prose and the digest with no wrapper, so today that token can never fire and a
 zero counter would prove nothing about it. Wrapping the preamble and the digest in
 `<lumberroom-context>...</lumberroom-context>` is work item 0 in §13, and it ships before the first run. Until
@@ -1198,7 +1198,7 @@ the skill dispatches subagents and they write the same `out/chunk-NN.json` files
 
 ### 10.2 Position: speak REST with fetch, add no dependency
 
-`bin/lumberroom.mjs` stays dependency-free. The rule earns its place: this CLI is a client the server
+`lumberroom` stays dependency-free. The rule earns its place: this CLI is a client the server
 cannot accidentally accommodate, and it caught both Phase 1 protocol bugs. A provider SDK per vendor
 would end it for a feature that needs one HTTP POST.
 
@@ -1749,7 +1749,7 @@ point of it. Every fix the reviews forced sits in this list rather than in the M
 the first cut runs inside a live session and those four failures are the ones a live session
 triggers:
 
-0. Wrap the SessionStart preamble and digest in `<lumberroom-context>...</lumberroom-context>` in `bin/lumberroom.mjs`,
+0. Wrap the SessionStart preamble and digest in `<lumberroom-context>...</lumberroom-context>` in `lumberroom`,
    around line 614. It is first because E3's counter reads as evidence only once the token it names
    can fire (§4.1), and because nothing else depends on it.
 1. Migration 009: `ingest_proposal`, `ingest_proposal_source`, `ingest_watermark` with its fence and
@@ -1760,7 +1760,7 @@ triggers:
    path at `src/adapters/postgres/memory.rs:952`. It has to be recording before the first run, or
    that run has no belt-and-braces layer at all. This is where the first blocker landed and it is
    the only work item whose value depends on shipping early.
-3. The Claude Code parser in `bin/lumberroom.mjs`: the recursive walk over the nested layout in §6.1, the
+3. The Claude Code parser in `lumberroom`: the recursive walk over the nested layout in §6.1, the
    streaming reader, the watermark with its monotonic advance, the `tool_use_id` join, the fence scan
    that runs before every exclusion, every exclusion in §4.1, the speaker classifier in §5, span
    cutting, chunking. This is the bulk of the work and it is where the correctness lives.
@@ -1800,10 +1800,10 @@ Nothing here waits on how the first run goes:
 Mode A, in a session the owner is sitting in:
 
 ```
-node bin/lumberroom.mjs ingest plan --source claude --project lumberroom --since 7d --max-files 40
+lumberroom ingest plan --source claude --project lumberroom --since 7d --max-files 40
 /lumberroom-ingest --no-auto            # the skill dispatches the chunks and passes the flag to submit
-node bin/lumberroom.mjs ingest list --state proposed
-node bin/lumberroom.mjs ingest clean --run <id>
+lumberroom ingest list --state proposed
+lumberroom ingest clean --run <id>
 ```
 
 Three flags make that run safe to get wrong, and one property makes it safe to abandon.

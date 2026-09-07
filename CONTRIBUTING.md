@@ -53,9 +53,19 @@ phases:
 ./scripts/correction-test.sh     # a correction does not resurface as a contradiction
 ```
 
-`bin/lumberroom.mjs` is the JavaScript client, and it **stays dependency-free**: node built-ins only. It is
-a client the server cannot accidentally accommodate, and it has caught protocol bugs the Rust tests
-could not.
+The gates drive `lumberroom` from PATH, the same binary a customer installs, so a gate proves the
+thing that ships rather than a fixture.
+
+There used to be a second client here, `bin/lumberroom.mjs`, written against node built-ins alone.
+It was kept because it shared no types with the server and so could not be accidentally accommodated
+by it, and it did earn that place: it caught protocol bugs the Rust tests could not. It also fell
+behind. It never learned to read an authorization server's metadata document, so it could not log in
+against a deployment whose issuer differs from its API base, and a gate running a client that cannot
+complete a login proves less than it looks like it does. Removed in 0.3.2.
+
+What it was protecting against is real and is now unprotected: the client and the server share
+types, so a change to both at once can look correct from inside. A second implementation would
+earn its place again the day somebody keeps it current.
 
 ## What a pull request needs
 
