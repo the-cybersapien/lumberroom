@@ -62,6 +62,11 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # An exclusive flock over the run lock, so two runs on one machine serialise instead of
 # interleaving their reads of the same growing file. Pure Rust over libc, no build script.
 fs2 = "0.4"
+# config.json is replaced by writing a sibling at 0600 and renaming it over the live path; a
+# half-written credential file is how a spent refresh token outlives the process that rotated
+# it. tempfile is that mechanism maintained by someone else, and it was already in the
+# workspace lockfile, so this adds no new version resolution.
+tempfile = "3"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time"] }

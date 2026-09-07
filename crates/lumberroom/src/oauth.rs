@@ -140,6 +140,30 @@ pub fn may_carry_credential(url: &str) -> bool {
     }
 }
 
+/// A URL that has passed `may_carry_credential`, and the only kind this client posts a token to.
+///
+/// The check and the send were two statements a reader had to hold together, one early return
+/// apart. `refresh` puts a refresh token and a client secret in a form body, so a caller who
+/// reordered those statements, or added a second send below them, would put both on the wire in
+/// the clear against any host the operator had configured. Wrapping the checked value makes the
+/// check the only way to obtain something the send accepts: skip it and there is nothing to pass.
+///
+/// `build` still calls `may_carry_credential` on its own, because it sends the request either way
+/// and drops the authorization header alone. That is a header decision, not a destination one.
+#[derive(Debug, Clone)]
+pub struct CredentialUrl(String);
+
+impl CredentialUrl {
+    /// `None` when sending a credential here would put it in the clear.
+    pub fn checked(url: &str) -> Option<Self> {
+        may_carry_credential(url).then(|| Self(url.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Whether a host is this machine.
 fn is_loopback_host(host: &str) -> bool {
     // `Url::host_str` hands back an IPv6 literal still wrapped in its brackets.
@@ -623,6 +647,18 @@ mod tests {
         assert!(!may_carry_credential("http://localhost.evil.example/admin/whoami"));
         assert!(!may_carry_credential("ftp://memory.example/"));
         assert!(!may_carry_credential("not a url"));
+    }
+
+    #[test]
+    fn only_a_checked_url_can_be_handed_to_a_credential_carrying_send() {
+        assert_eq!(
+            CredentialUrl::checked("https://lumberroom.cloud/oauth/token")
+                .map(|u| u.as_str().to_string()),
+            Some("https://lumberroom.cloud/oauth/token".to_string())
+        );
+        assert!(CredentialUrl::checked("http://127.0.0.1:8787/oauth/token").is_some());
+        assert!(CredentialUrl::checked("http://memory.example/oauth/token").is_none());
+        assert!(CredentialUrl::checked("not a url").is_none());
     }
 
     #[test]

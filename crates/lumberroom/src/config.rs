@@ -6,12 +6,22 @@
 //! would delete the other client's data on the first `login`, so the file is carried as a
 //! `serde_json::Value` and patched at the top level.
 
+use fs2::FileExt;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub const DEFAULT_URL: &str = "http://127.0.0.1:8787";
 pub const DEFAULT_TIMEOUT_MS: u64 = 15_000;
+
+/// How long `save` waits for the config lock. A refresh holds it across one token request,
+/// which the default `LUMBERROOM_TIMEOUT_MS` of 15s bounds, so 30s outlasts one full holder
+/// with margin. `refresh` passes its own request timeout plus margin instead of this constant,
+/// so an operator who raises the timeout keeps a ceiling that still covers the holder.
+const LOCK_WAIT: Duration = Duration::from_secs(30);
+const LOCK_POLL: Duration = Duration::from_millis(200);
 
 /// Environment lookup, injected rather than read from the process.
 ///
@@ -69,34 +79,230 @@ impl FileConfig {
         self.oauth("access_token").is_some()
     }
 
-    /// Merge a top-level patch and write the file back at 0600.
+    /// Merge a top-level patch into the file on disk and write it back at 0600.
     ///
-    /// Two chmods' worth of care, for the reason node states: the create-mode argument is ignored
-    /// for a file that already exists, so an existing config keeps whatever bits it had unless the
-    /// permissions are set again after the write. `create_owner_only` closes the other half:
-    /// `std::fs::write` on a file that does not exist yet creates it at the process umask (0644
-    /// under the usual 022), so `login` writing a refresh token here had a window, however short,
-    /// where a second local account could read it before the `restrict` call below ever ran.
-    /// `keys_set` in `ingest/provider.rs` already guards its own credential file this way; this is
-    /// the same guard for the one every command shares.
+    /// Two properties the old plain `fs::write` could not give. The write is a sibling file
+    /// renamed over the live path, so a reader never sees half a credential file and a process
+    /// that dies mid-write cannot leave one behind; the inode the readers hold either has the
+    /// whole old file or the whole new one. And the read-modify-write runs under an exclusive
+    /// lock on `<path>.lock`, so two processes patching the same file merge instead of one
+    /// erasing the other's keys.
+    ///
+    /// The mode rules are the ones node states and this file has always enforced: the file is
+    /// 0600 on disk and the replacement is born 0600 (the temp file is created with that mode;
+    /// there is no window at the umask), a file already sitting looser than 0600 is refused
+    /// rather than repaired, and the directory the file appears in is 0700 at every level this
+    /// call creates.
     pub fn save(&mut self, patch: Map<String, Value>) -> std::io::Result<()> {
+        let lock = FileConfig::lock_config(&self.path, LOCK_WAIT)?;
+        self.save_locked(&lock, patch)
+    }
+
+    /// The write half, under a lock the caller already holds.
+    ///
+    /// `refresh` in `client.rs` holds the lock across the whole token exchange and finishes
+    /// with this; every other caller wants `save`, which takes the lock for the write alone.
+    pub fn save_locked(
+        &mut self,
+        _lock: &ConfigLock,
+        patch: Map<String, Value>,
+    ) -> std::io::Result<()> {
         // A file already sitting at 0644, from a crash between write and chmod or a restore from
         // a backup, is refused rather than rewritten: repairing it silently would make a token
         // that has been readable by every local account for a week look clean.
         refuse_loose_permissions(&self.path)?;
+        // Re-read the file under the lock. `self.value` is a snapshot from whenever this
+        // process loaded it, and merging the patch into that snapshot erases every write
+        // another process made in between, which against a rotating refresh token is the
+        // lockout with two writers instead of one crashed one. Missing or corrupt reads as
+        // empty, exactly as `load` treats them.
+        self.value = std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}));
         let obj = self.value.as_object_mut().expect("config value is an object by construction");
         for (k, v) in patch {
             obj.insert(k, v);
         }
-        if let Some(parent) = self.path.parent() {
-            create_private_dir(parent)?;
-        }
-        create_owner_only(&self.path)?;
+        let parent = self
+            .path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        create_private_dir(parent)?;
         let body = format!("{}\n", serde_json::to_string_pretty(&self.value)?);
-        std::fs::write(&self.path, body)?;
-        restrict(&self.path)
+
+        // Born 0600, in the same directory so the rename stays inside one filesystem. tempfile
+        // already creates at 0600 on unix; the explicit mode documents the invariant this whole
+        // function is trusted for and holds if that default ever moves.
+        let name = self
+            .path
+            .file_name()
+            .map(|n| format!(".{}.", n.to_string_lossy()))
+            .unwrap_or_else(|| ".config.".to_string());
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(&name).suffix(".tmp");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o600));
+        }
+        let mut replacement = builder.tempfile_in(parent)?;
+        replacement.write_all(body.as_bytes())?;
+        // fsync before the rename: a replacement that survives the crash but not the power cut
+        // loses the same refresh token this function exists to protect.
+        replacement.as_file().sync_all()?;
+        replacement.persist(&self.path).map_err(|e| e.error)?;
+        sync_dir(parent)?;
+        // No chmod after the rename. The replacement was born 0600 and rename carries the mode
+        // with the inode, so there is nothing to repair; a chmod that failed here would return
+        // an error from a save that had already landed, and refresh would tell the owner the
+        // tokens were not saved while the file on disk held the new pair. The next refresh
+        // would then present a token the server had rotated.
+        Ok(())
+    }
+
+    /// The exclusive lock on `<config>.lock`, held for the life of the guard.
+    ///
+    /// A waiter gives up after `wait` and gets an error naming the lock file and whoever last
+    /// wrote the holder line into it, because the alternative is a silent hang behind a process
+    /// stuck on a slow token endpoint. The lock file is never removed: unlinking a lock file
+    /// while another process waits on it lets a third open a fresh inode and hold it beside the
+    /// first, and then the lock protects nothing.
+    ///
+    /// This one sleeps the calling thread between attempts. A caller inside a runtime wants
+    /// `lock_config_async`.
+    pub fn lock_config(path: &Path, wait: Duration) -> std::io::Result<ConfigLock> {
+        let (file, lock_path) = open_lock_file(path)?;
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => {
+                    write_holder(&file);
+                    return Ok(ConfigLock { _file: file });
+                }
+                Err(_) if std::time::Instant::now() < deadline => std::thread::sleep(LOCK_POLL),
+                Err(e) => return Err(lock_refused(&lock_path, wait, e)),
+            }
+        }
+    }
+
+    /// The same lock, waited on without holding the thread.
+    ///
+    /// flock attaches to the open file description, so two futures in one process that each open
+    /// the lock file do conflict. `refresh` runs on a current-thread runtime beside as many as
+    /// three other in-flight writes, and a waiter that parks that thread in `thread::sleep`
+    /// parks the holder with it: the holder never gets polled, its own request times out on a
+    /// token the server has already rotated, and the spent token is left on disk. Yielding
+    /// between attempts is what lets the holder finish and the waiter take the lock after it.
+    ///
+    /// Same file, same deadline and same refusal as the blocking form, so the guarantee across
+    /// processes does not move.
+    pub async fn lock_config_async(path: &Path, wait: Duration) -> std::io::Result<ConfigLock> {
+        let (file, lock_path) = open_lock_file(path)?;
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => {
+                    write_holder(&file);
+                    return Ok(ConfigLock { _file: file });
+                }
+                Err(_) if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(LOCK_POLL).await
+                }
+                Err(e) => return Err(lock_refused(&lock_path, wait, e)),
+            }
+        }
     }
 }
+
+/// The lock file itself, created at 0600 in a 0700 directory, with the path back for the
+/// messages. Both waits open it the same way.
+fn open_lock_file(path: &Path) -> std::io::Result<(std::fs::File, PathBuf)> {
+    let lock_path = lock_path_for(path);
+    if let Some(parent) = lock_path.parent() {
+        create_private_dir(parent)?;
+    }
+    // No truncate on open: the holder line belongs to whoever won the lock.
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).read(true).write(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts
+        .open(&lock_path)
+        .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", lock_path.display())))?;
+    // The holder line carries no credential, but the file is created here and 0600 is the
+    // invariant every other file in this directory keeps.
+    restrict(&lock_path)?;
+    Ok((file, lock_path))
+}
+
+/// What a waiter that outlasted its deadline gets told.
+///
+/// It names the lock file and the holder, and stops there. Telling anyone to delete the file
+/// would be telling them to cause the bug: this message arrives exactly when a refresh is in
+/// flight and slow, and whoever unlinks the lock lets the next process open a fresh inode, lock
+/// that, read the pre-rotation token and replay it.
+fn lock_refused(lock_path: &Path, wait: Duration, e: std::io::Error) -> std::io::Error {
+    let who = std::fs::read_to_string(lock_path)
+        .ok()
+        .filter(|t| !t.trim().is_empty())
+        .map(|t| t.trim().to_string())
+        .unwrap_or_else(|| "an unnamed process".to_string());
+    std::io::Error::new(
+        std::io::ErrorKind::WouldBlock,
+        format!(
+            "another lumberroom process holds {}: {who} (waited {}s: {e}). It may be mid-refresh \
+             against a slow token endpoint. Retry in a moment.",
+            lock_path.display(),
+            wait.as_secs()
+        ),
+    )
+}
+
+/// An exclusive lock over the config directory's lock file. Dropping the guard releases it.
+#[derive(Debug)]
+pub struct ConfigLock {
+    _file: std::fs::File,
+}
+
+fn lock_path_for(config: &Path) -> PathBuf {
+    let mut name = config.as_os_str().to_os_string();
+    name.push(".lock");
+    PathBuf::from(name)
+}
+
+/// Best effort, so a directory some filesystem refuses to fsync cannot fail a save whose rename
+/// already landed.
+#[cfg(unix)]
+fn sync_dir(path: &Path) -> std::io::Result<()> {
+    let _ = std::fs::File::open(path)?.sync_all();
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_holder(file: &std::fs::File) {
+    let line = format!("pid {} since {}", std::process::id(), chrono::Utc::now().to_rfc3339());
+    if let Ok(mut handle) = file.try_clone() {
+        let _ = handle.set_len(0);
+        let _ = handle.seek(SeekFrom::Start(0));
+        let _ = handle.write_all(line.as_bytes());
+        let _ = handle.flush();
+    }
+}
+
+#[cfg(not(unix))]
+fn write_holder(_file: &std::fs::File) {}
 
 /// Refuse a config file that group or other can read. No file is fine: a first `login` has
 /// nothing to leak yet. Called before a token is read out of the file as well as before one is
@@ -143,25 +349,6 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn create_private_dir(path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(path)
-}
-
-/// Create the file empty at 0600 if it does not exist yet; a no-op on one that already does. Mirrors
-/// `ingest::provider::create_owner_only`, kept separate rather than shared because that one returns
-/// `crate::client::Result` (this module's callers want a plain `std::io::Result`) and lives in a
-/// module this one does not otherwise depend on.
-#[cfg(unix)]
-fn create_owner_only(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path) {
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(e) => Err(e),
-    }
-}
-
-#[cfg(not(unix))]
-fn create_owner_only(_path: &Path) -> std::io::Result<()> {
-    Ok(())
 }
 
 /// Owner-only, on a file holding a bearer token.
@@ -472,15 +659,151 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn create_owner_only_leaves_an_already_existing_files_content_alone() {
-        let dir = std::env::temp_dir().join(format!("lumberroom-cfg-exists-{}", uuid_like()));
+    fn save_replaces_the_file_rather_than_writing_it_in_place() {
+        // The inode is the fact that makes the write crash-atomic. A save that opens the live
+        // path and truncates it (what std::fs::write does) keeps the inode and leaves every
+        // reader of a half-written file holding a credential file with no bottom half: a
+        // process killed mid-write, or one that dies between the truncate and the write, has
+        // spent a refresh token the file no longer names. A save that writes a sibling and
+        // renames it over the live path swaps the inode, and a crash can only cost the whole
+        // rename, never half of it.
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = std::env::temp_dir().join(format!("lumberroom-cfg-inode-{}", uuid_like()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.json");
-        std::fs::write(&path, "existing content").unwrap();
+        std::fs::write(&path, r#"{"url":"https://s.example"}"#).unwrap();
+        restrict(&path).unwrap();
+        let before = std::fs::metadata(&path).unwrap().ino();
 
-        create_owner_only(&path).unwrap();
+        let mut cfg = FileConfig::load(path.clone());
+        let mut patch = Map::new();
+        patch.insert("oauth".into(), json!({ "access_token": "t" }));
+        cfg.save(patch).unwrap();
 
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "existing content");
+        let after = std::fs::metadata(&path).unwrap().ino();
+        assert_ne!(
+            before, after,
+            "save must put the new file in place by rename, not rewrite the live one"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_save_that_cannot_complete_leaves_the_live_file_alone() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // The directory pre-exists on purpose: create_private_dir is then a no-op and the
+        // refusal has to come from the write itself. A save that cannot put the new file in
+        // place must fail with the old file byte-identical, because the old refresh token is
+        // still the one the server accepts until a rename says otherwise. std::fs::write
+        // opens and truncates the live file, so on the old code this save succeeds and the
+        // assertion below fails.
+        let dir = std::env::temp_dir().join(format!("lumberroom-cfg-ro-{}", uuid_like()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"url":"https://s.example","oauth":{"refresh_token":"r0"}}"#)
+            .unwrap();
+        restrict(&path).unwrap();
+        // The lock file has to exist before the directory closes, or the save fails creating
+        // it and returns before it ever reaches a temp file. The test would then pass on a
+        // refusal from the lock rather than from the write, and the rename path, which is what
+        // it is here to hold, would go untested.
+        std::fs::write(lock_path_for(&path), b"").unwrap();
+        restrict(&lock_path_for(&path)).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        // Root ignores directory modes, and so does any filesystem that does not enforce
+        // them. A probe that succeeds means this fixture cannot discriminate here; say so
+        // rather than pass on a setup that proved nothing.
+        if std::fs::write(dir.join(".probe"), b"").is_ok() {
+            eprintln!("skipping: {} does not enforce directory write permission", dir.display());
+            return;
+        }
+
+        let mut cfg = FileConfig::load(path.clone());
+        let mut patch = Map::new();
+        patch.insert("oauth".into(), json!({ "access_token": "t" }));
+        let refused = cfg.save(patch).expect_err("save must refuse when it cannot write");
+        // The lock opens by path and reports it, so a message naming the lock means the save
+        // stopped there and the rename this test guards never ran.
+        assert!(
+            !refused.to_string().contains(".lock"),
+            "the refusal comes from the write, not from the lock: {refused}"
+        );
+
+        let back = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            back, r#"{"url":"https://s.example","oauth":{"refresh_token":"r0"}}"#,
+            "the live file is the only copy of a token the server still accepts"
+        );
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_save_merges_what_another_process_wrote_in_the_meantime() {
+        // Two processes load the same file, both patch, and the second save must build on what
+        // the first wrote rather than on its own stale copy. On the old code the second save
+        // writes its stale base plus its own patch, and the first process's keys are gone:
+        // against a rotating refresh token, that is the lockout with two writers instead of
+        // one crashed one.
+        let dir = std::env::temp_dir().join(format!("lumberroom-cfg-lost-{}", uuid_like()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"url":"https://s.example"}"#).unwrap();
+        restrict(&path).unwrap();
+
+        let mut first = FileConfig::load(path.clone());
+        let mut second = FileConfig::load(path.clone());
+        let mut patch = Map::new();
+        patch.insert("oauth".into(), json!({ "access_token": "a1", "refresh_token": "r1" }));
+        first.save(patch).unwrap();
+
+        let mut patch = Map::new();
+        patch.insert("token".into(), json!("static-late"));
+        second.save(patch).unwrap();
+
+        let back: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back["url"], json!("https://s.example"));
+        assert_eq!(
+            back["oauth"]["refresh_token"],
+            json!("r1"),
+            "the first save's keys survive the second save"
+        );
+        assert_eq!(back["token"], json!("static-late"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_waiter_for_a_held_lock_names_the_file_and_gives_up() {
+        let dir = std::env::temp_dir().join(format!("lumberroom-cfg-lock-{}", uuid_like()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+
+        let held = FileConfig::lock_config(&path, Duration::from_millis(100)).unwrap();
+        let start = std::time::Instant::now();
+        let refused = FileConfig::lock_config(&path, Duration::from_millis(300)).unwrap_err();
+        assert!(start.elapsed() >= Duration::from_millis(300), "gave up before the wait elapsed");
+        let text = refused.to_string();
+        assert!(text.contains("config.json.lock"), "names the lock file: {text}");
+        assert!(text.contains(&format!("pid {}", std::process::id())), "names the holder: {text}");
+        // This message appears exactly when a refresh is in flight and slow. A reader who
+        // deletes the lock file lets the next process open a fresh inode, lock that, read the
+        // pre-rotation token and replay it, which is the lockout this file exists to prevent.
+        assert!(!text.contains("remove the file"), "does not advise deleting the lock: {text}");
+
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(lock_path_for(&path)).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the lock file sits at 0600 like everything else here");
+
+        drop(held);
+        FileConfig::lock_config(&path, Duration::from_millis(300))
+            .expect("the lock is free again once the holder drops it");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -499,6 +822,88 @@ mod tests {
         std::fs::write(&path, "not json at all").unwrap();
         let cfg = FileConfig::load(path);
         assert_eq!(cfg.value, json!({}));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The interrupted-write half of the lockout bug. A save that is cut in half, by a second
+    /// reader arriving mid-write or by a process that dies during one, must leave the live path
+    /// holding either the whole previous file or the whole new one. `std::fs::write` truncates
+    /// first and fills in after, so a reader in that window parses half a JSON object (and
+    /// `load` above hands back an empty config, the silent "no credential" run).
+    ///
+    /// The filler alternates between megabytes and bytes so the truncate-then-write gap is wide
+    /// enough to catch regardless of how the kernel schedules the copies.
+    #[test]
+    fn a_reader_never_sees_a_half_written_config() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let dir = std::env::temp_dir().join(format!("lumberroom-cfg-torn-{}", uuid_like()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"gen":-1}"#).unwrap();
+        restrict(&path).unwrap();
+
+        let done = Arc::new(AtomicBool::new(false));
+        let writer_done = done.clone();
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            let mut cfg = FileConfig { path: writer_path, value: json!({}) };
+            for gen in 0..40i64 {
+                let filler = "x".repeat(if gen % 2 == 0 { 3_000_000 } else { 300 });
+                // The generation travels as the patch: save merges the patch into whatever is
+                // on disk, so a value set only on the in-memory copy would never reach the
+                // file and the reader below would be watching a file that never changes.
+                let mut patch = Map::new();
+                patch.insert("gen".into(), json!(gen));
+                patch.insert("filler".into(), json!(filler));
+                cfg.save(patch).unwrap();
+            }
+            writer_done.store(true, Ordering::Relaxed);
+        });
+
+        let mut problems: Vec<String> = Vec::new();
+        while !done.load(Ordering::Relaxed) {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => match serde_json::from_str::<Value>(&text) {
+                    Ok(v) => {
+                        let gen = v.get("gen").and_then(Value::as_i64);
+                        let len = v.get("filler").and_then(Value::as_str).map(str::len);
+                        // The seed file carries gen -1 and no filler; it is a whole file,
+                        // just not one the writer produced.
+                        let expected = match gen {
+                            Some(-1) => len.is_none(),
+                            Some(g) => len == Some(if g % 2 == 0 { 3_000_000 } else { 300 }),
+                            None => false,
+                        };
+                        if !expected {
+                            problems.push(format!("generation {gen:?} came through as {len:?}"));
+                        }
+                    }
+                    Err(e) => problems.push(format!("a reader caught a partial file: {e}")),
+                },
+                Err(e) => problems.push(format!("the live path was unreadable: {e}")),
+            }
+            // Whatever else sits in the directory mid-save, a temporary file holding credential
+            // material being one, nobody but the owner may read it.
+            #[cfg(unix)]
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                if entry.file_name().to_string_lossy() == "config.json" {
+                    continue;
+                }
+                // A temporary file renamed over the live path between the directory listing
+                // and this stat is gone, not loose; skipping it is not a hole, because the
+                // name it carried is gone with it.
+                let Ok(meta) = entry.metadata() else { continue };
+                use std::os::unix::fs::PermissionsExt;
+                let mode = meta.permissions().mode() & 0o777;
+                if mode & 0o077 != 0 {
+                    problems.push(format!("{} sat at {mode:04o} mid-save", entry.path().display()));
+                }
+            }
+        }
+        writer.join().unwrap();
+        assert!(problems.is_empty(), "{}", problems.join("; "));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

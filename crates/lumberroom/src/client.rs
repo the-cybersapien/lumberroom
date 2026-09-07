@@ -194,17 +194,59 @@ impl Client {
     ///
     /// A refresh that fails returns false and the caller's own 401 handling reports it. Retrying a
     /// bad refresh token is how a revoked credential turns into a hang instead of an error.
+    ///
+    /// The config lock is held across the whole exchange, from the read of the refresh token to
+    /// the save of its replacement. A lock around the save alone cannot prevent the lockout: two
+    /// processes both read the same token, both send it, and the server, which rotates on first
+    /// presentation and revokes the family on the second, kills the credential for good. Under
+    /// the lock the second process re-reads the file before it sends anything, so it presents the
+    /// rotated token instead of the spent one. The wait for the lock is this client's request
+    /// timeout plus margin, so a holder stuck on a slow token endpoint cannot block every other
+    /// lumberroom process on the machine indefinitely; a waiter that outlasts it gets an error
+    /// naming the lock file. That wait yields rather than sleeping the thread, because two
+    /// refreshes in one process contend for the same flock and a blocking wait deadlocks them.
     pub async fn refresh(&self) -> bool {
-        let (refresh_token, client_id, client_secret, existing) = {
-            let file = self.file.borrow();
-            // The refresh token is read out of this file and sent. A file every local account can
-            // read is reported here, and the 401 the caller is handling stands.
-            if let Err(e) = crate::config::refuse_loose_permissions(&file.path) {
-                eprintln!("{e}");
+        let path = self.file.borrow().path.clone();
+        // The refresh token is read out of this file and sent. A file every local account can
+        // read is reported here, and the 401 the caller is handling stands.
+        if let Err(e) = crate::config::refuse_loose_permissions(&path) {
+            eprintln!("{e}");
+            return false;
+        }
+        let lock_wait = std::time::Duration::from_millis(self.cfg.timeout_ms)
+            + std::time::Duration::from_secs(5);
+        // The async wait matters as much as the lock. flock conflicts between two open file
+        // descriptions in one process too, and `eval` runs four writes through one client on one
+        // current-thread runtime, so a waiter that sleeps the thread parks the holder it is
+        // waiting for.
+        let lock = match crate::config::FileConfig::lock_config_async(&path, lock_wait).await {
+            Ok(lock) => lock,
+            Err(e) => {
+                eprintln!("cannot lock the config file for the refresh: {e}");
                 return false;
             }
-            let Some(rt) = file.oauth("refresh_token") else { return false };
-            let Some(cid) = file.oauth("client_id") else { return false };
+        };
+        // The in-memory copy of the file predates every other process's refresh since this one
+        // started. The token to send is whatever is on disk now, read under the lock so nothing
+        // rotates it in between.
+        *self.file.borrow_mut() = FileConfig::load(path);
+
+        let (refresh_token, client_id, client_secret, existing) = {
+            let file = self.file.borrow();
+            let Some(rt) = file.oauth("refresh_token") else {
+                eprintln!(
+                    "cannot refresh: the config file has no refresh_token. Run `lumberroom \
+                     login` to sign in again."
+                );
+                return false;
+            };
+            let Some(cid) = file.oauth("client_id") else {
+                eprintln!(
+                    "cannot refresh: the config file has no client_id, which `lumberroom login` \
+                     writes when it registers the client. Sign in again."
+                );
+                return false;
+            };
             let secret = file.oauth("client_secret").map(str::to_string);
             let existing = file.value.get("oauth").cloned().unwrap_or_else(|| json!({}));
             (rt.to_string(), cid.to_string(), secret, existing)
@@ -227,8 +269,10 @@ impl Client {
             }
         };
         // The refresh token is the longest-lived credential this client holds, so the same rule
-        // applies and this one refuses outright rather than continuing without it.
-        if !crate::oauth::may_carry_credential(&url) {
+        // applies and this one refuses outright rather than continuing without it. The check hands
+        // back the value the post takes, so the guarantee survives whatever the next edit does to
+        // the order of these lines: an unchecked URL is not a thing this call can be given.
+        let Some(endpoint) = crate::oauth::CredentialUrl::checked(&url) else {
             // The endpoint is deliberately not printed. It carries no credential, but it is derived
             // from the same value the token travels to, and a refusal message is not worth teaching
             // the next reader that anything off that path is safe to log. The operator configured
@@ -238,13 +282,41 @@ impl Client {
 it would go on the wire in the clear. Point the CLI at https, or at 127.0.0.1."
             );
             return false;
-        }
-        let Ok(res) = self.http.post(&url).form(&form).send().await else { return false };
+        };
+        let res = match self.http.post(endpoint.as_str()).form(&form).send().await {
+            Ok(res) => res,
+            Err(e) => {
+                eprintln!("cannot reach the token endpoint: {e}");
+                return false;
+            }
+        };
         if !res.status().is_success() {
+            let status = res.status().as_u16();
+            let body = res.text().await.unwrap_or_default();
+            eprintln!(
+                "the token endpoint refused the refresh ({status}): {}",
+                truncate(&body, 300)
+            );
+            if body.contains("invalid_grant") {
+                eprintln!(
+                    "the server refused the refresh token itself (spent, expired, or revoked \
+                     when an earlier run failed mid-rotation). Run `lumberroom login` to sign \
+                     in again."
+                );
+            }
             return false;
         }
-        let Ok(body) = res.json::<Value>().await else { return false };
-        let Some(access) = body.get("access_token").and_then(Value::as_str) else { return false };
+        let body = match res.json::<Value>().await {
+            Ok(body) => body,
+            Err(e) => {
+                eprintln!("the token endpoint's answer is not JSON: {e}");
+                return false;
+            }
+        };
+        let Some(access) = body.get("access_token").and_then(Value::as_str) else {
+            eprintln!("the token endpoint's answer has no access_token in it");
+            return false;
+        };
 
         let mut oauth = existing.as_object().cloned().unwrap_or_default();
         oauth.insert("access_token".into(), json!(access));
@@ -261,10 +333,19 @@ it would go on the wire in the clear. Point the CLI at https, or at 127.0.0.1."
 
         let mut patch = Map::new();
         patch.insert("oauth".into(), Value::Object(oauth));
-        if self.file.borrow_mut().save(patch).is_err() {
+        if let Err(e) = self.file.borrow_mut().save_locked(&lock, patch) {
+            // The rotation already happened server-side, so the token still on disk is spent.
+            // Saying so here is the difference between a diagnosable failure and the next
+            // run's invalid_grant arriving with no explanation.
+            eprintln!(
+                "cannot write the refreshed credential to the config file: {e}\nThe new tokens \
+                 were not saved and the refresh token on disk has already been rotated \
+                 server-side, so the next refresh will be refused. Run `lumberroom login`."
+            );
             return false;
         }
         *self.token.borrow_mut() = access.to_string();
+        drop(lock);
         true
     }
 
@@ -458,5 +539,262 @@ mod tests {
     #[test]
     fn truncation_does_not_split_a_multibyte_character() {
         assert_eq!(truncate("héllo", 3), "hél");
+    }
+
+    /// The double-refresh race, against a token endpoint that rotates and refuses replays the
+    /// way the server does: the first presentation of a refresh token gets a new pair, the
+    /// second presentation of a spent one gets invalid_grant and the family is dead.
+    mod refresh_race {
+        use super::*;
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        struct TokenServer {
+            current: String,
+            issues: u64,
+            /// Every refresh_token value ever presented, spent or not.
+            presentations: Vec<String>,
+        }
+
+        /// One request in, one response out. Just enough HTTP for a form-encoded token request;
+        /// the crate has no server framework by design, and the login tests in `oauth.rs` use the
+        /// same hand-rolled shape.
+        async fn serve_one(socket: &mut tokio::net::TcpStream, state: &Mutex<TokenServer>) {
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let header_end = loop {
+                let n = socket.read(&mut chunk).await.unwrap_or(0);
+                if n == 0 {
+                    return;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if let Some(at) = find_header_end(&buf) {
+                    break at;
+                }
+            };
+            let headers = String::from_utf8_lossy(&buf[..header_end]).to_string();
+            let length = headers
+                .lines()
+                .filter_map(|l| l.split_once(':'))
+                .find(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            while buf.len() < header_end + 4 + length {
+                match socket.read(&mut chunk).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                }
+            }
+            let body =
+                String::from_utf8_lossy(&buf[header_end + 4..header_end + 4 + length]).to_string();
+            let presented = body
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("refresh_token="))
+                .unwrap_or_default()
+                .to_string();
+
+            // The lock is scoped so no await below holds the guard: a MutexGuard across an
+            // await makes the whole server future !Send and tokio::spawn refuses it.
+            let (status, answer) = {
+                let mut st = state.lock().unwrap();
+                st.presentations.push(presented.clone());
+                if presented == st.current {
+                    st.issues += 1;
+                    let issued = st.issues;
+                    st.current = format!("r{issued}");
+                    (
+                        200,
+                        json!({
+                            "access_token": format!("a{issued}"),
+                            "refresh_token": format!("r{issued}"),
+                            "token_type": "Bearer",
+                            "expires_in": 3600,
+                        })
+                        .to_string(),
+                    )
+                } else {
+                    (
+                        400,
+                        json!({ "error": "invalid_grant", "error_description": "already used" })
+                            .to_string(),
+                    )
+                }
+            };
+            let reason = if status == 200 { "OK" } else { "Bad Request" };
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: \
+                 {}\r\nconnection: close\r\n\r\n{answer}",
+                answer.len()
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.flush().await;
+        }
+
+        fn find_header_end(buf: &[u8]) -> Option<usize> {
+            buf.windows(4).position(|w| w == b"\r\n\r\n")
+        }
+
+        fn fixture_config() -> std::path::PathBuf {
+            use crate::config::restrict;
+            let dir = std::env::temp_dir().join(format!(
+                "lumberroom-refresh-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("config.json");
+            std::fs::write(&path, r#"{"oauth":{"refresh_token":"r0","client_id":"cid"}}"#).unwrap();
+            restrict(&path).unwrap();
+            path
+        }
+
+        /// One CLI process: its own runtime, its own client, its own in-memory view of the
+        /// config file. A thread with a runtime of its own is the closest a test gets to a
+        /// second `lumberroom` invocation on one machine. The barrier stands between loading
+        /// the file and refreshing, so both processes hold the same stale view when they start,
+        /// which is the state two invocations that began earlier are in.
+        fn refresh_as_a_process(
+            path: std::path::PathBuf,
+            port: u16,
+            barrier: &std::sync::Barrier,
+        ) -> (bool, String) {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let adopted = rt.block_on(async move {
+                let env: HashMap<String, String> = HashMap::from([(
+                    "LUMBERROOM_URL".to_string(),
+                    format!("http://127.0.0.1:{port}"),
+                )]);
+                let file = FileConfig::load(path);
+                let resolved = crate::config::resolve(&env, &file, None, None, None, false, None);
+                let client = Client::new(resolved, file).unwrap();
+                barrier.wait();
+                let refreshed = client.refresh().await;
+                (refreshed, client.token())
+            });
+            drop(rt);
+            adopted
+        }
+
+        /// One process refreshing twice at once, which is what `eval` does: four writes share a
+        /// client on one current-thread runtime and two of them can take a 401 in the same wave.
+        /// flock attaches to the open file description, so the second refresh's try-lock fails
+        /// against the first one in its own process. A wait that sleeps the thread then holds the
+        /// only runtime thread the holder's request needs, and the holder wakes to its own
+        /// timeout on a token the server has already rotated. The spent token stays on disk and
+        /// the next run gets invalid_grant, which is the lockout this whole file exists to stop,
+        /// arriving by timeout instead of replay.
+        #[tokio::test]
+        async fn two_refreshes_in_one_process_do_not_starve_each_other() {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let state = Arc::new(Mutex::new(TokenServer {
+                current: "r0".into(),
+                issues: 0,
+                presentations: Vec::new(),
+            }));
+
+            let server_state = state.clone();
+            let server = tokio::spawn(async move {
+                for _ in 0..2 {
+                    let Ok((mut socket, _)) = listener.accept().await else { break };
+                    serve_one(&mut socket, &server_state).await;
+                }
+            });
+
+            let path = fixture_config();
+            // A one second request timeout makes the starvation quick rather than subtle. The
+            // lock wait is that timeout plus five seconds, so a waiter that sleeps the thread
+            // outlasts the holder's request deadline by five, and the holder fails.
+            let env: HashMap<String, String> = HashMap::from([
+                ("LUMBERROOM_URL".to_string(), format!("http://127.0.0.1:{port}")),
+                ("LUMBERROOM_TIMEOUT_MS".to_string(), "1000".to_string()),
+            ]);
+            let file = FileConfig::load(path.clone());
+            let resolved = crate::config::resolve(&env, &file, None, None, None, false, None);
+            let client = Client::new(resolved, file).unwrap();
+
+            let (first, second) = tokio::join!(client.refresh(), client.refresh());
+            assert!(
+                first && second,
+                "both refreshes on one runtime completed (first {first}, second {second})"
+            );
+            server.await.unwrap();
+
+            let st = state.lock().unwrap();
+            assert_eq!(
+                st.presentations,
+                vec!["r0".to_string(), "r1".to_string()],
+                "the second refresh waited for the first and sent the rotated token"
+            );
+            assert_eq!(client.token(), "a2");
+            drop(st);
+            std::fs::remove_dir_all(path.parent().unwrap()).ok();
+        }
+
+        #[tokio::test]
+        async fn two_clients_never_present_the_same_refresh_token() {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let state = Arc::new(Mutex::new(TokenServer {
+                current: "r0".into(),
+                issues: 0,
+                presentations: Vec::new(),
+            }));
+
+            let server_state = state.clone();
+            let server = tokio::spawn(async move {
+                // Two requests arrive; accept them one at a time.
+                for _ in 0..2 {
+                    let Ok((mut socket, _)) = listener.accept().await else { break };
+                    serve_one(&mut socket, &server_state).await;
+                }
+            });
+
+            let path = fixture_config();
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let first_path = path.clone();
+            let first_barrier = barrier.clone();
+            let first =
+                std::thread::spawn(move || refresh_as_a_process(first_path, port, &first_barrier));
+            let second_path = path.clone();
+            let second =
+                std::thread::spawn(move || refresh_as_a_process(second_path, port, &barrier));
+
+            // join on the blocking pool so the server on this runtime keeps answering while
+            // both processes run.
+            let ((a, token_a), (b, token_b)) = tokio::task::spawn_blocking(move || {
+                (first.join().unwrap(), second.join().unwrap())
+            })
+            .await
+            .unwrap();
+            assert!(a, "one of the two refreshes failed");
+            assert!(b, "one of the two refreshes failed");
+            server.await.unwrap();
+
+            let st = state.lock().unwrap();
+            let mut seen = std::collections::BTreeSet::new();
+            for token in &st.presentations {
+                assert!(seen.insert(token.clone()), "refresh token {token:?} was presented twice");
+            }
+            assert_eq!(st.current, "r2", "both rotations happened server-side");
+
+            let back: Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(back["oauth"]["refresh_token"], json!("r2"));
+            assert_eq!(back["oauth"]["access_token"], json!("a2"));
+            // Which process won the lock first is not fixed, so the two adopted access
+            // tokens are asserted as a set.
+            let adopted = [token_a, token_b];
+            assert!(
+                adopted.iter().any(|t| t == "a1") && adopted.iter().any(|t| t == "a2"),
+                "each process ended with its own rotation's access token: {adopted:?}"
+            );
+            std::fs::remove_dir_all(path.parent().unwrap()).ok();
+        }
     }
 }
