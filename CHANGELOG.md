@@ -91,9 +91,9 @@ credential you can still spend, and the second client is gone.
   still cost the replacement.
 - Nothing checks the wire against a second implementation any more. The Removed entry states what
   that costs.
-- No gate opens a `.lumber` file that 0.3.x wrote against this build. The age file format is
-  versioned apart from the crate and nothing under `crates/archive` changed, which is the argument
-  that the bump carries no format risk rather than the evidence.
+- No gate opens a `.lumber` file that 0.3.x wrote against this build. Upstream states the 0.12
+  release changes the API and not the file format, and nothing under `crates/archive` changed, so
+  the risk is low. Nothing here proves it.
 - Every limitation listed under 0.3.1 and 0.3.0 still stands.
 
 ## [0.3.1] - 2026-09-01
