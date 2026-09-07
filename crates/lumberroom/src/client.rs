@@ -448,10 +448,8 @@ it would go on the wire in the clear. Point the CLI at https, or at 127.0.0.1."
             "token_type".into(),
             body.get("token_type").cloned().unwrap_or_else(|| json!("Bearer")),
         );
-        let ttl = body
-            .get("expires_in")
-            .and_then(Value::as_i64)
-            .unwrap_or(DEFAULT_TOKEN_LIFETIME_SECS);
+        let ttl =
+            body.get("expires_in").and_then(Value::as_i64).unwrap_or(DEFAULT_TOKEN_LIFETIME_SECS);
         oauth.insert("expires_at".into(), json!(crate::oauth::expires_at(ttl)));
         // The end of the token's life is on its own not enough to decide when to refresh early.
         // `access_token_lifetime` reads this back.
@@ -843,10 +841,8 @@ mod tests {
         }
 
         fn client_on(path: &std::path::Path, port: u16) -> Client {
-            let env: HashMap<String, String> = HashMap::from([(
-                "LUMBERROOM_URL".to_string(),
-                format!("http://127.0.0.1:{port}"),
-            )]);
+            let env: HashMap<String, String> =
+                HashMap::from([("LUMBERROOM_URL".to_string(), format!("http://127.0.0.1:{port}"))]);
             let file = FileConfig::load(path.to_path_buf());
             let resolved = crate::config::resolve(&env, &file, None, None, None, false, None);
             Client::new(resolved, file).unwrap()
