@@ -454,7 +454,8 @@ mode",
         _ => return Err(err(format!("token exchange failed ({status}): {body}"))),
     };
 
-    let expires_at = expires_at(token.expires_in.unwrap_or(3600));
+    let ttl = token.expires_in.unwrap_or(3600);
+    let expires_at = expires_at(ttl);
     let mut oauth = Map::new();
     oauth.insert("client_id".into(), json!(client_id));
     oauth.insert("client_secret".into(), json!(client_secret));
@@ -465,6 +466,10 @@ mode",
     oauth.insert("refresh_token".into(), json!(token.refresh_token));
     oauth.insert("token_type".into(), json!(token.token_type.unwrap_or_else(|| "Bearer".into())));
     oauth.insert("expires_at".into(), json!(expires_at));
+    // Beside the instant, the life it was measured from. The client refreshes in the last quarter
+    // of a token's life, and a login that recorded only the end leaves it guessing that life until
+    // the first refresh writes one.
+    oauth.insert("expires_in".into(), json!(ttl));
 
     let mut patch = Map::new();
     patch.insert("url".into(), json!(client.cfg.base_url));
