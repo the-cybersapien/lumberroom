@@ -701,6 +701,12 @@ mod tests {
         std::fs::write(&path, r#"{"url":"https://s.example","oauth":{"refresh_token":"r0"}}"#)
             .unwrap();
         restrict(&path).unwrap();
+        // The lock file has to exist before the directory closes, or the save fails creating
+        // it and returns before it ever reaches a temp file. The test would then pass on a
+        // refusal from the lock rather than from the write, and the rename path, which is what
+        // it is here to hold, would go untested.
+        std::fs::write(lock_path_for(&path), b"").unwrap();
+        restrict(&lock_path_for(&path)).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
 
         // Root ignores directory modes, and so does any filesystem that does not enforce
@@ -714,9 +720,12 @@ mod tests {
         let mut cfg = FileConfig::load(path.clone());
         let mut patch = Map::new();
         patch.insert("oauth".into(), json!({ "access_token": "t" }));
+        let refused = cfg.save(patch).expect_err("save must refuse when it cannot write");
+        // The lock opens by path and reports it, so a message naming the lock means the save
+        // stopped there and the rename this test guards never ran.
         assert!(
-            cfg.save(patch).is_err(),
-            "save must refuse when it cannot write, not push through"
+            !refused.to_string().contains(".lock"),
+            "the refusal comes from the write, not from the lock: {refused}"
         );
 
         let back = std::fs::read_to_string(&path).unwrap();
