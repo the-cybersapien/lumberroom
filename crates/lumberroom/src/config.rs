@@ -238,6 +238,11 @@ fn open_lock_file(path: &Path) -> std::io::Result<(std::fs::File, PathBuf)> {
 }
 
 /// What a waiter that outlasted its deadline gets told.
+///
+/// It names the lock file and the holder, and stops there. Telling anyone to delete the file
+/// would be telling them to cause the bug: this message arrives exactly when a refresh is in
+/// flight and slow, and whoever unlinks the lock lets the next process open a fresh inode, lock
+/// that, read the pre-rotation token and replay it.
 fn lock_refused(lock_path: &Path, wait: Duration, e: std::io::Error) -> std::io::Error {
     let who = std::fs::read_to_string(lock_path)
         .ok()
@@ -248,8 +253,7 @@ fn lock_refused(lock_path: &Path, wait: Duration, e: std::io::Error) -> std::io:
         std::io::ErrorKind::WouldBlock,
         format!(
             "another lumberroom process holds {}: {who} (waited {}s: {e}). It may be mid-refresh \
-             against a slow token endpoint. Retry in a moment, or remove the file if no process \
-             is refreshing.",
+             against a slow token endpoint. Retry in a moment.",
             lock_path.display(),
             wait.as_secs()
         ),
@@ -774,6 +778,10 @@ mod tests {
         let text = refused.to_string();
         assert!(text.contains("config.json.lock"), "names the lock file: {text}");
         assert!(text.contains(&format!("pid {}", std::process::id())), "names the holder: {text}");
+        // This message appears exactly when a refresh is in flight and slow. A reader who
+        // deletes the lock file lets the next process open a fresh inode, lock that, read the
+        // pre-rotation token and replay it, which is the lockout this file exists to prevent.
+        assert!(!text.contains("remove the file"), "does not advise deleting the lock: {text}");
 
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(lock_path_for(&path)).unwrap().permissions().mode() & 0o777;
