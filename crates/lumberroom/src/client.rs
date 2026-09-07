@@ -269,8 +269,10 @@ impl Client {
             }
         };
         // The refresh token is the longest-lived credential this client holds, so the same rule
-        // applies and this one refuses outright rather than continuing without it.
-        if !crate::oauth::may_carry_credential(&url) {
+        // applies and this one refuses outright rather than continuing without it. The check hands
+        // back the value the post takes, so the guarantee survives whatever the next edit does to
+        // the order of these lines: an unchecked URL is not a thing this call can be given.
+        let Some(endpoint) = crate::oauth::CredentialUrl::checked(&url) else {
             // The endpoint is deliberately not printed. It carries no credential, but it is derived
             // from the same value the token travels to, and a refusal message is not worth teaching
             // the next reader that anything off that path is safe to log. The operator configured
@@ -280,8 +282,8 @@ impl Client {
 it would go on the wire in the clear. Point the CLI at https, or at 127.0.0.1."
             );
             return false;
-        }
-        let res = match self.http.post(&url).form(&form).send().await {
+        };
+        let res = match self.http.post(endpoint.as_str()).form(&form).send().await {
             Ok(res) => res,
             Err(e) => {
                 eprintln!("cannot reach the token endpoint: {e}");
