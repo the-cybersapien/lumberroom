@@ -988,7 +988,7 @@ mod tests {
         /// somebody hand-edited a date.
         #[tokio::test]
         async fn an_unreadable_expires_at_still_refreshes() {
-            for oauth in [
+            for stored in [
                 json!({ "refresh_token": "r0", "client_id": "cid", "access_token": "a9" }),
                 json!({
                     "refresh_token": "r0",
@@ -1014,16 +1014,16 @@ mod tests {
                     json!({ "refresh_token": "r0", "client_id": "cid", "access_token": "a0" }),
                 );
                 let client = client_on(&path, port);
-                std::fs::write(&path, json!({ "oauth": oauth }).to_string()).unwrap();
+                std::fs::write(&path, json!({ "oauth": stored }).to_string()).unwrap();
 
-                assert!(client.refresh().await, "the refresh failed for {oauth}");
+                assert!(client.refresh().await, "the refresh failed for {stored}");
                 server.abort();
                 assert_eq!(
                     state.lock().unwrap().presentations,
                     vec!["r0".to_string()],
-                    "a token endpoint request was expected for {oauth}"
+                    "a token endpoint request was expected for {stored}"
                 );
-                assert_eq!(client.token(), "a1", "the rotation happened for {oauth}");
+                assert_eq!(client.token(), "a1", "the rotation happened for {stored}");
                 std::fs::remove_dir_all(path.parent().unwrap()).ok();
             }
         }
