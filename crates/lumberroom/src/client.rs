@@ -203,7 +203,8 @@ impl Client {
     /// rotated token instead of the spent one. The wait for the lock is this client's request
     /// timeout plus margin, so a holder stuck on a slow token endpoint cannot block every other
     /// lumberroom process on the machine indefinitely; a waiter that outlasts it gets an error
-    /// naming the lock file.
+    /// naming the lock file. That wait yields rather than sleeping the thread, because two
+    /// refreshes in one process contend for the same flock and a blocking wait deadlocks them.
     pub async fn refresh(&self) -> bool {
         let path = self.file.borrow().path.clone();
         // The refresh token is read out of this file and sent. A file every local account can
@@ -214,7 +215,11 @@ impl Client {
         }
         let lock_wait = std::time::Duration::from_millis(self.cfg.timeout_ms)
             + std::time::Duration::from_secs(5);
-        let lock = match crate::config::FileConfig::lock_config(&path, lock_wait) {
+        // The async wait matters as much as the lock. flock conflicts between two open file
+        // descriptions in one process too, and `eval` runs four writes through one client on one
+        // current-thread runtime, so a waiter that sleeps the thread parks the holder it is
+        // waiting for.
+        let lock = match crate::config::FileConfig::lock_config_async(&path, lock_wait).await {
             Ok(lock) => lock,
             Err(e) => {
                 eprintln!("cannot lock the config file for the refresh: {e}");
@@ -671,6 +676,62 @@ mod tests {
             });
             drop(rt);
             adopted
+        }
+
+        /// One process refreshing twice at once, which is what `eval` does: four writes share a
+        /// client on one current-thread runtime and two of them can take a 401 in the same wave.
+        /// flock attaches to the open file description, so the second refresh's try-lock fails
+        /// against the first one in its own process. A wait that sleeps the thread then holds the
+        /// only runtime thread the holder's request needs, and the holder wakes to its own
+        /// timeout on a token the server has already rotated. The spent token stays on disk and
+        /// the next run gets invalid_grant, which is the lockout this whole file exists to stop,
+        /// arriving by timeout instead of replay.
+        #[tokio::test]
+        async fn two_refreshes_in_one_process_do_not_starve_each_other() {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let state = Arc::new(Mutex::new(TokenServer {
+                current: "r0".into(),
+                issues: 0,
+                presentations: Vec::new(),
+            }));
+
+            let server_state = state.clone();
+            let server = tokio::spawn(async move {
+                for _ in 0..2 {
+                    let Ok((mut socket, _)) = listener.accept().await else { break };
+                    serve_one(&mut socket, &server_state).await;
+                }
+            });
+
+            let path = fixture_config();
+            // A one second request timeout makes the starvation quick rather than subtle. The
+            // lock wait is that timeout plus five seconds, so a waiter that sleeps the thread
+            // outlasts the holder's request deadline by five, and the holder fails.
+            let env: HashMap<String, String> = HashMap::from([
+                ("LUMBERROOM_URL".to_string(), format!("http://127.0.0.1:{port}")),
+                ("LUMBERROOM_TIMEOUT_MS".to_string(), "1000".to_string()),
+            ]);
+            let file = FileConfig::load(path.clone());
+            let resolved = crate::config::resolve(&env, &file, None, None, None, false, None);
+            let client = Client::new(resolved, file).unwrap();
+
+            let (first, second) = tokio::join!(client.refresh(), client.refresh());
+            assert!(
+                first && second,
+                "both refreshes on one runtime completed (first {first}, second {second})"
+            );
+            server.await.unwrap();
+
+            let st = state.lock().unwrap();
+            assert_eq!(
+                st.presentations,
+                vec!["r0".to_string(), "r1".to_string()],
+                "the second refresh waited for the first and sent the rotated token"
+            );
+            assert_eq!(client.token(), "a2");
+            drop(st);
+            std::fs::remove_dir_all(path.parent().unwrap()).ok();
         }
 
         #[tokio::test]

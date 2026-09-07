@@ -165,27 +165,11 @@ impl FileConfig {
     /// stuck on a slow token endpoint. The lock file is never removed: unlinking a lock file
     /// while another process waits on it lets a third open a fresh inode and hold it beside the
     /// first, and then the lock protects nothing.
+    ///
+    /// This one sleeps the calling thread between attempts. A caller inside a runtime wants
+    /// `lock_config_async`.
     pub fn lock_config(path: &Path, wait: Duration) -> std::io::Result<ConfigLock> {
-        let lock_path = lock_path_for(path);
-        if let Some(parent) = lock_path.parent() {
-            create_private_dir(parent)?;
-        }
-        // No truncate on open: the holder line belongs to whoever won the lock.
-        #[cfg_attr(not(unix), allow(unused_mut))]
-        let mut opts = std::fs::OpenOptions::new();
-        opts.create(true).read(true).write(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let file = opts
-            .open(&lock_path)
-            .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", lock_path.display())))?;
-        // The holder line carries no credential, but the file is created here and 0600 is the
-        // invariant every other file in this directory keeps.
-        restrict(&lock_path)?;
-
+        let (file, lock_path) = open_lock_file(path)?;
         let deadline = std::time::Instant::now() + wait;
         loop {
             match file.try_lock_exclusive() {
@@ -194,26 +178,82 @@ impl FileConfig {
                     return Ok(ConfigLock { _file: file });
                 }
                 Err(_) if std::time::Instant::now() < deadline => std::thread::sleep(LOCK_POLL),
-                Err(e) => {
-                    let who = std::fs::read_to_string(&lock_path)
-                        .ok()
-                        .filter(|t| !t.trim().is_empty())
-                        .map(|t| t.trim().to_string())
-                        .unwrap_or_else(|| "an unnamed process".to_string());
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::WouldBlock,
-                        format!(
-                            "another lumberroom process holds {}: {who} (waited {}s: {e}). It \
-                             may be mid-refresh against a slow token endpoint. Retry in a \
-                             moment, or remove the file if no process is refreshing.",
-                            lock_path.display(),
-                            wait.as_secs()
-                        ),
-                    ));
-                }
+                Err(e) => return Err(lock_refused(&lock_path, wait, e)),
             }
         }
     }
+
+    /// The same lock, waited on without holding the thread.
+    ///
+    /// flock attaches to the open file description, so two futures in one process that each open
+    /// the lock file do conflict. `refresh` runs on a current-thread runtime beside as many as
+    /// three other in-flight writes, and a waiter that parks that thread in `thread::sleep`
+    /// parks the holder with it: the holder never gets polled, its own request times out on a
+    /// token the server has already rotated, and the spent token is left on disk. Yielding
+    /// between attempts is what lets the holder finish and the waiter take the lock after it.
+    ///
+    /// Same file, same deadline and same refusal as the blocking form, so the guarantee across
+    /// processes does not move.
+    pub async fn lock_config_async(path: &Path, wait: Duration) -> std::io::Result<ConfigLock> {
+        let (file, lock_path) = open_lock_file(path)?;
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => {
+                    write_holder(&file);
+                    return Ok(ConfigLock { _file: file });
+                }
+                Err(_) if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(LOCK_POLL).await
+                }
+                Err(e) => return Err(lock_refused(&lock_path, wait, e)),
+            }
+        }
+    }
+}
+
+/// The lock file itself, created at 0600 in a 0700 directory, with the path back for the
+/// messages. Both waits open it the same way.
+fn open_lock_file(path: &Path) -> std::io::Result<(std::fs::File, PathBuf)> {
+    let lock_path = lock_path_for(path);
+    if let Some(parent) = lock_path.parent() {
+        create_private_dir(parent)?;
+    }
+    // No truncate on open: the holder line belongs to whoever won the lock.
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).read(true).write(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts
+        .open(&lock_path)
+        .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", lock_path.display())))?;
+    // The holder line carries no credential, but the file is created here and 0600 is the
+    // invariant every other file in this directory keeps.
+    restrict(&lock_path)?;
+    Ok((file, lock_path))
+}
+
+/// What a waiter that outlasted its deadline gets told.
+fn lock_refused(lock_path: &Path, wait: Duration, e: std::io::Error) -> std::io::Error {
+    let who = std::fs::read_to_string(lock_path)
+        .ok()
+        .filter(|t| !t.trim().is_empty())
+        .map(|t| t.trim().to_string())
+        .unwrap_or_else(|| "an unnamed process".to_string());
+    std::io::Error::new(
+        std::io::ErrorKind::WouldBlock,
+        format!(
+            "another lumberroom process holds {}: {who} (waited {}s: {e}). It may be mid-refresh \
+             against a slow token endpoint. Retry in a moment, or remove the file if no process \
+             is refreshing.",
+            lock_path.display(),
+            wait.as_secs()
+        ),
+    )
 }
 
 /// An exclusive lock over the config directory's lock file. Dropping the guard releases it.
