@@ -26,7 +26,7 @@ flate2 = "1"
 # The scrypt work-factor ceiling is the reason the version is pinned at all: `scrypt::Identity`
 # refuses an inflated work factor before it stretches the key, and that check is what stands
 # between one uploaded file and a pinned core.
-age = "0.11"
+age = "0.12"
 # The passphrase type age's own API takes. It must stay semver-compatible with the `secrecy` that
 # `age::secrecy` re-exports (age-core depends on ^0.10), or the two SecretStrings are unrelated
 # types and nothing type-checks.
