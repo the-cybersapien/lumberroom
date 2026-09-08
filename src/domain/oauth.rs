@@ -661,6 +661,104 @@ mod tests {
     }
 
     #[test]
+    fn the_scheme_of_a_resource_is_compared_without_regard_to_case() {
+        assert!(resource_matches("HTTPS://host.example/mcp", "https://host.example/mcp"));
+    }
+
+    #[test]
+    fn the_host_of_a_resource_is_compared_without_regard_to_case() {
+        assert!(resource_matches("https://HOST.example/mcp", "https://host.example/mcp"));
+    }
+
+    #[test]
+    fn a_default_port_names_the_same_audience_as_no_port_at_all() {
+        assert!(resource_matches("https://host.example:443/mcp", "https://host.example/mcp"));
+        assert!(resource_matches("http://host.example:80/mcp", "http://host.example/mcp"));
+    }
+
+    #[test]
+    fn a_non_default_port_is_a_different_audience() {
+        // A second deployment on 8443 behind the same name is the case this protects. Dropping
+        // every port because 443 is dropped would hand it the other one's tokens.
+        assert!(!resource_matches("https://host.example:8443/mcp", "https://host.example/mcp"));
+        assert!(!resource_matches("https://host.example:8443/mcp", "https://host.example:443/mcp"));
+    }
+
+    #[test]
+    fn a_trailing_slash_does_not_change_the_audience() {
+        assert!(resource_matches("https://host.example/mcp/", "https://host.example/mcp"));
+        assert!(resource_matches("https://host.example/mcp//", "https://host.example/mcp"));
+        // The root case runs the path through `set_path("")`, which is the branch most likely to
+        // disagree with itself, so the rule is pinned as a relation and not as a literal string.
+        assert!(resource_matches("https://host.example/", "https://host.example"));
+    }
+
+    #[test]
+    fn the_path_of_a_resource_is_compared_case_sensitively() {
+        // RFC 3986 §6.2.2 lowercases the scheme and the host and nothing else. Folding the path
+        // too would admit an audience the operator never configured.
+        assert!(!resource_matches("https://host.example/MCP", "https://host.example/mcp"));
+    }
+
+    #[test]
+    fn a_query_string_is_part_of_the_audience() {
+        assert!(!resource_matches("https://host.example/mcp?a=1", "https://host.example/mcp"));
+        assert!(resource_matches("https://host.example/mcp?a=1", "https://host.example/mcp?a=1"));
+    }
+
+    #[test]
+    fn a_resource_carrying_a_fragment_is_refused() {
+        assert_eq!(canonical_resource("https://host.example/mcp#a"), None);
+        assert_eq!(canonical_resource("https://host.example/mcp#"), None);
+    }
+
+    #[test]
+    fn a_relative_reference_is_not_a_resource_indicator() {
+        assert_eq!(canonical_resource("/mcp"), None);
+        assert_eq!(canonical_resource("mcp"), None);
+        assert_eq!(canonical_resource("host.example/mcp"), None);
+    }
+
+    #[test]
+    fn an_empty_or_blank_resource_is_refused_and_surrounding_space_is_ignored() {
+        assert_eq!(canonical_resource(""), None);
+        assert_eq!(canonical_resource("   "), None);
+        assert_eq!(canonical_resource("\t\n"), None);
+        assert!(resource_matches("  https://host.example/mcp  ", "https://host.example/mcp"));
+    }
+
+    #[test]
+    fn an_unparseable_resource_matches_nothing_including_an_identical_copy_of_itself() {
+        // Two identical garbage strings must not authenticate each other. Raw `==` says yes here,
+        // and that open failure is the reason both sides go through the parser first.
+        assert!(!resource_matches("not a resource", "not a resource"));
+        assert!(!resource_matches("", ""));
+        assert!(!resource_matches("https://host.example/mcp#a", "https://host.example/mcp#a"));
+        assert!(!resource_matches("not a resource", "https://host.example/mcp"));
+        assert!(!resource_matches("https://host.example/mcp", "not a resource"));
+    }
+
+    #[test]
+    fn a_urn_resource_canonicalises_without_the_path_munging_panicking() {
+        // `set_path` panics on a cannot-be-a-base URI, so the guard ahead of it is load-bearing.
+        let urn = canonical_resource("urn:example:lumberroom");
+        assert_eq!(urn.as_deref(), Some("urn:example:lumberroom"));
+        assert!(resource_matches("urn:example:lumberroom", "urn:example:lumberroom"));
+        assert!(!resource_matches("urn:example:lumberroom", "https://host.example/mcp"));
+    }
+
+    #[test]
+    fn a_percent_encoded_path_segment_canonicalises_to_one_stable_value() {
+        let once = canonical_resource("https://host.example/m%2Fcp").expect("an absolute URI");
+        let again = canonical_resource(&once).expect("a canonical value stays parseable");
+        assert_eq!(once, again, "a stored resource has to survive being read back and compared");
+        assert!(resource_matches("https://host.example/m%2Fcp", "https://host.example/m%2Fcp"));
+        // %2F is an encoded slash inside one segment rather than a separator, so the deployment
+        // that serves /m/cp is a different audience.
+        assert!(!resource_matches("https://host.example/m%2Fcp", "https://host.example/m/cp"));
+    }
+
+    #[test]
     fn only_the_code_response_type_is_accepted() {
         let registered = vec!["https://lumberroom.example/cb".to_string()];
         let mut req = authorize("https://lumberroom.example/cb");

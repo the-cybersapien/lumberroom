@@ -31,9 +31,9 @@ use crate::authserver::session::{OwnerSession, Sessions};
 use crate::config::Config;
 use crate::domain::errors::{DomainError, Result};
 use crate::domain::oauth::{
-    hash_token, hashes_match, random_token, validate_redirect_uri, verify_pkce_s256,
-    AuthorizeIntent, AuthorizeRequest, GrantProfile, OauthError, RegistrationRequest,
-    RegistrationResponse, TokenResponse,
+    canonical_resource, hash_token, hashes_match, random_token, resource_matches,
+    validate_redirect_uri, verify_pkce_s256, AuthorizeIntent, AuthorizeRequest, GrantProfile,
+    OauthError, RegistrationRequest, RegistrationResponse, TokenResponse,
 };
 use crate::ports::{
     ClientGrantUpdate, CodeOutcome, NewAccessToken, NewAuthCode, NewOauthClient, NewRefreshToken,
@@ -740,19 +740,9 @@ async fn exchange_code(
         return oauth_error(e);
     }
 
-    // RFC 8707. A resource on the token request must not silently widen the audience the code was
-    // bound to. Absent on the request means "the one from the authorization", which is the common case
-    // because the client already sent it at /authorize.
-    let resource = match (record.resource.clone(), field("resource")) {
-        (Some(bound), Some(asked)) if bound != asked => {
-            return oauth_error(OauthError::new(
-                "invalid_target",
-                "resource does not match the one this code was issued for",
-            ))
-        }
-        (Some(bound), _) => Some(bound),
-        (None, Some(asked)) => Some(asked.to_string()),
-        (None, None) => None,
+    let resource = match resource_for_exchange(record.resource.as_deref(), field("resource")) {
+        Ok(r) => r,
+        Err(e) => return oauth_error(e),
     };
 
     issue_tokens(app, &client, family_for(&code_hash), &record.scope, resource).await
@@ -815,9 +805,11 @@ async fn rotate(
         return oauth_error(e);
     }
 
-    // The rotated access token carries the resource the client asks for now, or none. The refresh
-    // row holds no resource of its own, and inventing one would bind a token to an audience nobody
-    // asked for.
+    // The refresh row holds no resource of its own, so a rotated token inherits nothing. What the
+    // client asks for now goes to `issue_tokens`, which refuses a resource this server does not
+    // serve and stamps its own on an absent one. That default is safe here because this server
+    // serves exactly one resource, so the only audience it can supply is the one the client is
+    // already talking to.
     let resource = form.get("resource").filter(|v| !v.is_empty()).cloned();
     issue_tokens(app, &client, family, DEFAULT_SCOPE, resource).await
 }
@@ -827,8 +819,15 @@ async fn issue_tokens(
     client: &OauthClientRecord,
     family: uuid::Uuid,
     scope: &str,
-    resource: Option<String>,
+    asked: Option<String>,
 ) -> Response {
+    // The one funnel both grants reach, so the audience decision lands here once instead of in each
+    // caller. Every token this server mints leaves with a resource on it.
+    let resource = match resource_for_issue(asked.as_deref(), &app.cfg.auth.resource_url) {
+        Ok(r) => r,
+        Err(e) => return oauth_error(e),
+    };
+
     let access = match random_token(32) {
         Ok(t) => t,
         Err(e) => return internal_oauth(&e),
@@ -839,7 +838,7 @@ async fn issue_tokens(
         token_hash: hash_token(&access),
         client_id: client.client_id.clone(),
         scope: scope.to_string(),
-        resource,
+        resource: Some(resource),
         family_id: family,
         expires_at: now + chrono::Duration::seconds(app.cfg.oauth.access_ttl_secs),
     };
@@ -1077,6 +1076,77 @@ fn authenticate_client(
             "this client has no secret. Authenticate with PKCE alone.",
         )),
         (None, None) => Ok(()),
+    }
+}
+
+/// The audience the code exchange carries forward, from what the code was bound to and what the
+/// token request asks for now.
+///
+/// RFC 8707 §2.2. A resource on the token request must not widen the audience the code was bound
+/// to. An absent one means "the one from the authorization", which is the common case because the
+/// client already sent it at /authorize.
+///
+/// The two sides go through [`resource_matches`] rather than string equality. `https://host/mcp`
+/// and `https://host/mcp/` name one audience, and refusing the second is an outage the client
+/// cannot read off the error.
+///
+/// A first resource arriving here is parsed before it is kept. `AuthorizeRequest::validate` is the
+/// only other place a resource is checked and it never runs on the token endpoint, so without this
+/// a client that omitted `resource` at /authorize writes any string it likes onto the token row.
+fn resource_for_exchange(
+    bound: Option<&str>,
+    asked: Option<&str>,
+) -> std::result::Result<Option<String>, OauthError> {
+    match (bound, asked) {
+        (Some(bound), Some(asked)) => {
+            if resource_matches(bound, asked) {
+                Ok(Some(bound.to_string()))
+            } else {
+                Err(OauthError::new(
+                    "invalid_target",
+                    "resource does not match the one this code was issued for",
+                ))
+            }
+        }
+        (Some(bound), None) => Ok(Some(bound.to_string())),
+        (None, Some(asked)) => {
+            if canonical_resource(asked).is_none() {
+                return Err(OauthError::new(
+                    "invalid_target",
+                    "resource must be an absolute URI without a fragment",
+                ));
+            }
+            Ok(Some(asked.to_string()))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+/// The audience stamped on a token at issuance, from what the client asked for and what this
+/// deployment serves.
+///
+/// The stamp on the absent case is what makes `OAUTH_RESOURCE_AUDIENCE=strict` reachable. The CLI
+/// in this repository sends `resource` at /authorize and at the code exchange and never on the
+/// refresh grant (crates/lumberroom/src/client.rs:375-382), and `oauth_refresh` holds no resource
+/// column for a rotated token to inherit, so every token it rotates would carry NULL forever and
+/// the pre-existing NULLs would never drain. With the stamp they drain within one
+/// OAUTH_ACCESS_TTL_SECS.
+///
+/// A match keeps the client's own spelling. The row records what the client asserted, and
+/// canonicalisation is a comparison rule rather than a storage rule.
+fn resource_for_issue(
+    asked: Option<&str>,
+    served: &str,
+) -> std::result::Result<String, OauthError> {
+    match asked {
+        Some(asked) if resource_matches(asked, served) => Ok(asked.to_string()),
+        // RFC 8707 §2.2. The description names no value: the input came off a form and echoing it
+        // back turns this error into a reflection point.
+        Some(_) => Err(OauthError::new(
+            "invalid_target",
+            "this server does not issue tokens for that resource",
+        )),
+        None => Ok(served.to_string()),
     }
 }
 
@@ -1654,5 +1724,90 @@ mod tests {
     fn a_disabled_registration_endpoint_is_not_advertised() {
         let doc = document(false);
         assert!(doc.get("registration_endpoint").is_none());
+    }
+
+    // ---- RFC 8707 audience decisions ----
+
+    /// The audience this deployment serves, in the shape `cfg.auth.resource_url` carries.
+    const SERVED: &str = "https://memory.example.com/mcp";
+
+    #[test]
+    fn a_bound_resource_matches_the_same_one_asked_for_with_a_trailing_slash() {
+        let asked = "https://memory.example.com/mcp/";
+        let out = resource_for_exchange(Some(SERVED), Some(asked)).unwrap();
+        assert_eq!(out.as_deref(), Some(SERVED));
+    }
+
+    #[test]
+    fn a_bound_resource_matches_the_same_one_asked_for_with_its_default_port() {
+        let asked = "https://memory.example.com:443/mcp";
+        let out = resource_for_exchange(Some(SERVED), Some(asked)).unwrap();
+        assert_eq!(out.as_deref(), Some(SERVED));
+    }
+
+    #[test]
+    fn a_resource_naming_another_host_than_the_code_did_is_refused() {
+        let asked = "https://elsewhere.example.com/mcp";
+        let e = resource_for_exchange(Some(SERVED), Some(asked)).unwrap_err();
+        assert_eq!(e.error, "invalid_target");
+    }
+
+    #[test]
+    fn a_resource_that_is_not_an_absolute_uri_never_reaches_the_token_row() {
+        for asked in ["/mcp", "https://memory.example.com/mcp#frag", "what the client typed"] {
+            let e = resource_for_exchange(None, Some(asked)).unwrap_err();
+            assert_eq!(e.error, "invalid_target", "{asked} must not be stored");
+        }
+    }
+
+    #[test]
+    fn an_absent_resource_on_the_token_request_keeps_the_one_from_the_authorization() {
+        let out = resource_for_exchange(Some(SERVED), None).unwrap();
+        assert_eq!(out.as_deref(), Some(SERVED));
+    }
+
+    #[test]
+    fn a_first_resource_arriving_at_the_token_endpoint_is_kept_once_it_parses() {
+        let out = resource_for_exchange(None, Some(SERVED)).unwrap();
+        assert_eq!(out.as_deref(), Some(SERVED));
+    }
+
+    /// The pair that drains the NULLs. A client that named no resource anywhere leaves the exchange
+    /// with none, and issuance is what puts this deployment's own resource on the row.
+    #[test]
+    fn a_token_from_an_exchange_that_named_no_resource_still_carries_the_served_one() {
+        let out = resource_for_exchange(None, None).unwrap();
+        assert_eq!(out, None);
+        assert_eq!(resource_for_issue(out.as_deref(), SERVED).unwrap(), SERVED);
+    }
+
+    #[test]
+    fn issuance_stamps_the_served_resource_when_the_client_asked_for_nothing() {
+        assert_eq!(resource_for_issue(None, SERVED).unwrap(), SERVED);
+    }
+
+    #[test]
+    fn issuance_keeps_the_spelling_the_client_sent_rather_than_the_canonical_form() {
+        let asked = "https://memory.example.com:443/mcp/";
+        assert_eq!(resource_for_issue(Some(asked), SERVED).unwrap(), asked);
+    }
+
+    #[test]
+    fn issuance_refuses_a_resource_this_deployment_does_not_serve() {
+        let asked = "https://elsewhere.example.com/mcp";
+        let e = resource_for_issue(Some(asked), SERVED).unwrap_err();
+        assert_eq!(e.error, "invalid_target");
+
+        let description = e.error_description.unwrap_or_default();
+        assert!(
+            !description.contains("elsewhere"),
+            "an attacker-chosen value must not come back in the error: {description}"
+        );
+    }
+
+    #[test]
+    fn issuance_refuses_a_resource_it_cannot_parse() {
+        let e = resource_for_issue(Some("../mcp"), SERVED).unwrap_err();
+        assert_eq!(e.error, "invalid_target");
     }
 }
