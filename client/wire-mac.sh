@@ -36,7 +36,7 @@ BIN_DIR="${LUMBERROOM_BIN_DIR:-$HOME/.local/bin}"
 CONFIG_DIR="${LUMBERROOM_CONFIG_DIR:-$HOME/.config/lumberroom}"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RELEASE_REPO="${LUMBERROOM_RELEASE_REPO:-https://github.com/the-cybersapien/lumberroom}"
-RELEASE_VERSION="${LUMBERROOM_RELEASE_VERSION:-0.3.1}"
+RELEASE_VERSION="${LUMBERROOM_RELEASE_VERSION:-0.4.0}"
 
 usage() {
   sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
@@ -149,10 +149,10 @@ fi
 # manual install, or the released binary for this Mac's architecture.
 #
 # There is no third way. A JavaScript client used to live at bin/lumberroom.mjs and answered to the
-# same command name; it was removed in 0.3.2 and nothing here falls back to it.
+# same command name; it was removed in 0.4.0 and nothing here falls back to it.
 install_lumberroom_binary() {
   # An earlier run of this script installed the old JavaScript client to exactly this name, so on a
-  # machine wired before 0.3.2, `command -v lumberroom` finds that instead. Accepting it would leave
+  # machine wired before 0.4.0, `command -v lumberroom` finds that instead. Accepting it would leave
   # the machine on a client that was retired, and the upgrade would report success. A node script
   # announces itself in its first line; a Rust binary does not.
   if command -v lumberroom >/dev/null 2>&1; then
