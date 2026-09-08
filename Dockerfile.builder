@@ -29,4 +29,20 @@ RUN arch="$(uname -m)" \
  && rm -rf /tmp/we.tar.xz /tmp/we.sha256 "/tmp/${base}" \
  && watchexec --version
 
+
+# ── cargo does not run as root here ───────────────────────────────────────────────────────────────
+#
+# Root ignores permission bits, which makes every test that asserts a refusal from the filesystem
+# pass whatever the code does. One of them had been inert for months while the gate reported green.
+# scripts/lib/builder-entrypoint.sh drops to BUILDER_UID before it execs anything, and carries the
+# rest of the reasoning.
+#
+# /home/builder is 0777 because the uid is not known until the container starts, and a throwaway
+# build container with one user in it has nothing to protect there. It holds no cache: CARGO_HOME
+# and RUSTUP_HOME arrive world-writable from the rust image and stay where they are.
+RUN mkdir -p /home/builder && chmod 0777 /home/builder
+COPY scripts/lib/builder-entrypoint.sh /usr/local/bin/builder-entrypoint
+RUN chmod 0755 /usr/local/bin/builder-entrypoint
+
 WORKDIR /app
+ENTRYPOINT ["/usr/local/bin/builder-entrypoint"]

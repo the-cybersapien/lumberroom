@@ -168,10 +168,17 @@ build_linux() {
   # needs a C compiler; see docs/decisions/0012) at a real gcc while the link itself still uses
   # Rust's self-contained musl libc, which is what let the scout's x86_64 leg produce a working
   # static-pie despite crossing arches on an arm64 host.
+  #
+  # BUILDER_UID=0 keeps this one container root, against the image default. The three lines below
+  # are apt-get update, apt-get install and rustup target add, and all three write outside the
+  # target volume into paths only root owns. This leg runs no tests, so the reason the image drops
+  # privilege (a permission-refusal test is inert under root) does not apply to it.
+  # scripts/lib/builder-entrypoint.sh has the rest.
   docker run --rm \
     -v "$PWD:/app" -w /app \
     -v lumberroom-cargo:/usr/local/cargo/registry \
     -e CARGO_TERM_COLOR=never \
+    -e BUILDER_UID=0 \
     lumberroom-builder sh -c '
       set -e
       apt-get update -qq

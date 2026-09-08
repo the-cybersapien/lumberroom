@@ -12,13 +12,21 @@ everything below goes through a builder image that carries `g++` (ONNX Runtime l
 machine tight on memory.
 
 ```bash
-docker build -t lumberroom-builder -f Dockerfile.builder .   # once
+docker build -t lumberroom-builder -f Dockerfile.builder .   # once, and again after any change to
+                                                       # Dockerfile.builder or scripts/lib/builder-entrypoint.sh
 docker compose up -d db                                # Postgres 16 + pgvector on 127.0.0.1:5432
 
 ./scripts/cargo.sh check --all-targets
 ./scripts/cargo.sh test -j 1
 ./scripts/cargo.sh test -j 1 -p lumberroom
 ```
+
+Cargo runs in there as your own uid, never as root, because root ignores permission bits and every
+test that asserts a refusal from the filesystem passes under it whatever the code does. One had been
+inert for months. `scripts/lib/builder-entrypoint.sh` does the drop and takes ownership of the two
+shared volumes once, which the first container after a rebuild reports on stderr and which costs
+about a second. The image tag and both volumes are shared by name across every checkout on the
+machine, so that rebuild reaches other worktrees too.
 
 The first image build downloads 209MB of bge-base-en-v1.5 weights from huggingface.co into a BuildKit
 cache mount. Later builds copy from that mount, and the release image carries the weights at

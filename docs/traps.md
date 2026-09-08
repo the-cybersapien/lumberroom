@@ -154,6 +154,15 @@ Give every case a fresh path.
 weights against a 35MB binary. The earlier explanation blamed `COPY` dereferencing the HuggingFace
 cache's symlinks, and that was checked against the built image and is wrong.
 
+**Rebuilding `lumberroom-builder` changes every checkout on the machine at once.** The image tag and
+the `lumberroom-target` and `lumberroom-cargo` volumes are all shared by name, so a rebuild here
+reaches another worktree's next `scripts/cargo.sh` run with no warning. When the builder entrypoint
+landed, a checkout still on the old `cargo.sh` passed no `BUILDER_UID`, took the default, and chowned
+the registry out from under a run that had just claimed it: the symptom was
+`couldn't read .../fnv-1.0.7/lib.rs: Permission denied` in the middle of a clippy pass. The
+entrypoint now adopts whichever uid already claimed the volume when no caller names one, so an
+unconfigured checkout joins rather than fights. Landed 8 September 2026.
+
 ## Tests
 
 **A test can pass against the mutation it exists to catch.** The cleanup window test ran through
@@ -187,6 +196,16 @@ slice built that way to split a Rust file at its test module duplicated 374 line
 `#[cfg(test)]` attribute (on a helper, not the trailing `mod tests`) appeared earlier in the file
 than the block the slice was meant to isolate. Anchor on the last occurrence, or on the attribute
 immediately preceding `mod tests`. Landed 24 August 2026.
+
+**Root ignores permission bits, so a test that asserts a filesystem refusal passes under it whatever
+the code does.** `scripts/cargo.sh` ran cargo as root in the builder container for months.
+`config.rs`'s `a_save_that_cannot_complete_leaves_the_live_file_alone` chmods a directory 0500,
+probed whether the mode had taken, and returned early when it had not. libtest captures a passing
+test's stderr, so the `skipping:` line it printed reached nobody and the gate counted 387 passed with
+that test measuring nothing. Two halves to the fix, and either alone leaves the trap armed:
+`scripts/lib/builder-entrypoint.sh` drops the container to a non-root uid, and the fixture now panics
+naming the precondition rather than returning. A fixture that cannot establish its precondition is
+broken, and a broken test has to be loud. Landed 8 September 2026.
 
 ## Shell, config and rendering
 

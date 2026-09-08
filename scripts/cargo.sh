@@ -96,8 +96,17 @@ trap 'cleanup; exit 143' TERM
 # never the price of incremental anyway. It was thousands of dead unit-hashes nobody had built in
 # weeks, because nothing pruned. scripts/lib/prune-target.sh below does, on a two day window for
 # incremental and seven for everything else.
+
+# BUILDER_UID is what stops cargo running as root in here. Root ignores permission bits, so every
+# test that asserts a refusal from the filesystem passed under it whatever the code did.
+# scripts/lib/builder-entrypoint.sh does the drop and carries the detail.
+# The host account's own uid, so that on a Linux host the bind-mounted tree stays writable by the
+# user who owns it; under Colima on macOS the mount answers to any uid and only the non-zero part
+# matters. Measured cost: 13ms of stat per run, plus one 1.0s chown of the two volumes, once.
 docker run --rm --name "$NAME" \
   --label "lumberroom.cargo.owner=$$" \
+  -e BUILDER_UID="$(id -u)" \
+  -e BUILDER_GID="$(id -g)" \
   --network "${LUMBERROOM_DOCKER_NETWORK:-lumberroom_default}" \
   -v "$PWD:/app" \
   -v lumberroom-target:/app/target \
@@ -122,6 +131,8 @@ status=$?
 # certainly" is not worth a link error in somebody else's run for the sake of a few MB.
 if [ "$status" = 0 ] && [ -z "$(docker ps -q --filter "label=lumberroom.cargo.owner" 2>/dev/null)" ]; then
   docker run --rm \
+    -e BUILDER_UID="$(id -u)" \
+    -e BUILDER_GID="$(id -g)" \
     -v lumberroom-target:/app/target \
     -v "$PWD/scripts/lib/prune-target.sh:/prune-target.sh:ro" \
     -e CARGO_PRUNE_KEEP="${CARGO_PRUNE_KEEP:-7 days}" \
