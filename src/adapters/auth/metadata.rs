@@ -148,6 +148,7 @@ mod tests {
                 cookie_secret: String::new(),
                 login_attempts_per_minute: 5,
                 registrations_per_minute: 5,
+                resource_audience: ResourceAudience::Lenient,
             },
             embed: EmbedConfig {
                 provider: EmbedProvider::Hash,

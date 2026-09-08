@@ -5,6 +5,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 use crate::domain::errors::{DomainError, Result};
+use crate::domain::oauth::canonical_resource;
 use crate::domain::policy::{NamespaceGrant, SensitivityDefaults};
 use crate::domain::types::Sensitivity;
 
@@ -66,6 +67,34 @@ impl Fusion {
         match self {
             Self::Linear => "linear",
             Self::Rrf => "rrf",
+        }
+    }
+}
+
+/// How strictly an OAuth access token's audience is checked when the token is spent.
+///
+/// RFC 8707 binds a token to the resource it was minted for, and until this existed the server
+/// wrote that binding down and compared it to nothing. Enforcement is a setting rather than a
+/// constant because of the tokens already in the table: every one of them predates the check and
+/// carries a NULL resource, and refusing all of those on the deploy is an outage for every live
+/// client at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceAudience {
+    /// Compare nothing. For a deployment reachable under two names that has not settled which one
+    /// its clients discover, where the check refuses a caller who did everything right.
+    Off,
+    /// A token that names a resource must name this one. A token that names none is admitted.
+    Lenient,
+    /// A token that names no resource is refused as well.
+    Strict,
+}
+
+impl ResourceAudience {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Lenient => "lenient",
+            Self::Strict => "strict",
         }
     }
 }
@@ -272,6 +301,14 @@ pub struct OauthConfig {
     /// Registration is unauthenticated and writes a row, so without a ceiling one caller can fill
     /// the client table at whatever rate the network allows.
     pub registrations_per_minute: u32,
+    /// How strictly the audience on an access token is checked. See [`ResourceAudience`].
+    ///
+    /// `lenient` rather than `strict` by default, and the reason is in the data: every token issued
+    /// before this landed has a NULL resource, and the CLI in this repository omits `resource` on
+    /// the refresh grant, so it re-mints a NULL one on every rotation. `strict` on the deploy would
+    /// log all of them out. The NULLs drain within one `OAUTH_ACCESS_TTL_SECS` once the token
+    /// endpoint starts stamping a default, which is what makes `strict` reachable later.
+    pub resource_audience: ResourceAudience,
 }
 
 #[derive(Debug, Clone)]
@@ -497,6 +534,21 @@ fn env_list(key: &str, fallback: &[&str]) -> Vec<String> {
             v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
         }
         _ => fallback.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+/// `OAUTH_RESOURCE_AUDIENCE`, refused at boot when it is none of the three.
+///
+/// A free function for `parse_fusion`'s reason: the refusal can be tested without two tests racing
+/// on one process environment.
+fn parse_resource_audience(raw: &str) -> Result<ResourceAudience> {
+    match raw.trim() {
+        "lenient" | "" => Ok(ResourceAudience::Lenient),
+        "strict" => Ok(ResourceAudience::Strict),
+        "off" => Ok(ResourceAudience::Off),
+        other => Err(DomainError::validation(format!(
+            "OAUTH_RESOURCE_AUDIENCE must be off|lenient|strict, got {other:?}"
+        ))),
     }
 }
 
@@ -788,6 +840,7 @@ pub fn load() -> Result<Config> {
             cookie_secret: env("OAUTH_COOKIE_SECRET", ""),
             login_attempts_per_minute: env_num("OAUTH_LOGIN_ATTEMPTS_PER_MINUTE", 5u32)?,
             registrations_per_minute: env_num("OAUTH_REGISTRATIONS_PER_MINUTE", 5u32)?,
+            resource_audience: parse_resource_audience(&env("OAUTH_RESOURCE_AUDIENCE", ""))?,
         },
         embed: EmbedConfig {
             provider,
@@ -1012,6 +1065,22 @@ fn validate(cfg: &Config) -> Result<()> {
             return Err(DomainError::validation(
                 "OAUTH_CODE_TTL_SECS should be between 10 and 600",
             ));
+        }
+        // The audience check compares a token's resource against this string. A string that is not
+        // an absolute URI canonicalises to nothing and therefore matches nothing, so it refuses
+        // every token rather than none. Refusing to boot is the cheap version of that failure; the
+        // expensive version is every client at once reporting an invalid bearer token.
+        if cfg.oauth.resource_audience != ResourceAudience::Off
+            && canonical_resource(&cfg.auth.resource_url).is_none()
+        {
+            return Err(DomainError::validation(format!(
+                "OAUTH_RESOURCE_AUDIENCE is {} and the resource this server serves reads as {:?}, \
+                 which is not an absolute URI without a fragment. Every token would be \
+                 refused. Fix PUBLIC_URL or MCP_RESOURCE_URL, or set \
+                 OAUTH_RESOURCE_AUDIENCE=off.",
+                cfg.oauth.resource_audience.as_str(),
+                cfg.auth.resource_url
+            )));
         }
     }
 
@@ -1370,6 +1439,35 @@ mod tests {
         let err = parse_fusion("reciprocal").unwrap_err().to_string();
         assert!(err.contains("linear|rrf"), "the message has to name what to write: {err}");
         assert!(parse_fusion("RRF").is_err(), "the other enums here match lowercase only");
+    }
+
+    #[test]
+    fn the_audience_check_is_lenient_until_an_operator_asks_for_more() {
+        assert_eq!(parse_resource_audience("").unwrap(), ResourceAudience::Lenient);
+        assert_eq!(parse_resource_audience("lenient").unwrap(), ResourceAudience::Lenient);
+        assert_eq!(parse_resource_audience(" strict ").unwrap(), ResourceAudience::Strict);
+        assert_eq!(parse_resource_audience("off").unwrap(), ResourceAudience::Off);
+    }
+
+    /// An unrecognised value must not fall back to a default. A typo that silently reads as
+    /// `lenient` is an operator who believes the audience is enforced strictly and is wrong.
+    #[test]
+    fn refuses_an_audience_setting_it_does_not_implement_and_names_all_three() {
+        let err = parse_resource_audience("enforced").unwrap_err().to_string();
+        assert!(err.contains("off"), "{err}");
+        assert!(err.contains("lenient"), "{err}");
+        assert!(err.contains("strict"), "{err}");
+        assert!(
+            parse_resource_audience("Strict").is_err(),
+            "the other enums here match lowercase only"
+        );
+    }
+
+    #[test]
+    fn the_audience_names_round_trip() {
+        for a in [ResourceAudience::Off, ResourceAudience::Lenient, ResourceAudience::Strict] {
+            assert_eq!(parse_resource_audience(a.as_str()).unwrap(), a);
+        }
     }
 
     #[test]
