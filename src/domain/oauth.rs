@@ -162,6 +162,53 @@ impl AuthorizeRequest {
     }
 }
 
+// ---- RFC 8707 resource indicators ----
+
+/// The canonical form of a resource indicator, for comparing two of them.
+///
+/// String equality is what this server used to do with a resource, and it is wrong in four ways a
+/// real client hits. `HTTPS://Host/mcp` and `https://host/mcp` are one URI. So are
+/// `https://host:443/mcp` and `https://host/mcp`. So are `https://host/mcp` and `https://host/mcp/`
+/// once you accept that a resource indicator names a deployment rather than a document. Every one
+/// of those reads as a different audience under `==`, and the rejection it produces tells the
+/// operator nothing about which of the two strings to change.
+///
+/// `Url::parse` does the first three: RFC 3986 §6.2.2 syntax-based normalisation, which lowercases
+/// the scheme and host, drops a default port, and normalises percent-encoding. The trailing slash
+/// is this function's own rule and it is a deliberate departure: RFC 3986 does not make `/mcp` and
+/// `/mcp/` equivalent, and for a document they are not. For an audience the difference identifies
+/// nothing, and refusing on it is an outage nobody can read off the error.
+///
+/// `None` means "not an absolute URI", or "carries a fragment", which RFC 8707 §2 forbids. Callers
+/// compare two `Some` values, so an unparseable resource equals nothing at all and the failure is
+/// closed rather than open.
+pub fn canonical_resource(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.contains('#') {
+        return None;
+    }
+    let url = Url::parse(raw).ok()?;
+    // `urn:` and `mailto:` are absolute URIs with no path to normalise, and `set_path` on one
+    // panics rather than failing. Their serialisation is already canonical enough.
+    if url.cannot_be_a_base() {
+        return Some(url.into());
+    }
+    let mut url = url;
+    let trimmed = url.path().trim_end_matches('/').to_string();
+    url.set_path(&trimmed);
+    Some(url.into())
+}
+
+/// Whether a token bound to `bound` may be spent at a server that serves `served`.
+///
+/// Both sides go through [`canonical_resource`], so a value neither side can parse matches nothing.
+pub fn resource_matches(bound: &str, served: &str) -> bool {
+    match (canonical_resource(bound), canonical_resource(served)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
 // ---- /token ----
 
 /// What arrives at `/token`. Phase 2 spec §2: this endpoint must accept form encoding while
