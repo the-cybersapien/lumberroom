@@ -358,7 +358,11 @@ services:
       # project-prefixed one compose would invent.
       - cargo_registry:/usr/local/cargo/registry
       # Seed once from the image that already carries them, no download:
-      #   docker run --rm --user root -v lumberroom-dev-models:/dst lumberroom-server:0.4.0 cp -a /models/. /dst/
+      #   docker run --rm --user root --entrypoint sh -v lumberroom-dev-models:/dst lumberroom-server:0.4.0 \
+  #     -c 'cp -a /models/. /dst/ && chmod -R a+rX /dst'
+  #
+  # The chmod is what lets the dev loop read them: this service now runs as the uid that owns the
+  # target volume rather than as root, and root's copy is otherwise readable only by accident.
       - dev_models:/models
     # --poll is the escape hatch, not the default: file events from a macOS bind mount into a Linux
     # container go missing often enough to be worth naming, and polling costs CPU the whole time it

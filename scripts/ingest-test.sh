@@ -203,6 +203,7 @@ cli_as() {
       -e LUMBERROOM_URL="$CLI_URL" -e LUMBERROOM_TOKEN="$tok" \
       -e LUMBERROOM_CONFIG="$cfg" -e LUMBERROOM_STATE_DIR="$state" \
       -e LUMBERROOM_CLAUDE_ROOT="$FIXTURE_ROOT" \
+      -e BUILDER_UID="$(id -u)" -e BUILDER_GID="$(id -g)" \
       lumberroom-builder "$BIN" "$@"
   fi
 }

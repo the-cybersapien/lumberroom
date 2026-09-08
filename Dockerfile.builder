@@ -3,7 +3,15 @@
 FROM rust:1-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates g++ curl xz-utils \
+      musl-tools gcc-x86-64-linux-gnu \
  && rm -rf /var/lib/apt/lists/*
+
+# musl-tools and the x86_64 cross gcc are here for scripts/cli-release.sh, which used to apt-get
+# them inside the container on every release build. The scout measured roughly 60s of the 188s run
+# on that repeat. Baking them in also takes the last root-only step out of that script, which is
+# what lets it run under the same non-root uid as everything else. `rustup target add` stays in the
+# script: RUSTUP_HOME is world-writable here and rust-toolchain.toml pins a channel this image does
+# not carry, so a target added at build time would belong to the wrong toolchain.
 
 # watchexec drives the `dev` service in docker-compose.yml: it watches the bind-mounted sources and
 # restarts the debug binary when one changes. Rust has no hot reload of its own, and cargo has no
@@ -29,4 +37,23 @@ RUN arch="$(uname -m)" \
  && rm -rf /tmp/we.tar.xz /tmp/we.sha256 "/tmp/${base}" \
  && watchexec --version
 
+
+# ── cargo does not run as root here ───────────────────────────────────────────────────────────────
+#
+# Root ignores permission bits, which makes every test that asserts a refusal from the filesystem
+# pass whatever the code does. One of them had been inert for months while the gate reported green.
+# scripts/lib/builder-entrypoint.sh drops to BUILDER_UID before it execs anything, and carries the
+# rest of the reasoning.
+#
+# /home/builder is 0777 because the uid is not known until the container starts, and a throwaway
+# build container with one user in it has nothing to protect there. It holds no cache: CARGO_HOME
+# and RUSTUP_HOME arrive world-writable from the rust image and stay where they are.
+RUN mkdir -p /home/builder && chmod 0777 /home/builder
+# Set here as well as in the entrypoint, so `docker run --user N` gets a writable HOME too. That
+# path skips the entrypoint's drop and would otherwise inherit HOME=/root, which is 0700.
+ENV HOME=/home/builder
+COPY scripts/lib/builder-entrypoint.sh /usr/local/bin/builder-entrypoint
+RUN chmod 0755 /usr/local/bin/builder-entrypoint
+
 WORKDIR /app
+ENTRYPOINT ["/usr/local/bin/builder-entrypoint"]
