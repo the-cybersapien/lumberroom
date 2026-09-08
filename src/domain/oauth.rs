@@ -164,6 +164,9 @@ impl AuthorizeRequest {
 
 // ---- RFC 8707 resource indicators ----
 
+/// The longest resource indicator this server will parse. See [`canonical_resource`].
+const MAX_RESOURCE_LEN: usize = 2048;
+
 /// The canonical form of a resource indicator, for comparing two of them.
 ///
 /// String equality is what this server used to do with a resource, and it is wrong in four ways a
@@ -173,8 +176,11 @@ impl AuthorizeRequest {
 /// of those reads as a different audience under `==`, and the rejection it produces tells the
 /// operator nothing about which of the two strings to change.
 ///
-/// `Url::parse` does the first three: RFC 3986 §6.2.2 syntax-based normalisation, which lowercases
-/// the scheme and host, drops a default port, and normalises percent-encoding. The trailing slash
+/// `Url::parse` does the first three: it lowercases the scheme and the host, drops a default port,
+/// and resolves dot segments. It does NOT normalise percent-encoding, so `%2f` and `%2F` stay
+/// different and `%63` never becomes `c`. That half of RFC 3986 §6.2.2 is missing here, and it is
+/// missing in the closed direction: the two spellings read as two audiences and the token is
+/// refused. The trailing slash
 /// is this function's own rule and it is a deliberate departure: RFC 3986 does not make `/mcp` and
 /// `/mcp/` equivalent, and for a document they are not. For an audience the difference identifies
 /// nothing, and refusing on it is an outage nobody can read off the error.
@@ -185,6 +191,13 @@ impl AuthorizeRequest {
 pub fn canonical_resource(raw: &str) -> Option<String> {
     let raw = raw.trim();
     if raw.is_empty() || raw.contains('#') {
+        return None;
+    }
+    // A ceiling, because this parses a value a client chose and a token then carries for its whole
+    // life: the authenticator canonicalises the stored resource on every request that token makes.
+    // Measured on url 2.5.8, a 1MB resource parses in about 55ms and 2MB in about 109ms, and the
+    // request body limit admits both. No real resource indicator is anywhere near 2048 bytes.
+    if raw.len() > MAX_RESOURCE_LEN {
         return None;
     }
     let url = Url::parse(raw).ok()?;

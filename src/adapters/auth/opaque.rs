@@ -15,18 +15,18 @@ use std::sync::Arc;
 use super::{bearer, fingerprint, Authenticator};
 use crate::config::ResourceAudience;
 use crate::domain::errors::{DomainError, Result};
-use crate::domain::oauth::{canonical_resource, hash_token, resource_matches};
+use crate::domain::oauth::{hash_token, resource_matches};
 use crate::domain::types::Principal;
 use crate::ports::OauthStore;
 
 pub struct OpaqueTokenAuthenticator {
     store: Arc<dyn OauthStore>,
-    /// The resource this deployment serves, canonical, or `None` when the configured value does
-    /// not parse. Canonicalising here rather than per request spends one `Url::parse` at boot
-    /// instead of one on every authenticated call, and the string cannot change while the process
-    /// runs. Config validation refuses to boot on a `None` unless the setting is `Off`, so the
-    /// only way to reach the check with `None` is a check that compares nothing.
-    served_resource: Option<String>,
+    /// The resource this deployment serves, as configured. `resource_matches` canonicalises both
+    /// sides on every call, so this is deliberately the raw string rather than a pre-canonical one:
+    /// storing a canonical copy would save nothing and would need a second field to say whether the
+    /// configured value parsed at all. A value that does not parse matches nothing, which refuses
+    /// every token, and config validation refuses to boot on it unless the setting is `Off`.
+    served_resource: String,
     audience: ResourceAudience,
 }
 
@@ -36,7 +36,7 @@ impl OpaqueTokenAuthenticator {
         served_resource: &str,
         audience: ResourceAudience,
     ) -> Self {
-        Self { store, served_resource: canonical_resource(served_resource), audience }
+        Self { store, served_resource: served_resource.to_string(), audience }
     }
 }
 
@@ -81,7 +81,7 @@ impl Authenticator for OpaqueTokenAuthenticator {
                 // `resource_matches` answers false when either side fails to canonicalise, so an
                 // audience nobody can parse matches nothing and the failure stays closed.
                 Some(bound) => {
-                    if !resource_matches(bound, self.served_resource.as_deref().unwrap_or("")) {
+                    if !resource_matches(bound, &self.served_resource) {
                         return Err(DomainError::forbidden(
                             "this access token was issued for a different resource",
                         ));

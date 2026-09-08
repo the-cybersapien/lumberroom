@@ -6,7 +6,7 @@ Status: accepted, implemented. 8 September 2026.
 
 `OpaqueTokenAuthenticator::authenticate` compares the resource stored on an access token against the
 resource this deployment serves, and refuses the token when they disagree. The comparison
-canonicalises both sides per RFC 3986 §6.2.2 rather than comparing strings. `/oauth/token` stamps
+canonicalises both sides rather than comparing strings. `/oauth/token` stamps
 this deployment's own resource on any token whose client named none, and refuses `invalid_target`
 for one that named a resource this server does not serve. `OAUTH_RESOURCE_AUDIENCE` selects
 `off`, `lenient` or `strict`, and defaults to `lenient`, which admits a token carrying no resource
@@ -83,8 +83,12 @@ without fabricating anything.
 **Compare the strings.** Cheapest, and wrong in four ways a real client hits: scheme case, host
 case, an explicit default port, and a trailing slash. Each reads as a different audience under `==`,
 and the resulting refusal tells the operator nothing about which of two identical-looking strings to
-change. `canonical_resource` runs `Url::parse`, which does RFC 3986 syntax-based normalisation, and
-then strips a trailing slash from the path.
+change. `canonical_resource` runs `Url::parse`, which lowercases the scheme and the host, drops a
+default port and resolves dot segments, and then strips a trailing slash from the path.
+
+It does not do all of RFC 3986 §6.2.2. `Url::parse` leaves percent-encoding alone, so `%2f` and
+`%2F` stay two audiences and `%63` never becomes `c`. The gap fails closed, which is why it is a
+noted limitation rather than a bug: the two spellings refuse each other.
 
 That last part is a deliberate departure. RFC 3986 does not make `/mcp` and `/mcp/` equivalent, and
 for a document they are not. A resource indicator names a deployment, the difference identifies
@@ -95,7 +99,13 @@ admit a resource the operator did not configure.
 ## What it costs, accepted
 
 A deployment reachable under two hostnames, whose clients discover different resource URLs, now has
-one of those hostnames refusing tokens. `off` is the escape hatch and it exists for that case.
+one of those hostnames refusing tokens. `off` is the escape hatch and it exists for that case. It
+relaxes all three points at once, the authorization endpoint, the token endpoint and the
+authenticator, because a switch that turns off half of what it documents is worse than no switch:
+the operator sets it, watches the token endpoint keep refusing, and has nothing left to try. What
+`off` does not relax is the requirement that a resource be a URI at all, since a value no comparison
+can match is dead text on the token row whatever the setting says.
+
 `lenient` is weaker than the spec allows for as long as an operator leaves it there, and nothing in
 the server nags about it.
 
@@ -111,6 +121,20 @@ its client row, and the audience check refuses tokens rather than narrowing them
 about static `AUTH_TOKENS` grants or `AUTH_MODE=oidc` JWTs: neither carries a resource indicator,
 the OIDC path has its own `audience` check on the `aud` claim, and a static token is a line in the
 environment with no issuance path to bind.
+
+## What a blind review changed after the first draft
+
+Two client-facing regressions, both found by a reviewer given the diff and a list of attack vectors
+and nothing else. `off` relaxed the authenticator and left the token endpoint refusing, so the
+documented escape hatch did not work. And the refresh grant spent the refresh token before it
+checked the audience, which turned a fixable `invalid_target` into a family revocation on the
+client's retry: the retry presents a token that is already consumed, which reads as a replay. The
+audience is now settled before `rotate_refresh` runs. Both are covered by tests.
+
+The same pass corrected two claims in the code comments. `Url::parse` does not normalise
+percent-encoding, so `%2f` and `%2F` stay two audiences, and that gap fails closed. And
+canonicalising the served resource once at construction saved nothing, because the comparison
+canonicalises both sides on every call; the field now holds the configured string.
 
 ## Reversal condition
 

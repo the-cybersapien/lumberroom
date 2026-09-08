@@ -537,10 +537,6 @@ fn env_list(key: &str, fallback: &[&str]) -> Vec<String> {
     }
 }
 
-/// `SEARCH_FUSION`, refused at boot when it is neither spelling.
-///
-/// A free function rather than a match inside `load`, so the refusal can be tested without two
-/// tests racing on one process environment.
 /// `OAUTH_RESOURCE_AUDIENCE`, refused at boot when it is none of the three.
 ///
 /// A free function for `parse_fusion`'s reason: the refusal can be tested without two tests racing
@@ -556,6 +552,10 @@ fn parse_resource_audience(raw: &str) -> Result<ResourceAudience> {
     }
 }
 
+/// `SEARCH_FUSION`, refused at boot when it is neither spelling.
+///
+/// A free function rather than a match inside `load`, so the refusal can be tested without two
+/// tests racing on one process environment.
 fn parse_fusion(raw: &str) -> Result<Fusion> {
     match raw.trim() {
         "linear" | "" => Ok(Fusion::Linear),
@@ -1074,7 +1074,10 @@ fn validate(cfg: &Config) -> Result<()> {
             && canonical_resource(&cfg.auth.resource_url).is_none()
         {
             return Err(DomainError::validation(format!(
-                "OAUTH_RESOURCE_AUDIENCE is {} and the resource this server serves reads as {:?},                  which is not an absolute URI without a fragment. Every token would be refused.                  Fix PUBLIC_URL or MCP_RESOURCE_URL, or set OAUTH_RESOURCE_AUDIENCE=off.",
+                "OAUTH_RESOURCE_AUDIENCE is {} and the resource this server serves reads as {:?}, \
+                 which is not an absolute URI without a fragment. Every token would be \
+                 refused. Fix PUBLIC_URL or MCP_RESOURCE_URL, or set \
+                 OAUTH_RESOURCE_AUDIENCE=off.",
                 cfg.oauth.resource_audience.as_str(),
                 cfg.auth.resource_url
             )));
@@ -1436,6 +1439,35 @@ mod tests {
         let err = parse_fusion("reciprocal").unwrap_err().to_string();
         assert!(err.contains("linear|rrf"), "the message has to name what to write: {err}");
         assert!(parse_fusion("RRF").is_err(), "the other enums here match lowercase only");
+    }
+
+    #[test]
+    fn the_audience_check_is_lenient_until_an_operator_asks_for_more() {
+        assert_eq!(parse_resource_audience("").unwrap(), ResourceAudience::Lenient);
+        assert_eq!(parse_resource_audience("lenient").unwrap(), ResourceAudience::Lenient);
+        assert_eq!(parse_resource_audience(" strict ").unwrap(), ResourceAudience::Strict);
+        assert_eq!(parse_resource_audience("off").unwrap(), ResourceAudience::Off);
+    }
+
+    /// An unrecognised value must not fall back to a default. A typo that silently reads as
+    /// `lenient` is an operator who believes the audience is enforced strictly and is wrong.
+    #[test]
+    fn refuses_an_audience_setting_it_does_not_implement_and_names_all_three() {
+        let err = parse_resource_audience("enforced").unwrap_err().to_string();
+        assert!(err.contains("off"), "{err}");
+        assert!(err.contains("lenient"), "{err}");
+        assert!(err.contains("strict"), "{err}");
+        assert!(
+            parse_resource_audience("Strict").is_err(),
+            "the other enums here match lowercase only"
+        );
+    }
+
+    #[test]
+    fn the_audience_names_round_trip() {
+        for a in [ResourceAudience::Off, ResourceAudience::Lenient, ResourceAudience::Strict] {
+            assert_eq!(parse_resource_audience(a.as_str()).unwrap(), a);
+        }
     }
 
     #[test]

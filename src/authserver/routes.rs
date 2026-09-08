@@ -28,7 +28,7 @@ use crate::adapters::auth::Authenticator;
 use crate::authserver::limiter::{self, LoginLimiter};
 use crate::authserver::pages::{self, ClientView, FlowFields};
 use crate::authserver::session::{OwnerSession, Sessions};
-use crate::config::Config;
+use crate::config::{Config, ResourceAudience};
 use crate::domain::errors::{DomainError, Result};
 use crate::domain::oauth::{
     canonical_resource, hash_token, hashes_match, random_token, resource_matches,
@@ -757,6 +757,20 @@ async fn rotate(
         return oauth_error(OauthError::new("invalid_request", "refresh_token is required"));
     };
 
+    // Before the rotation, not after. `rotate_refresh` sets consumed_at, and a resource this
+    // server does not serve is a fixable request error under RFC 6749 §5.2: the client corrects it
+    // and retries. Refusing after the spend means the retry presents a token that is already
+    // consumed, which reads as a replay and revokes the whole family. So the audience is settled
+    // while the refresh token is still worth something.
+    let resource = form.get("resource").filter(|v| !v.is_empty()).cloned();
+    if let Err(e) = resource_for_issue(
+        resource.as_deref(),
+        &app.cfg.auth.resource_url,
+        app.cfg.oauth.resource_audience,
+    ) {
+        return oauth_error(e);
+    }
+
     let outcome = match app.store.rotate_refresh(&hash_token(presented)).await {
         Ok(o) => o,
         Err(e) => return internal_oauth(&e),
@@ -805,12 +819,11 @@ async fn rotate(
         return oauth_error(e);
     }
 
-    // The refresh row holds no resource of its own, so a rotated token inherits nothing. What the
-    // client asks for now goes to `issue_tokens`, which refuses a resource this server does not
-    // serve and stamps its own on an absent one. That default is safe here because this server
-    // serves exactly one resource, so the only audience it can supply is the one the client is
-    // already talking to.
-    let resource = form.get("resource").filter(|v| !v.is_empty()).cloned();
+    // The refresh row holds no resource of its own, so a rotated token inherits nothing. The value
+    // the client asks for now was settled above, before the spend, and `issue_tokens` stamps this
+    // deployment's own resource when the client named none. That default is safe here because this
+    // server serves exactly one resource, so the only audience it can supply is the one the client
+    // is already talking to.
     issue_tokens(app, &client, family, DEFAULT_SCOPE, resource).await
 }
 
@@ -823,7 +836,11 @@ async fn issue_tokens(
 ) -> Response {
     // The one funnel both grants reach, so the audience decision lands here once instead of in each
     // caller. Every token this server mints leaves with a resource on it.
-    let resource = match resource_for_issue(asked.as_deref(), &app.cfg.auth.resource_url) {
+    let resource = match resource_for_issue(
+        asked.as_deref(),
+        &app.cfg.auth.resource_url,
+        app.cfg.oauth.resource_audience,
+    ) {
         Ok(r) => r,
         Err(e) => return oauth_error(e),
     };
@@ -1134,20 +1151,37 @@ fn resource_for_exchange(
 ///
 /// A match keeps the client's own spelling. The row records what the client asserted, and
 /// canonicalisation is a comparison rule rather than a storage rule.
+///
+/// `Off` still stamps and still refuses a resource that is not a URI, and it stops refusing one
+/// this deployment does not serve. That is the whole point of the setting: a deployment reachable
+/// under two names has clients that legitimately name the other one, and refusing them here would
+/// leave the operator with a switch that turns off half the behaviour it is documented to turn off.
 fn resource_for_issue(
     asked: Option<&str>,
     served: &str,
+    audience: ResourceAudience,
 ) -> std::result::Result<String, OauthError> {
-    match asked {
-        Some(asked) if resource_matches(asked, served) => Ok(asked.to_string()),
+    let Some(asked) = asked else { return Ok(served.to_string()) };
+    // A value that will not parse is refused whatever the setting says. It is not an audience
+    // disagreement, it is not a URI, and storing it would put text on the token row that no
+    // comparison can ever match.
+    if canonical_resource(asked).is_none() {
+        return Err(OauthError::new(
+            "invalid_target",
+            "resource must be an absolute URI without a fragment",
+        ));
+    }
+    if audience != ResourceAudience::Off && !resource_matches(asked, served) {
         // RFC 8707 §2.2. The description names no value: the input came off a form and echoing it
         // back turns this error into a reflection point.
-        Some(_) => Err(OauthError::new(
+        return Err(OauthError::new(
             "invalid_target",
             "this server does not issue tokens for that resource",
-        )),
-        None => Ok(served.to_string()),
+        ));
     }
+    // The row records what the client asserted. Canonicalisation is a comparison rule rather than
+    // a storage rule.
+    Ok(asked.to_string())
 }
 
 async fn live_consented_client(
@@ -1214,13 +1248,39 @@ async fn resolve_request(
         ));
     }
 
-    match request.validate(&record.redirect_uris) {
-        Ok(intent) => Ok((record, intent)),
-        Err(e) => Err(page(
-            StatusCode::BAD_REQUEST,
-            pages::error_page("cannot start", e.client_message()),
-        )),
+    let intent = match request.validate(&record.redirect_uris) {
+        Ok(intent) => intent,
+        Err(e) => {
+            return Err(page(
+                StatusCode::BAD_REQUEST,
+                pages::error_page("cannot start", e.client_message()),
+            ))
+        }
+    };
+
+    // RFC 8707 §2.1 wants a resource this server does not serve refused here, at the authorization
+    // endpoint. Doing it only at /token means the owner reads a consent screen, approves a client,
+    // and the exchange then fails after the code has been consumed, so the client has to run the
+    // whole flow again to see the same error. Refusing before a code exists costs one comparison.
+    //
+    // Rendered as a page rather than redirected with `error=`, which is the contract every error
+    // out of here follows: redirecting before the request is known to be sound is what turns this
+    // endpoint into an open redirector.
+    if app.cfg.oauth.resource_audience != ResourceAudience::Off {
+        if let Some(asked) = intent.resource.as_deref() {
+            if !resource_matches(asked, &app.cfg.auth.resource_url) {
+                return Err(page(
+                    StatusCode::BAD_REQUEST,
+                    pages::error_page(
+                        "cannot start",
+                        "This client asked for a resource this server does not serve.",
+                    ),
+                ));
+            }
+        }
     }
+
+    Ok((record, intent))
 }
 
 fn authorize_request(params: &HashMap<String, String>) -> AuthorizeRequest {
@@ -1778,24 +1838,30 @@ mod tests {
     fn a_token_from_an_exchange_that_named_no_resource_still_carries_the_served_one() {
         let out = resource_for_exchange(None, None).unwrap();
         assert_eq!(out, None);
-        assert_eq!(resource_for_issue(out.as_deref(), SERVED).unwrap(), SERVED);
+        assert_eq!(
+            resource_for_issue(out.as_deref(), SERVED, ResourceAudience::Lenient).unwrap(),
+            SERVED
+        );
     }
 
     #[test]
     fn issuance_stamps_the_served_resource_when_the_client_asked_for_nothing() {
-        assert_eq!(resource_for_issue(None, SERVED).unwrap(), SERVED);
+        assert_eq!(resource_for_issue(None, SERVED, ResourceAudience::Lenient).unwrap(), SERVED);
     }
 
     #[test]
     fn issuance_keeps_the_spelling_the_client_sent_rather_than_the_canonical_form() {
         let asked = "https://memory.example.com:443/mcp/";
-        assert_eq!(resource_for_issue(Some(asked), SERVED).unwrap(), asked);
+        assert_eq!(
+            resource_for_issue(Some(asked), SERVED, ResourceAudience::Lenient).unwrap(),
+            asked
+        );
     }
 
     #[test]
     fn issuance_refuses_a_resource_this_deployment_does_not_serve() {
         let asked = "https://elsewhere.example.com/mcp";
-        let e = resource_for_issue(Some(asked), SERVED).unwrap_err();
+        let e = resource_for_issue(Some(asked), SERVED, ResourceAudience::Lenient).unwrap_err();
         assert_eq!(e.error, "invalid_target");
 
         let description = e.error_description.unwrap_or_default();
@@ -1805,9 +1871,36 @@ mod tests {
         );
     }
 
+    /// The setting is documented as the escape hatch for a deployment reachable under two names.
+    /// If it only relaxed the authenticator, the operator would set it and still watch the token
+    /// endpoint refuse the client it was set for.
+    #[test]
+    fn issuance_stops_refusing_a_foreign_resource_when_the_check_is_off() {
+        let out = resource_for_issue(
+            Some("https://elsewhere.example.com/mcp"),
+            SERVED,
+            ResourceAudience::Off,
+        )
+        .unwrap();
+        assert_eq!(out, "https://elsewhere.example.com/mcp");
+    }
+
+    /// `off` relaxes the audience and nothing else. A value that is not a URI can never match any
+    /// comparison, so storing it would put dead text on the token row.
+    #[test]
+    fn issuance_still_refuses_an_unparseable_resource_when_the_check_is_off() {
+        let e = resource_for_issue(Some("../mcp"), SERVED, ResourceAudience::Off).unwrap_err();
+        assert_eq!(e.error, "invalid_target");
+    }
+
+    #[test]
+    fn issuance_still_stamps_the_served_resource_when_the_check_is_off() {
+        assert_eq!(resource_for_issue(None, SERVED, ResourceAudience::Off).unwrap(), SERVED);
+    }
+
     #[test]
     fn issuance_refuses_a_resource_it_cannot_parse() {
-        let e = resource_for_issue(Some("../mcp"), SERVED).unwrap_err();
+        let e = resource_for_issue(Some("../mcp"), SERVED, ResourceAudience::Lenient).unwrap_err();
         assert_eq!(e.error, "invalid_target");
     }
 }
