@@ -43,6 +43,12 @@ for probe in $shared; do
   fi
   [ -r "$probe/$OWN_MARKER" ] || continue
   claim="$(cat "$probe/$OWN_MARKER")"
+  # Two numbers or nothing. A marker only a root process can corrupt is still a marker that reaches
+  # `chown`, and `chown: invalid user` kills the container before it runs the command it was asked
+  # for. Ignoring a bad claim rechowns once and rewrites it.
+  case "$claim" in
+    *[!0-9:]* | *:*:* | :* | *: | '') continue ;;
+  esac
   uid="${claim%:*}"
   gid="${gid:-${claim#*:}}"
 done

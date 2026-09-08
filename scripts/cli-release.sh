@@ -169,20 +169,18 @@ build_linux() {
   # Rust's self-contained musl libc, which is what let the scout's x86_64 leg produce a working
   # static-pie despite crossing arches on an arm64 host.
   #
-  # BUILDER_UID=0 keeps this one container root, against the image default. The three lines below
-  # are apt-get update, apt-get install and rustup target add, and all three write outside the
-  # target volume into paths only root owns. This leg runs no tests, so the reason the image drops
-  # privilege (a permission-refusal test is inert under root) does not apply to it.
-  # scripts/lib/builder-entrypoint.sh has the rest.
+  # The same uid scripts/cargo.sh uses, because this container writes into the shared
+  # lumberroom-cargo registry. A root run here would leave root-owned crate sources in a volume
+  # every later non-root build reads, and the ownership marker would not notice.
+  # musl-tools and the cross gcc now come from Dockerfile.builder, so nothing in here needs root.
+  # `rustup target add` writes into RUSTUP_HOME, which the rust image leaves world-writable.
   docker run --rm \
     -v "$PWD:/app" -w /app \
     -v lumberroom-cargo:/usr/local/cargo/registry \
     -e CARGO_TERM_COLOR=never \
-    -e BUILDER_UID=0 \
+    -e BUILDER_UID="$(id -u)" -e BUILDER_GID="$(id -g)" \
     lumberroom-builder sh -c '
       set -e
-      apt-get update -qq
-      apt-get install -y --no-install-recommends -qq musl-tools gcc-x86-64-linux-gnu >/dev/null
       rustup target add aarch64-unknown-linux-musl x86_64-unknown-linux-musl >/dev/null
       CC_aarch64_unknown_linux_musl=musl-gcc \
         cargo build --release --locked -p lumberroom --target aarch64-unknown-linux-musl

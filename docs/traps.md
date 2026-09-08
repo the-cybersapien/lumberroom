@@ -161,7 +161,23 @@ landed, a checkout still on the old `cargo.sh` passed no `BUILDER_UID`, took the
 the registry out from under a run that had just claimed it: the symptom was
 `couldn't read .../fnv-1.0.7/lib.rs: Permission denied` in the middle of a clippy pass. The
 entrypoint now adopts whichever uid already claimed the volume when no caller names one, so an
-unconfigured checkout joins rather than fights. Landed 8 September 2026.
+unconfigured checkout joins rather than fights. Two containers that both start before any marker
+exists can still pick different uids and chown in turn; that settles after one cycle and the loser
+sees `Permission denied` on a crate source only if it is fetching at that moment. Landed 8
+September 2026.
+
+**A root process writing into a claimed build volume leaves files no later run can replace.** The
+ownership marker `.builder-owner` records which uid claimed `lumberroom-target` or
+`lumberroom-cargo`, and the entrypoint reads the marker rather than walking 41,000 inodes on every
+run. So a `docker exec` into a running builder container, which docker gives you as root whatever
+the entrypoint did, can leave root-owned artifacts the marker says nothing about. The symptom is
+`Permission denied` on a path that plainly exists. The recovery is one line, and it re-claims the
+whole tree on the next run:
+
+```bash
+docker run --rm -v lumberroom-target:/t -v lumberroom-cargo:/c --entrypoint sh lumberroom-builder \
+  -c 'rm -f /t/.builder-owner /c/.builder-owner'
+```
 
 ## Tests
 

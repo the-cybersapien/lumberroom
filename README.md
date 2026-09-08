@@ -225,7 +225,8 @@ what the credential you present resolves to from the code path that enforces it.
 ```bash
 cp .env.example .env                     # then set POSTGRES_PASSWORD
 docker compose up -d db                  # Postgres 16 + pgvector on 127.0.0.1:5432
-docker build -t lumberroom-builder -f Dockerfile.builder .
+docker build -t lumberroom-builder -f Dockerfile.builder .   # again after any change to
+                                                            # Dockerfile.builder or scripts/lib/builder-entrypoint.sh
 ./scripts/cargo.sh test -j 1
 ```
 
