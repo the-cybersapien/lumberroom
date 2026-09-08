@@ -84,6 +84,18 @@ trap 'cleanup; exit 143' TERM
 # container problem above, and it clears on its own.
 #
 # target/ no longer appears on the host. `docker run --rm -v lumberroom-target:/t alpine ls /t` reads it.
+#
+# CARGO_INCREMENTAL is deliberately not set here, which leaves incremental compilation on.
+# It held 21.5GB of the 54.9GB this volume reached and turning it off looks like the obvious win.
+# It is not. Measured, edit one source file and rebuild `test -j 1 -p lumberroom --no-run`:
+#
+#   incremental on    15s  17s        incremental off    31s  28s  31s
+#
+# and on lumberroom-cloud, which is twelve times the source, 74s against 125s. Doubling the loop
+# every agent and every human on this repo runs all day is not worth 21.5GB, and the 21.5GB was
+# never the price of incremental anyway. It was thousands of dead unit-hashes nobody had built in
+# weeks, because nothing pruned. scripts/lib/prune-target.sh below does, on a two day window for
+# incremental and seven for everything else.
 docker run --rm --name "$NAME" \
   --label "lumberroom.cargo.owner=$$" \
   --network "${LUMBERROOM_DOCKER_NETWORK:-lumberroom_default}" \
@@ -95,4 +107,26 @@ docker run --rm --name "$NAME" \
   -e RUST_BACKTRACE=1 \
   lumberroom-builder cargo "$@"
 status=$?
+
+# ── prune, after the build and never before it ───────────────────────────────────────────────────
+#
+# Cargo never deletes anything, so every dependency, feature or flag change leaves its old
+# `-<hash>` artifacts in the volume permanently. See scripts/lib/prune-target.sh for the rule.
+#
+# After the build, so it cannot cost the build any time, and only after one that succeeded, so a
+# compile error does not also cost a sweep. `|| true` because a volume that will not prune is not
+# a reason to fail a green test run, and `set -e` would otherwise make it one.
+#
+# Skipped while another cargo container is alive. The prune only ever removes artifacts untouched
+# for CARGO_PRUNE_KEEP, so a concurrent build almost certainly does not want them, but "almost
+# certainly" is not worth a link error in somebody else's run for the sake of a few MB.
+if [ "$status" = 0 ] && [ -z "$(docker ps -q --filter "label=lumberroom.cargo.owner" 2>/dev/null)" ]; then
+  docker run --rm \
+    -v lumberroom-target:/app/target \
+    -v "$PWD/scripts/lib/prune-target.sh:/prune-target.sh:ro" \
+    -e CARGO_PRUNE_KEEP="${CARGO_PRUNE_KEEP:-7 days}" \
+    -e CARGO_PRUNE_KEEP_INCREMENTAL="${CARGO_PRUNE_KEEP_INCREMENTAL:-2 days}" \
+    lumberroom-builder sh /prune-target.sh /app/target || true
+fi
+
 exit "$status"
